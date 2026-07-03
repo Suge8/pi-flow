@@ -1,0 +1,126 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// 用户可见文案防回归。规则：
+// 1. src 字符串字面量（剥离 ${...} 插值后）：含中文则禁止大写 `Goal`（schema 字段 currentGoal 除外）
+//    及内部词组合黑名单。
+// 2. src 全部行（含无中文）：禁裸 `Goal ${...}` 插值（schema 引用写 goals[...]）。
+// 3. 用户文档（README）：禁内部词组合。
+// 豁免：模型协议文件、历史协议文本检测行（.includes(）、非法值回显（非法：）。
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const EXCLUDED_FILES = new Set([
+	"src/flow/prompt.ts",
+	"src/shared/session.ts", // 纯模型 transcript 构建
+]);
+const STRING_BLACKLIST = [
+	/(?<!current)Goal/u,
+	/\bagent\b/u,
+	/interruption/u,
+	/\} goals/u,
+	/不能 start/u,
+	/running flow/u,
+	/Flow draft/u,
+	/draft goal/u,
+	/draft flow/u,
+	/非法 (?:flow|goal) status/u,
+];
+const ANY_LINE_BLACKLIST = [
+	/`Goal \$\{/u,
+	/\$\{[a-zA-Z.]*\.status\}[^非]/u,
+	/kindLabel: "Goal"/u,
+];
+const DOC_BLACKLIST = [
+	/session Goal/u,
+	/Goal 队列/u,
+	/Goal 完成闭环/u,
+	/Goal 文件/u,
+	/个 Goal/u,
+	/单 Goal/u,
+	/多 Goal/u,
+	/Goal markdown/u,
+	/Goal 计划/u,
+	/\bsession\b/iu,
+	/\bdraft\b/iu,
+];
+const DOC_FILES = ["README.md"];
+const STRING_LITERAL =
+	/"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`|'(?:[^'\\]|\\.)*'/gu;
+
+const violations = [];
+for (const file of walk(join(root, "src"))) {
+	const path = relative(root, file);
+	if (EXCLUDED_FILES.has(path)) continue;
+	scanSource(path, file);
+}
+for (const doc of DOC_FILES) scanDoc(doc, join(root, doc));
+
+if (violations.length) {
+	console.error(`用户文案残留内部词：\n${violations.join("\n")}`);
+	process.exit(1);
+}
+console.log("copy lint smoke ok");
+
+function scanSource(path, file) {
+	const lines = readFileSync(file, "utf8").split("\n");
+	lines.forEach((line, index) => {
+		if (line.includes(".includes(")) return; // 历史协议文本检测，非输出
+		if (ignoredByMarker(lines, index)) return; // copy-lint-ignore 行内/上行标记
+		if (line.includes("非法：")) return; // 非法值回显属排障必需
+		for (const pattern of ANY_LINE_BLACKLIST) {
+			if (pattern.test(line))
+				violations.push(`${path}:${index + 1} [${pattern}] ${line.trim()}`);
+		}
+		// notify 是用户通知：硬编码文案禁止英文-only（纯插值转发豁免）。
+		const notifyLiteral = line.match(
+			/\bnotify\(\s*("(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`)/u,
+		);
+		if (notifyLiteral) {
+			const hardcoded = notifyLiteral[1].replace(/\$\{[^}]*\}/gu, "");
+			if (/[a-zA-Z]/u.test(hardcoded) && !/[\u4e00-\u9fff]/u.test(hardcoded))
+				violations.push(
+					`${path}:${index + 1} [notify 需中文文案] ${notifyLiteral[1]}`,
+				);
+		}
+		for (const literal of line.match(STRING_LITERAL) ?? []) {
+			const text = literal.replace(/\$\{[^}]*\}/gu, "");
+			if (!/[\u4e00-\u9fff]/u.test(text)) continue;
+			for (const pattern of STRING_BLACKLIST) {
+				if (pattern.test(text))
+					violations.push(`${path}:${index + 1} [${pattern}] ${literal}`);
+			}
+			// 裸 goal/session 禁止；命令名与文件名 token 豁免。
+			const stripped = text.replace(
+				/\/goal\b|\/flow\b|goal\.json|flow\.json|goal\.html|flow\.html|plan\.md/gu,
+				"",
+			);
+			if (/\bgoal\b|\bsession\b/u.test(stripped))
+				violations.push(`${path}:${index + 1} [bare goal/session] ${literal}`);
+		}
+	});
+}
+
+function ignoredByMarker(lines, index) {
+	return (
+		lines[index].includes("copy-lint-ignore") ||
+		(index > 0 && lines[index - 1].includes("copy-lint-ignore"))
+	);
+}
+
+function scanDoc(path, file) {
+	const lines = readFileSync(file, "utf8").split("\n");
+	lines.forEach((line, index) => {
+		for (const pattern of DOC_BLACKLIST) {
+			if (pattern.test(line))
+				violations.push(`${path}:${index + 1} [${pattern}] ${line.trim()}`);
+		}
+	});
+}
+
+function walk(dir) {
+	return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+		const path = join(dir, entry.name);
+		if (entry.isDirectory()) return walk(path);
+		return entry.name.endsWith(".ts") ? [path] : [];
+	});
+}

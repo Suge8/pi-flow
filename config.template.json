@@ -1,0 +1,41 @@
+{
+	"language": "auto",
+	"generation": {
+		"align": "ask"
+	},
+	"runner": {
+		"command": "pi",
+		"tools": ["read", "grep", "find", "ls", "bash"],
+		"excludeTools": ["write", "edit"],
+		"timeoutMs": 1200000,
+		"serviceTier": "default",
+		"extensions": []
+	},
+	"models": [
+		{
+			"model": "openai-codex/gpt-5.4",
+			"thinking": "medium"
+		},
+		{
+			"model": "openai-codex/gpt-5.4-mini",
+			"thinking": "medium"
+		},
+		{
+			"model": "deepseek/deepseek-v4-flash",
+			"thinking": "high"
+		}
+	],
+	"transcript": {
+		"maxUser": 6000,
+		"maxAssistant": 3000,
+		"maxTranscript": 75000
+	},
+	"acceptance": {
+		"enabled": true
+	},
+	"quality": {
+		"enabled": true,
+		"mode": "autoFix",
+		"runAfterCompletion": true
+	}
+}

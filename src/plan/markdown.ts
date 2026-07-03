@@ -1,0 +1,97 @@
+import { escapeRegExp } from "../shared/guards.js";
+
+const FLOW_GOAL_SECTIONS = [
+	"Objective",
+	"Scope",
+	"Steps",
+	"Success Criteria",
+	"Verification",
+	"Notes",
+	"Handoff",
+] as const;
+
+export function missingPlanSections(markdown: string) {
+	return FLOW_GOAL_SECTIONS.filter((section) => !hasSection(markdown, section));
+}
+
+export function planSection(markdown: string, title: string) {
+	return sectionBody(markdown, title)?.trim() ?? "";
+}
+
+export function objectiveText(markdown: string) {
+	return planSection(markdown, "Objective");
+}
+
+export function stepsText(markdown: string) {
+	return planSection(markdown, "Steps");
+}
+
+export function verificationText(markdown: string) {
+	return planSection(markdown, "Verification");
+}
+
+export function handoffText(markdown: string) {
+	return planSection(markdown, "Handoff");
+}
+
+export function outcomeText(markdown: string) {
+	return planSection(markdown, "Outcome");
+}
+
+export function replaceHandoff(markdown: string, handoff: string) {
+	return replaceSection(markdown, "Handoff", handoff);
+}
+
+export function replaceOutcome(markdown: string, outcome: string) {
+	return replaceSection(markdown, "Outcome", outcome);
+}
+
+export function hasCriteriaDeviation(text: string | null | undefined) {
+	return /criteria\s*deviation|验收标准偏差|标准偏差|criteria.*偏差/iu.test(
+		text ?? "",
+	);
+}
+
+export function hasCheckedOrUncheckedItem(text: string) {
+	return /^\s*-\s*\[[ xX~!]\]/mu.test(text);
+}
+
+function replaceSection(markdown: string, title: string, body: string) {
+	const lines = markdown.split(/\r?\n/);
+	const start = sectionStart(lines, title);
+	if (start === -1)
+		return `${markdown.trimEnd()}\n\n## ${title}\n${body.trim()}\n`;
+	let end = lines.length;
+	for (let index = start + 1; index < lines.length; index += 1) {
+		if (/^##\s+\S/.test(lines[index])) {
+			end = index;
+			break;
+		}
+	}
+	return [...lines.slice(0, start + 1), body.trim(), ...lines.slice(end)]
+		.join("\n")
+		.replace(/\s+$/u, "\n");
+}
+
+export function hasSection(markdown: string, title: string) {
+	return sectionStart(markdown.split(/\r?\n/), title) !== -1;
+}
+
+function sectionBody(markdown: string, title: string) {
+	const lines = markdown.split(/\r?\n/);
+	const start = sectionStart(lines, title);
+	if (start === -1) return undefined;
+	let end = lines.length;
+	for (let index = start + 1; index < lines.length; index += 1) {
+		if (/^##\s+\S/.test(lines[index])) {
+			end = index;
+			break;
+		}
+	}
+	return lines.slice(start + 1, end).join("\n");
+}
+
+function sectionStart(lines: string[], title: string) {
+	const pattern = new RegExp(`^##\\s+${escapeRegExp(title)}\\s*$`, "iu");
+	return lines.findIndex((line) => pattern.test(line.trim()));
+}

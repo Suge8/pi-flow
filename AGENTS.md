@@ -1,0 +1,43 @@
+# pi-flow 开发索引
+
+Pi 扩展：`/goal`（单目标执行 + 完成验收 + 质量检查）、`/flow`（多步骤编排）、`/review`（手动质量检查）。
+
+## 命令
+
+```bash
+npm run check   # biome + tsc，必须 exit 0
+npm test        # smoke 全绿
+npm run format  # biome 自动修复
+```
+
+## 模块地图
+
+| 路径 | 职责 |
+|------|------|
+| `src/index.ts` | 扩展入口，注册 goal / flow / review 与共享能力 |
+| `src/goal.ts` + `src/goal/` | `/goal` 命令、生成、运行、验收、报告、状态存储 |
+| `src/flow.ts` + `src/flow/` | `/flow` 命令、多步骤生成/执行/恢复/报告 |
+| `src/review.ts` + `src/review/` | `/review` 命令与质量检查视图/聚合 |
+| `src/auditor.ts` | 完成验收模型调用与结果聚合 |
+| `src/plan/` | `plan.md` / 步骤 markdown 解析与校验 |
+| `src/shared/` | 配置、语言、报告、卡片、子进程、会话、检查池等共享代码 |
+| `scripts/validate-draft.mjs` | 生成阶段草稿校验命令（与 TS validator 双轨） |
+| `prompts/` | 中英文模型协议与修复提示 |
+| `tests/` | smoke 回归测试 |
+
+## 关键约定
+
+- 状态单一事实源：`goal.json` / `flow.json`（schema v5）。模型只写 `goal.semantic.json` / `flow.semantic.json` 与 markdown；插件 builder 组装 canonical 状态。
+- HTML 报告由内置渲染器生成；模型禁止手写 `goal.html` / `flow.html`。
+- `checks.acceptance` 与 `checks.quality` 是运行时字段，由插件初始化和更新，模型不写。
+- `completionCursor` 是完成链恢复路由字段；用户界面不展示内部枚举。
+- 用户可见文案只用「完成验收」「质量检查」；步骤称呼「第 N 步」；内部状态必须映射成人话。
+- 根目录 `config.json` 是本机配置，必须忽略；发布只带 `config.template.json`。
+- `.flow/` 是运行态产物，默认忽略，不进入开源仓库或 npm 包。
+- README 面向用户；AGENTS 面向维护者与编码代理；本地设计文档不发布。
+
+## 测试约定
+
+- 行为变更必须跑受影响 smoke；发布前跑 `npm run check && npm test`。
+- 文案变更同步测试断言；不要为了过测降低断言强度。
+- `tests/copy-lint-smoke.mjs` 保护用户可见文案，新增公开文档时同步检查范围。

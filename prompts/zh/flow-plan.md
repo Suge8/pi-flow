@@ -1,0 +1,69 @@
+你正在为 Pi Flow 生成可恢复的多会话 Goal 队列。只写 `.flow` 计划草稿文件，不改业务代码。
+
+目标：根据当前会话上下文、用户输入或 md 文件，创建一个 draft Flow：
+
+```text
+.flow/flows/<id>/
+  flow.semantic.json
+  flow.html  # 插件会生成；你无需手写
+  G1-*.md
+  G2-*.md
+  G<N>-final-acceptance.md
+```
+
+规则：
+- 允许读代码、读 docs、跑只读检查来确认事实。
+- 生成阶段禁止改业务代码、配置、测试、README、docs；只写 `.flow` 目录。
+- 只写 `flow.semantic.json` 和 `G<N>-*.md`；不要创建、手写或补全 canonical `flow.json` / 插件运行态字段，插件会组装完整 Flow 状态并校验。
+- 禁止手写或测试 `flow.html`；HTML 由插件在校验通过后用内置渲染器生成，并由本地测试覆盖。不要把 HTML 报告模板或候选项结构复制进 Flow goal 文件。
+- 输出语言必须使用当前 language：`{{language}}`。`zh` 用中文 `title`、Goal 标题和 Goal 文件内容；`en` 用英文。
+- `title`、每个 Goal 标题和每个 `Objective` 的第一句都写给用户看：直白说明做完后得到什么，不堆函数名、命令和术语；技术细节放 `Steps`/`Verification`。HTML 报告会直接展示这些文案。
+- Flow 目录名从 `.flow/flows` 下最大 F 编号 + 1，格式 `F1-xxx`；无英文数字 slug 用 `task`。
+- 生成 2–10 个 Goal（包含最后的 final acceptance）；推荐 3–7 个；超过 10 不允许，必须要求用户拆多个 flow。
+- 最后一个 Goal 必须是 final acceptance，文件名用实际序号 + `final-acceptance`，`role` 为 `final_acceptance`，如 `G3-final-acceptance.md`。
+- 每个 Goal 必须足够细，能在单独 Goal session 中完成。
+- 每个 Goal 文件必须包含：`Objective / Scope / Steps / Success Criteria / Verification / Notes / Handoff`。
+- 每个 Goal 的 `Steps` 和 `Verification` 都必须使用 checkbox，初始只允许 `[ ]`；`Verification` 必须有可客观判断的验证命令或明确人工验证步骤。
+  （例：`- [ ] \`npm test -- --testPathPattern=auth\` exit 0`；避免 `- [ ] 检查功能是否正常` 这种无法客观判断的步骤）
+- `Steps` 是运行时 Todo，不是粗略阶段；每个 Goal 推荐 3–12 个小步骤，小任务可少于 3 个，超过 12 个优先拆 Goal 或合并过细步骤。每项必须可单独完成、可立刻更新状态，避免“实现功能 / 完成开发 / 最终检查”这种只能最后才完成的大步骤。
+- `Steps` 每项写成 `- [ ] **短标题**：技术细节`：短标题 ≤20 字、用户视角人话；技术细节给执行 AI，可精确技术化。HTML 报告把标题直接展示给用户、细节折叠。
+  （例：`- [ ] **添加 verifyToken**：在 auth.ts 实现 verifyToken(token)，处理过期和签名错误，返回解析后的 payload`）
+- 生成时 `Handoff` 标题必须有，内容可空。
+- 依赖只写进 `Scope` 或 `Notes` 文本；不写结构化依赖字段。
+- 中文标题 Goal 文件用 `G<N>-goal.md`；英文标题可 slug，如 `G1-login-ui.md`。
+- `flow.semantic.json` 必须是 JSON 对象，字段只需要 `title` 和 `goals`；不要写 `source`、`schemaVersion`、`status`、`currentGoal`、`checks` 等运行态字段。
+- `goals` 数组顺序就是执行顺序；每项只写 `title`、`role`、`file`。不要写 `index`，插件会按顺序重算 0-based index。
+- 每个非最终 Goal 的 `role` 必须是 `normal`；最后一个 Goal 的 `role` 必须是 `final_acceptance`；禁止使用 `implementation`。
+- 每个 `file` 必须是当前 Flow 目录内的相对路径，并且对应的 Goal markdown 文件必须存在。
+- 不要把原始需求逐字复制进每个 Goal；按目标、范围、步骤和验收标准提炼。真实来源由插件按当前请求写入 canonical `flow.json`。
+- final acceptance Goal 必须读取所有 Handoff、复核 criteriaChanged、跑全局验证、检查 docs / AGENTS.md 是否需要更新并收口。它的 Steps 与普通 Goal 不同，必须覆盖所有先序 Goal 的交付物。
+  Steps 参考结构（按实际情况调整）：
+  - [ ] **读所有 Handoff**：逐一确认每个 Goal 的 Handoff 产出物和遗留问题
+  - [ ] **全局验证**：运行全局验证命令，确认端到端流程 exit 0
+  - [ ] **文档收口**：检查 docs / AGENTS.md 受影响的模块说明，有则更新
+  - [ ] **确认无遗留**：无未关闭问题、无 TODO/FIXME 未解决
+- 写完 `flow.semantic.json` 和所有 Goal markdown 后即可结束；插件会组装完整 Flow 状态并运行结构校验（`{{validateCommand}} <Flow目录>`）。不要用“已自检”替代真实工具输出，也不要手动模拟插件校验结果。
+- 不要做生成前深度对齐；基于当前上下文、对齐摘要和用户输入直接生成草稿。
+- 只有目标缺失、需求互斥、不可逆决策无法合理假设，导致不能生成可执行草稿时，才问一个阻塞问题；问题末尾单独输出 `<!-- pi-flow:need-input -->`。
+- 如果问题能通过阅读代码库、文档或现有 `.flow` 文件回答，就自己查，不要问用户。
+
+`flow.semantic.json` 最小骨架：
+
+```json
+{
+  "title": "任务标题",
+  "goals": [
+    { "title": "第一个 Goal", "role": "normal", "file": "G1-goal.md" },
+    { "title": "最终验收", "role": "final_acceptance", "file": "G2-final-acceptance.md" }
+  ]
+}
+```
+
+用户原始需求：
+{{originalRequest}}
+
+来源：
+{{source}}
+
+当前 language：
+{{language}}
