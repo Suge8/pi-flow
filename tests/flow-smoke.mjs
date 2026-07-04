@@ -71,6 +71,7 @@ try {
 	await runScenario(generationAlignConfigScenario);
 	await runScenario(generationAlignCommandConfigScenario);
 	await runScenario(flowReadyWithoutAlignedRequestScenario);
+	await runScenario(flowStreamingAlignmentInputDoesNotEchoScenario);
 	await runScenario(englishFlowAlignmentStartGenerationScenario);
 	await runScenario(generateScenario);
 	await runScenario(flowHandwrittenRejectedScenario);
@@ -912,6 +913,43 @@ async function flowReadyWithoutAlignedRequestScenario() {
 			state.hiddenMessages.at(-1).includes("A1: Y") &&
 			!state.hiddenMessages.at(-1).includes("# 拷问我"),
 		"start generation reply should send flow generation prompt with aligned Q/A",
+	);
+}
+
+async function flowStreamingAlignmentInputDoesNotEchoScenario() {
+	const cwd = tempDir("flow-streaming-alignment-input");
+	const state = newState(cwd);
+	state.select = "先进行多轮问答对齐想法";
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("streaming alignment", ctx);
+	await emit(
+		handlers,
+		"agent_end",
+		{ messages: [{ role: "assistant", content: "问题 1：是否限定 UI？" }] },
+		ctx,
+	);
+	const inputResult = await emitLast(
+		handlers,
+		"input",
+		{ source: "interactive", text: "Y", streamingBehavior: "followUp" },
+		ctx,
+	);
+	assert(
+		inputResult?.action === "handled",
+		"streaming flow alignment input should be consumed",
+	);
+	assert(
+		!state.customMessages.some(
+			(item) => item.message.display === true && item.message.content === "Y",
+		),
+		"streaming flow alignment input should not echo as model-visible custom message",
+	);
+	assert(
+		state.hiddenMessages.at(-1).includes("# 拷问我") &&
+			state.hiddenMessages.at(-1).includes("Q1: 问题 1：是否限定 UI？") &&
+			state.hiddenMessages.at(-1).includes("A1: Y"),
+		"streaming flow alignment input should still send hidden alignment context",
 	);
 }
 

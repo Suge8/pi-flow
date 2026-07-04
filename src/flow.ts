@@ -94,7 +94,10 @@ export default function flowExtension(pi: ExtensionAPI) {
 		const action = consumeFlowClarificationInput(event.text, ctx);
 		if (!action) return;
 		setGoalActivityBox(ctx, action.activityBox);
-		if (action.showUserInput) appendVisibleUserInput(pi, event.text);
+		if (action.showUserInput)
+			appendVisibleUserInput(pi, event.text, {
+				streamingBehavior: event.streamingBehavior,
+			});
 		const sent = await sendOrchestrationPrompt(pi, ctx, action.prompt, {
 			followUp: true,
 			errorPrefix: "Flow 计划澄清提示发送失败",

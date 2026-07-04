@@ -19,9 +19,15 @@ interface OrchestrationPromptInput {
 	language?: Language;
 }
 
-export function appendVisibleUserInput(pi: ExtensionAPI, text: string) {
+export function appendVisibleUserInput(
+	pi: ExtensionAPI,
+	text: string,
+	input: { streamingBehavior?: "steer" | "followUp" } = {},
+) {
 	const content = text.trim();
 	if (!content) return;
+	// During streaming, sendMessage queues custom messages into the model.
+	if (input.streamingBehavior) return;
 	try {
 		pi.sendMessage({
 			customType: VISIBLE_USER_INPUT_TYPE,

@@ -341,7 +341,10 @@ export default function goal(pi: ExtensionAPI) {
 			const action = consumeGoalClarificationInput(event.text, ctx);
 			if (action?.kind === "prompt") {
 				setGoalActivityBox(ctx, action.activityBox);
-				if (action.showUserInput) appendVisibleUserInput(pi, event.text);
+				if (action.showUserInput)
+					appendVisibleUserInput(pi, event.text, {
+						streamingBehavior: event.streamingBehavior,
+					});
 				const sent = await sendOrchestrationPrompt(pi, ctx, action.prompt, {
 					followUp: true,
 					errorPrefix: "计划澄清提示发送失败",

@@ -74,6 +74,7 @@ try {
 	await runScenario(inlineGoalPromptScenario);
 	await runScenario(goalAlignAutoStartScenario);
 	await runScenario(goalReadyWithoutAlignedRequestScenario);
+	await runScenario(goalStreamingAlignmentInputDoesNotEchoScenario);
 	await runScenario(englishGoalAlignmentActivityScenario);
 	await runScenario(englishGoalDynamicNotificationScenario);
 	await runScenario(englishGoalGeneratedSummaryUsesArtifactLanguageScenario);
@@ -527,6 +528,80 @@ async function goalReadyWithoutAlignedRequestScenario() {
 			state.hidden.at(-1).message.includes("A1: Y") &&
 			!state.hidden.at(-1).message.includes("# 拷问我"),
 		"start generation reply should send generation prompt with aligned Q/A",
+	);
+}
+
+async function goalStreamingAlignmentInputDoesNotEchoScenario() {
+	const { default: goal } = await import(
+		`file://${join(srcOut, "goal.js")}?t=${Date.now()}-${Math.random()}`
+	);
+	const cwd = join(out, "goal-streaming-alignment-input");
+	mkdirSync(cwd, { recursive: true });
+	const state = {
+		sent: [],
+		hidden: [],
+		visible: [],
+		notifications: [],
+		execs: [],
+		widgets: [],
+		select: "先进行多轮问答对齐想法",
+	};
+	let commandHandler;
+	const handlers = new Map();
+	goal({
+		registerCommand(name, options) {
+			if (name === "goal") commandHandler = options.handler;
+		},
+		registerMessageRenderer() {},
+		on(name, handler) {
+			if (!handlers.has(name)) handlers.set(name, []);
+			handlers.get(name).push(handler);
+		},
+		sendMessage(message, options) {
+			const item = { message: String(message.content), options };
+			if (message.display === false) state.hidden.push(item);
+			else state.visible.push(item);
+		},
+		sendUserMessage(message, options) {
+			state.sent.push({ message: String(message), options });
+		},
+		exec(command, args) {
+			state.execs.push({ command, args });
+			return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+		},
+		setSessionName() {},
+		appendEntry() {},
+	});
+	const ctx = goalContext(
+		cwd,
+		join(out, "goal-streaming-alignment-input.jsonl"),
+		state,
+	);
+	await commandHandler("Ship streaming", ctx);
+	for (const handler of handlers.get("agent_end") ?? [])
+		await handler(
+			{ messages: [{ role: "assistant", content: "问题 1：是否限定 UI？" }] },
+			ctx,
+		);
+	let inputResult;
+	for (const handler of handlers.get("input") ?? [])
+		inputResult = await handler(
+			{ source: "interactive", text: "Y", streamingBehavior: "followUp" },
+			ctx,
+		);
+	assert(
+		inputResult?.action === "handled",
+		"streaming goal alignment input should be consumed",
+	);
+	assert(
+		!state.visible.some((item) => item.message === "Y"),
+		"streaming goal alignment input should not echo as model-visible custom message",
+	);
+	assert(
+		state.hidden.at(-1).message.includes("# 拷问我") &&
+			state.hidden.at(-1).message.includes("Q1: 问题 1：是否限定 UI？") &&
+			state.hidden.at(-1).message.includes("A1: Y"),
+		"streaming goal alignment input should still send hidden alignment context",
 	);
 }
 
