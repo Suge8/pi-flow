@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +13,10 @@ import { pathToFileURL } from "node:url";
 // footer.ts 是仓库外的用户扩展（~/.pi/agent/extensions/footer.ts），
 // 其 bare import 由 pi 运行时提供；此处重写为本仓库 node_modules 的绝对路径后独立加载。
 const footerPath = join(import.meta.dirname, "../../footer.ts");
+if (!existsSync(footerPath)) {
+	console.log("footer smoke skipped: ../footer.ts not found");
+	process.exit(0);
+}
 const require = createRequire(import.meta.url);
 const tuiUrl = pathToFileURL(require.resolve("@earendil-works/pi-tui")).href;
 
