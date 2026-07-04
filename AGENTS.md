@@ -5,10 +5,14 @@ Pi 扩展：`/goal`（单目标执行 + 完成验收 + 质量检查）、`/flow`
 ## 命令
 
 ```bash
-npm run check   # biome + tsc，必须 exit 0
-npm test        # smoke 全绿
-npm run format  # biome 自动修复
+npm run check            # biome + tsc，必须 exit 0
+npm test                 # smoke 全绿
+npm run format           # biome 自动修复
+npm run release:patch    # 本地发布：版本、tag、npm publish、push
+npm run release:current  # 仅发布当前版本，用于 tag 已有但 npm 未发
 ```
+
+发布只用 `npm run release:*`；不要手动改 version、打 tag 或 `npm publish`。CI 只校验，不发布。
 
 ## 模块地图
 
@@ -22,6 +26,7 @@ npm run format  # biome 自动修复
 | `src/plan/` | `plan.md` / 步骤 markdown 解析与校验 |
 | `src/shared/` | 配置、语言、报告、卡片、子进程、会话、检查池等共享代码 |
 | `scripts/validate-draft.mjs` | 生成阶段草稿校验命令（与 TS validator 双轨） |
+| `scripts/release.mjs` | 本地发版：check/test、版本、tag、npm publish、push |
 | `prompts/` | 中英文模型协议与修复提示 |
 | `tests/` | smoke 回归测试 |
 

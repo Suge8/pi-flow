@@ -163,6 +163,13 @@ Request → plan → execution → completion acceptance → quality check → c
 - Completion acceptance: "Is the requirement truly done?"
 - Quality checks: "Is the implementation clean, reliable, and maintainable?"
 
+### Co-create
+
+Pi Flow is young and opinionated. If you care about more reliable agent delivery loops, ideas, issues, and focused PRs are welcome.
+
+- Discuss — open an issue with the workflow you want to improve
+- Contribute — read [CONTRIBUTING.md](CONTRIBUTING.md) and keep changes small
+
 ---
 
 ## 中文
@@ -310,6 +317,13 @@ cp config.template.json config.json
 - 对齐："多轮问答全面挖掘你的需求"
 - 完成验收："确保任务完整完成，无偷懒"
 - 质量检查："确保实现干净、可靠、可维护"
+
+### 共创
+
+Pi Flow 还在快速迭代。如果你也在探索更可靠的 Agent 循环，欢迎一起打磨。
+
+- 讨论 — 用 issue 描述你的工作流和痛点
+- 贡献 — 先读 [CONTRIBUTING.md](CONTRIBUTING.md)，保持改动小而清晰
 
 ---
 

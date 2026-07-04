@@ -45,6 +45,11 @@
 	"scripts": {
 		"check": "biome check . && npm run typecheck",
 		"format": "biome check --write .",
+		"release": "node scripts/release.mjs",
+		"release:current": "npm run release -- current",
+		"release:patch": "npm run release -- patch",
+		"release:minor": "npm run release -- minor",
+		"release:major": "npm run release -- major",
 		"test": "node tests/language-smoke.mjs && node tests/plan-smoke.mjs && node tests/session-transcript-smoke.mjs && node tests/goal-review-smoke.mjs && node tests/review-smoke.mjs && node tests/activity-frame-smoke.mjs && node tests/status-smoke.mjs && node tests/report-server-smoke.mjs && node tests/goal-activity-smoke.mjs && node tests/result-card-smoke.mjs && node tests/service-tier-smoke.mjs && node tests/flow-smoke.mjs && node tests/footer-smoke.mjs && node tests/copy-lint-smoke.mjs",
 		"typecheck": "tsc --noEmit",
 		"prepublishOnly": "npm run check && npm test"
