@@ -44,6 +44,8 @@ const DOC_BLACKLIST = [
 	/\bdraft\b/iu,
 ];
 const DOC_FILES = ["README.md"];
+const DOC_REVIEWER_THINKING =
+	/`off`.*`minimal`.*`low`.*`medium`.*`high`.*`xhigh`/u;
 const STRING_LITERAL =
 	/"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`|'(?:[^'\\]|\\.)*'/gu;
 
@@ -113,6 +115,14 @@ function scanDoc(path, file) {
 		for (const pattern of DOC_BLACKLIST) {
 			if (pattern.test(line))
 				violations.push(`${path}:${index + 1} [${pattern}] ${line.trim()}`);
+		}
+		if (
+			line.trim().startsWith("| `modelRoles.reviewers` |") &&
+			!DOC_REVIEWER_THINKING.test(line)
+		) {
+			violations.push(
+				`${path}:${index + 1} [reviewer thinking values] ${line.trim()}`,
+			);
 		}
 	});
 }
