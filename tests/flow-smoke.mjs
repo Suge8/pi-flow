@@ -74,6 +74,7 @@ try {
 	await runScenario(flowStreamingAlignmentInputDoesNotEchoScenario);
 	await runScenario(englishFlowAlignmentStartGenerationScenario);
 	await runScenario(generateScenario);
+	await runScenario(flowAutoStartUsesCommandContextScenario);
 	await runScenario(flowHandwrittenRejectedScenario);
 	await runScenario(semanticFlowGenerationEndScenario);
 	await runScenario(flowSemanticOverridesHandwrittenScenario);
@@ -1113,6 +1114,29 @@ async function generateScenario() {
 		!state.hiddenMessages.at(-1).includes("严格访谈") &&
 			!state.hiddenMessages.at(-1).includes("持续追问"),
 		"repair prompt should not use grill semantics",
+	);
+}
+
+async function flowAutoStartUsesCommandContextScenario() {
+	const cwd = tempDir("flow-autostart-command-context");
+	const state = newState(cwd);
+	const { commands, handlers } = await loadExtension(state);
+	const sessionFile = join(cwd, "planning.jsonl");
+	const commandCtx = commandContext(state, cwd, sessionFile);
+	await commands.get("flow").handler("auto start from event", commandCtx);
+	writeFlowSemanticDraft(cwd, "F1-autostart", { title: "Auto Start" });
+	const eventCtx = commandContext(state, cwd, sessionFile);
+	eventCtx.newSession = undefined;
+	await emit(handlers, "agent_end", { messages: [] }, eventCtx);
+	const flow = readFlow(join(cwd, ".flow", "flows", "F1-autostart"));
+	assert(flow.status === "running", "flow auto-start ignored command context");
+	assert(
+		state.newSessions.length === 1,
+		"flow auto-start did not create session",
+	);
+	assert(
+		!state.notifications.some((message) => message.includes("不支持新建会话")),
+		state.notifications.join("\n"),
 	);
 }
 

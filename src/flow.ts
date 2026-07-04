@@ -68,11 +68,7 @@ export default function flowExtension(pi: ExtensionAPI) {
 	pi.on("agent_end", async (event, ctx) => {
 		const generated = await handleGenerationEnd(pi, ctx, event);
 		if (generated?.autoStart) {
-			const started = await startFlow(
-				pi,
-				ctx as ExtensionCommandContext,
-				generated.id,
-			);
+			const started = await startFlow(pi, generated.startContext, generated.id);
 			notifyUser(
 				ctx,
 				generated.language === "en"

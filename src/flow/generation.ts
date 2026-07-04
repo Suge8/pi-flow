@@ -58,6 +58,7 @@ import { validateFlowDir } from "./validator.js";
 
 interface PendingGeneration extends PendingGenerationBase {
 	flowId?: string;
+	startContext: ExtensionCommandContext;
 }
 
 export interface FlowClarificationAction {
@@ -72,6 +73,7 @@ export interface FlowGenerationReady {
 	id: string;
 	autoStart: boolean;
 	language: Language;
+	startContext: ExtensionCommandContext;
 }
 
 const FLOW_DRAFT_ACTIVITY = "flow-draft";
@@ -114,6 +116,7 @@ export async function startGeneration(
 		stage: options.mode === "align" ? "aligning" : "generating",
 		awaitingClarification: false,
 		autoStart: options.autoStart,
+		startContext: ctx,
 	};
 	pendingGenerations.set(key, pending);
 	setFlowActivity("goal", true, FLOW_DRAFT_ACTIVITY);
@@ -219,6 +222,7 @@ export async function handleGenerationEnd(
 			id: flow.id,
 			autoStart: pending.autoStart === true,
 			language: flow.language,
+			startContext: pending.startContext,
 		};
 	}
 	await repairInvalidFlow(pi, ctx, pending, location, validation.errors);
