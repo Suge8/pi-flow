@@ -42,6 +42,7 @@ import {
 	sendOrchestrationPrompt,
 } from "../shared/internal-prompt.js";
 import { runtimeLanguage } from "../shared/language.js";
+import { switchToRoleModel } from "../shared/model-roles.js";
 import type { PlanEvidence } from "../shared/plan-evidence.js";
 import {
 	elapsedLabel,
@@ -178,8 +179,9 @@ interface AssistantMessageLike {
 export type StatusContext = Pick<
 	ExtensionContext,
 	"cwd" | "ui" | "sessionManager"
-> &
-	Partial<Pick<ExtensionContext, "isIdle" | "hasPendingMessages">> &
+> & {
+	modelRegistry?: ExtensionContext["modelRegistry"];
+} & Partial<Pick<ExtensionContext, "isIdle" | "hasPendingMessages">> &
 	Partial<Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">>;
 
 export interface FlowGoalRuntimeState {
@@ -525,6 +527,7 @@ export async function startGoalFromFlow(
 		);
 		return false;
 	}
+	if (!(await switchToRoleModel(pi, ctx, "executor", language))) return false;
 	cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
 	cancelContinuationPending();
 	cancelCompletionAudit();
@@ -790,6 +793,8 @@ async function startGoalFromDraft(
 		);
 		return false;
 	}
+	if (!(await switchToRoleModel(pi, ctx, "executor", validation.goal.language)))
+		return false;
 	cancelContinuationPending();
 	cancelCompletionAudit();
 	goalRuntimeState.activeGoal = createGoal(

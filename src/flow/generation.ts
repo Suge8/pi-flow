@@ -36,6 +36,7 @@ import {
 import { formatError, isRecord } from "../shared/guards.js";
 import { sendOrchestrationPrompt } from "../shared/internal-prompt.js";
 import { runtimeLanguage } from "../shared/language.js";
+import { switchToRoleModel } from "../shared/model-roles.js";
 import { flowStepLabel } from "../shared/progress-labels.js";
 import { openLiveHtmlOnce } from "../shared/report-server.js";
 import { notifyUser } from "../shared/ui-language.js";
@@ -91,6 +92,8 @@ export async function startGeneration(
 		);
 		return false;
 	}
+	const language = runtimeLanguage();
+	if (!(await switchToRoleModel(pi, ctx, "planner", language))) return false;
 	let beforeIds: string[];
 	try {
 		beforeIds = listFlowIds(ctx.cwd);
@@ -99,7 +102,6 @@ export async function startGeneration(
 		return false;
 	}
 	const key = generationKey(ctx);
-	const language = runtimeLanguage();
 	const pending: PendingGeneration = {
 		key,
 		cwd: ctx.cwd,
@@ -453,11 +455,12 @@ async function repairInvalidFlow(
 		errors,
 		repairAttempts: attempts,
 	});
+	const language = saved.language ?? pending.language;
 	writeFlowErrorHtml(location.dir, {
 		title: safeFlowTitle(saved, location.id),
 		errors,
 		originalRequest: safeOriginalRequest(saved, pending.originalRequest),
-		language: saved.language ?? pending.language,
+		language,
 	});
 	pending.attempts = attempts;
 	if (attempts > 3) {
@@ -468,6 +471,10 @@ async function repairInvalidFlow(
 		finishGeneration(pending, ctx);
 		return;
 	}
+	if (!(await switchToRoleModel(pi, ctx, "planner", language))) {
+		finishGeneration(pending, ctx);
+		return;
+	}
 	const sent = await sendOrchestrationPrompt(
 		pi,
 		ctx,
@@ -475,7 +482,7 @@ async function repairInvalidFlow(
 			errors,
 			originalRequest: safeOriginalRequest(saved, pending.originalRequest),
 			flowPath: location.dir,
-			language: saved.language ?? pending.language,
+			language,
 		}),
 		{ followUp: true, errorPrefix: "Flow 计划修复提示发送失败" },
 	);

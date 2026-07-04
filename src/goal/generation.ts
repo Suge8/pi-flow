@@ -36,6 +36,7 @@ import {
 import { formatError } from "../shared/guards.js";
 import { sendOrchestrationPrompt } from "../shared/internal-prompt.js";
 import { runtimeLanguage } from "../shared/language.js";
+import { switchToRoleModel } from "../shared/model-roles.js";
 import { openLiveHtmlOnce } from "../shared/report-server.js";
 import { notifyUser } from "../shared/ui-language.js";
 import { buildGoalArtifact, type GoalSemanticInput } from "./builder.js";
@@ -96,6 +97,8 @@ export async function startGoalGeneration(
 		sourcePath,
 	);
 	if (!request) return;
+	const language = runtimeLanguage();
+	if (!(await switchToRoleModel(pi, ctx, "planner", language))) return;
 	let beforeIds: string[];
 	try {
 		beforeIds = listGoalIds(ctx.cwd);
@@ -104,7 +107,6 @@ export async function startGoalGeneration(
 		return;
 	}
 	const key = generationKey(ctx);
-	const language = runtimeLanguage();
 	const pending: PendingGoalGeneration = {
 		key,
 		cwd: ctx.cwd,
@@ -580,11 +582,12 @@ async function repairInvalidGoal(
 		errors,
 		repairAttempts: attempts,
 	});
+	const language = saved.language ?? pending.language;
 	writeGoalErrorHtml(location.dir, {
 		title: saved.title || location.id,
 		errors,
 		originalRequest: saved.source?.originalRequest ?? pending.originalRequest,
-		language: saved.language ?? pending.language,
+		language,
 	});
 	pending.attempts = attempts;
 	if (attempts > 3) {
@@ -595,6 +598,10 @@ async function repairInvalidGoal(
 		finishGeneration(pending, ctx);
 		return;
 	}
+	if (!(await switchToRoleModel(pi, ctx, "planner", language))) {
+		finishGeneration(pending, ctx);
+		return;
+	}
 	const sent = await sendGenerationPrompt(
 		pi,
 		ctx,
@@ -602,7 +609,7 @@ async function repairInvalidGoal(
 			errors,
 			originalRequest: saved.source?.originalRequest ?? pending.originalRequest,
 			goalPath: location.dir,
-			language: saved.language ?? pending.language,
+			language,
 		}),
 		true,
 	);
