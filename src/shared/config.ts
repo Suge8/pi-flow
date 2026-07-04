@@ -8,6 +8,13 @@ import type { TranscriptConfig } from "./session.js";
 
 export type QualityMode = "manual" | "autoFix";
 export type GenerationAlign = "ask" | "yes" | "no";
+export type ThinkingLevelConfig =
+	| "off"
+	| "minimal"
+	| "low"
+	| "medium"
+	| "high"
+	| "xhigh";
 export type Language = "zh" | "en";
 export type LanguageConfig = Language | "auto";
 export type { ServiceTier } from "./service-tier.js";
@@ -21,7 +28,17 @@ export interface RunnerConfig {
 }
 export interface ModelConfig extends RunnerConfig {
 	model: string;
-	thinking: string;
+	thinking: ThinkingLevelConfig;
+}
+export interface RoleModelSelection {
+	model: string;
+	thinking: ThinkingLevelConfig;
+}
+export type RoleModelConfig = "current" | RoleModelSelection;
+export interface ModelRolesConfig {
+	planner: RoleModelConfig;
+	executor: RoleModelConfig;
+	reviewers: ModelConfig[];
 }
 export type ReviewerConfig = ModelConfig;
 export type { TranscriptConfig } from "./session.js";
@@ -40,6 +57,7 @@ export interface GenerationConfig {
 export interface FlowConfig {
 	runner: RunnerConfig;
 	models: ModelConfig[];
+	modelRoles: ModelRolesConfig;
 	acceptance: AcceptanceConfig;
 	quality: QualityConfig;
 	transcript: TranscriptConfig;
@@ -59,12 +77,12 @@ const DEFAULT_MODELS = [
 	{ model: "openai-codex/gpt-5.4", thinking: "medium" },
 	{ model: "openai-codex/gpt-5.4-mini", thinking: "medium" },
 	{ model: "deepseek/deepseek-v4-flash", thinking: "high" },
-];
+] satisfies Array<Pick<ModelConfig, "model" | "thinking">>;
 const MAX_MODELS = 5;
 const SERVICE_TIERS = new Set(["default", "priority"]);
 const LANGUAGES = new Set(["zh", "en"]);
 const LANGUAGE_CONFIGS = new Set(["auto", "zh", "en"]);
-const THINKING_LEVELS = new Set([
+const THINKING_LEVELS = new Set<ThinkingLevelConfig>([
 	"off",
 	"minimal",
 	"low",
@@ -81,6 +99,7 @@ const TOOL_NAMES = new Set([
 	"write",
 	"edit",
 ]);
+const ROLE_MODEL_KEYS = new Set(["model", "thinking"]);
 const GENERATION_ALIGNS = new Set(["ask", "yes", "no"]);
 const DEFAULT_TRANSCRIPT: TranscriptConfig = {
 	maxUser: 8000,
@@ -110,9 +129,15 @@ export function readFlowConfig(): FlowConfig {
 	validateNoLegacyConfig(parsed);
 	languageConfig(parsed.language);
 	const runner = runnerConfig(recordValue(parsed, "runner"), DEFAULT_RUNNER);
+	const modelRoles = modelRolesConfig(
+		recordValue(parsed, "modelRoles"),
+		parsed.models,
+		runner,
+	);
 	return {
 		runner,
-		models: modelList(parsed.models, "models", runner),
+		models: modelRoles.reviewers,
+		modelRoles,
 		acceptance: acceptanceConfig(recordValue(parsed, "acceptance")),
 		quality: qualityConfig(recordValue(parsed, "quality")),
 		transcript: transcriptConfig(recordValue(parsed, "transcript")),
@@ -250,6 +275,50 @@ function modelList(
 	});
 }
 
+function modelRolesConfig(
+	value: Record<string, unknown>,
+	legacyModels: unknown,
+	runner: RunnerConfig,
+): ModelRolesConfig {
+	if (legacyModels !== undefined && value.reviewers !== undefined)
+		throw configError(
+			"config.json 字段 models 与 modelRoles.reviewers 不能同时配置",
+		);
+	return {
+		planner: roleModelConfig(value.planner, "modelRoles.planner"),
+		executor: roleModelConfig(value.executor, "modelRoles.executor"),
+		reviewers: modelList(
+			value.reviewers ?? legacyModels,
+			value.reviewers === undefined ? "models" : "modelRoles.reviewers",
+			runner,
+		),
+	};
+}
+
+function roleModelConfig(value: unknown, key: string): RoleModelConfig {
+	if (value === undefined || value === "current") return "current";
+	if (!isRecord(value))
+		throw configError(
+			`config.json 字段 ${key} 必须是 current 或包含 model、thinking 的对象`,
+		);
+	const invalidKey = Object.keys(value).find(
+		(item) => !ROLE_MODEL_KEYS.has(item),
+	);
+	if (invalidKey)
+		throw configError(
+			`config.json 字段 ${key} 不能包含 ${invalidKey}，只支持 model 和 thinking`,
+		);
+	const model = requiredString(value.model, `${key}.model`);
+	if (!isCanonicalModelReference(model))
+		throw configError(
+			`config.json 字段 ${key}.model 必须匹配 provider/model-id`,
+		);
+	return {
+		model,
+		thinking: requiredThinking(value.thinking, `${key}.thinking`),
+	};
+}
+
 function transcriptConfig(value: Record<string, unknown>): TranscriptConfig {
 	return {
 		maxUser: optionalTranscriptLimit(
@@ -285,6 +354,10 @@ function optionalBoolean(value: unknown, key: string, fallback: boolean) {
 
 function optionalString(value: unknown, key: string, fallback: string) {
 	if (value === undefined) return fallback;
+	return requiredString(value, key);
+}
+
+function requiredString(value: unknown, key: string) {
 	if (typeof value === "string" && value.trim()) return value.trim();
 	throw configError(`config.json 字段 ${key} 必须是非空字符串`);
 }
@@ -300,12 +373,30 @@ function optionalStringArray(value: unknown, key: string, fallback: string[]) {
 	return [...new Set(value.map((item) => item.trim()))];
 }
 
-function optionalThinking(value: unknown, key: string, fallback: string) {
-	const thinking = optionalString(value, key, fallback);
-	if (THINKING_LEVELS.has(thinking)) return thinking;
+function optionalThinking(
+	value: unknown,
+	key: string,
+	fallback: ThinkingLevelConfig,
+): ThinkingLevelConfig {
+	if (value === undefined) return fallback;
+	return requiredThinking(value, key);
+}
+
+function requiredThinking(value: unknown, key: string): ThinkingLevelConfig {
+	const thinking = requiredString(value, key);
+	if (isThinkingLevelConfig(thinking)) return thinking;
 	throw configError(
 		`config.json 字段 ${key} 必须是 off、minimal、low、medium、high 或 xhigh`,
 	);
+}
+
+function isThinkingLevelConfig(value: string): value is ThinkingLevelConfig {
+	return THINKING_LEVELS.has(value as ThinkingLevelConfig);
+}
+
+function isCanonicalModelReference(value: string) {
+	const slashIndex = value.indexOf("/");
+	return slashIndex > 0 && slashIndex < value.length - 1;
 }
 
 function languageConfig(value: unknown): LanguageConfig {

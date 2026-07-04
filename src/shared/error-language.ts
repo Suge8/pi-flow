@@ -134,6 +134,14 @@ function configErrorLine(text: string) {
 	match = /^config\.json 字段 (.+) 必须是(.+)$/u.exec(text);
 	if (match)
 		return `config.json field ${match[1]} must be ${configTypeText(match[2].trim())}`;
+	match = /^config\.json 字段 (.+) 必须匹配 (.+)$/u.exec(text);
+	if (match) return `config.json field ${match[1]} must match ${match[2]}`;
+	match = /^config\.json 字段 (.+) 与 (.+) 不能同时配置$/u.exec(text);
+	if (match)
+		return `config.json fields ${match[1]} and ${match[2]} cannot both be set`;
+	match = /^config\.json 字段 (.+) 不能包含 (.+)，只支持 (.+)$/u.exec(text);
+	if (match)
+		return `config.json field ${match[1]} cannot include ${match[2]}; only ${configListText(match[3])} are supported`;
 	match = /^config\.json 字段 (.+) 最多 (\d+) 个模型$/u.exec(text);
 	if (match)
 		return `config.json field ${match[1]} can include at most ${match[2]} models`;
@@ -204,7 +212,12 @@ function validationTypeText(text: string) {
 }
 
 function configTypeText(text: string) {
-	return typeText(text)
+	return typeText(
+		text.replace(
+			"current 或包含 model、thinking 的对象",
+			"current or an object with model and thinking",
+		),
+	)
 		.replace("ask、yes 或 no", "ask, yes, or no")
 		.replace(
 			"off、minimal、low、medium、high 或 xhigh",
@@ -213,6 +226,10 @@ function configTypeText(text: string) {
 		.replace("manual 或 autoFix", "manual or autoFix")
 		.replace("default 或 priority", "default or priority")
 		.replace("auto、zh 或 en", "auto, zh, or en");
+}
+
+function configListText(text: string) {
+	return text.replace(" 和 ", " and ").replace(/、/gu, ", ");
 }
 
 function typeText(text: string) {

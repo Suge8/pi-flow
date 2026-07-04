@@ -11,20 +11,30 @@
 		"serviceTier": "default",
 		"extensions": []
 	},
-	"models": [
-		{
-			"model": "openai-codex/gpt-5.4",
-			"thinking": "medium"
-		},
-		{
-			"model": "openai-codex/gpt-5.4-mini",
-			"thinking": "medium"
-		},
-		{
-			"model": "deepseek/deepseek-v4-flash",
+	"modelRoles": {
+		"planner": {
+			"model": "anthropic/claude-fable-5",
 			"thinking": "high"
-		}
-	],
+		},
+		"executor": {
+			"model": "openai-codex/gpt-5.5",
+			"thinking": "xhigh"
+		},
+		"reviewers": [
+			{
+				"model": "openai-codex/gpt-5.4",
+				"thinking": "high"
+			},
+			{
+				"model": "openai-codex/gpt-5.4-mini",
+				"thinking": "xhigh"
+			},
+			{
+				"model": "deepseek/deepseek-v4-flash",
+				"thinking": "xhigh"
+			}
+		]
+	},
 	"transcript": {
 		"maxUser": 6000,
 		"maxAssistant": 3000,
