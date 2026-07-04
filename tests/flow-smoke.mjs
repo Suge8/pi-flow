@@ -1032,9 +1032,8 @@ async function generateScenario() {
 	writeFlowSemanticDraft(cwd, "F1-login", { title: "Login Flow" });
 	await emit(handlers, "agent_end", { messages: [] }, ctx);
 	assert(
-		state.execs.some(
-			(item) =>
-				item.command === "open" && item.args[0].startsWith("http://127.0.0.1:"),
+		state.execs.some((item) =>
+			item.args.some((arg) => String(arg).startsWith("http://127.0.0.1:")),
 		),
 		"flow live html not opened",
 	);
@@ -1059,13 +1058,10 @@ async function generateScenario() {
 		title: "Invalid Flow",
 		invalidMarkdown: true,
 	});
-	const openCountBeforeInvalidRepair = state.execs.filter(
-		(item) => item.command === "open",
-	).length;
+	const openCountBeforeInvalidRepair = openedReportCount(state);
 	await emit(handlers, "agent_end", { messages: [] }, ctx);
 	assert(
-		state.execs.filter((item) => item.command === "open").length ===
-			openCountBeforeInvalidRepair,
+		openedReportCount(state) === openCountBeforeInvalidRepair,
 		"invalid flow error html should not auto-open",
 	);
 	for (let index = 0; index < 3; index += 1)
@@ -3050,6 +3046,12 @@ function latestWidgetText(state) {
 
 function count(text, search) {
 	return text.split(search).length - 1;
+}
+
+function openedReportCount(state) {
+	return state.execs.filter((item) =>
+		item.args.some((arg) => String(arg).startsWith("http://127.0.0.1:")),
+	).length;
 }
 
 function hasChinese(text) {
