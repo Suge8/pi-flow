@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import {
-	copyFileSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
@@ -29,8 +28,22 @@ execFileSync(
 	{ cwd: root, stdio: "inherit" },
 );
 
+function workingStyleFixture() {
+	return `// @ts-nocheck
+export default function (pi) {
+	pi.on("agent_start", async (_event, ctx) => {
+		if (globalThis.__PI_FLOW_ACTIVITY__?.active === true) {
+			ctx.ui.setWidget("center-working", undefined, { placement: "aboveEditor" });
+			return;
+		}
+		ctx.ui.setWidget("center-working", () => "working", { placement: "aboveEditor" });
+	});
+}
+`;
+}
+
 const workingSource = join(out, "working-style.ts");
-copyFileSync(join(root, "..", "working-style.ts"), workingSource);
+writeFileSync(workingSource, workingStyleFixture());
 execFileSync(
 	join(root, "node_modules/.bin/tsc"),
 	[
