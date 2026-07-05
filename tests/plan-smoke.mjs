@@ -46,18 +46,19 @@ async function markdownScenario() {
 		"objective parse failed",
 	);
 	assert(planSection(next, "Handoff") === "done", "handoff replace failed");
-	assert(
-		hasCriteriaDeviation("criteria deviation found"),
-		"criteria deviation was not detected",
-	);
-	assert(
-		hasCriteriaDeviation("验收标准偏差：需要最终复核"),
-		"Chinese criteria deviation was not detected",
-	);
-	assert(
-		!hasCriteriaDeviation("standard deviation is a statistical term"),
-		"bare deviation caused a false positive",
-	);
+	for (const text of [
+		"criteria deviation found",
+		"验收标准偏差：需要最终复核",
+		"验收口径有调整",
+	])
+		assert(hasCriteriaDeviation(text), `${text} was not detected`);
+	for (const text of [
+		"未发现 criteria deviation",
+		"no criteria deviation",
+		"without acceptance deviation",
+		"standard deviation is a statistical term",
+	])
+		assert(!hasCriteriaDeviation(text), `${text} caused a false positive`);
 }
 
 async function validatorScenario() {

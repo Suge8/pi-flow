@@ -103,6 +103,7 @@ try {
 	await runScenario(completionEventUsesRememberedCommandContextScenario);
 	await runScenario(completionEmitUsesEmittedContextScenario);
 	await runScenario(completionCommandConsumesStoredFactScenario);
+	await runScenario(flowHandoffCriteriaDeviationScenario);
 	await runScenario(flowStartWithoutNewSessionScenario);
 	await runScenario(flowStartNewSessionThrowScenario);
 	await runScenario(flowStartNewSessionPreReplacementStaleThrowScenario);
@@ -3022,6 +3023,39 @@ async function ownershipScenario() {
 		state.hiddenMessages.at(-1).includes("生成单 session 可执行计划"),
 		"normal goal draft broken",
 	);
+}
+
+async function flowHandoffCriteriaDeviationScenario() {
+	const cwd = tempDir("flow-handoff-criteria");
+	const dir = createFlow(cwd, "F1-handoff-criteria");
+	const { completeGoalWithFact } = await importModule(
+		"flow/execution/continue.js",
+	);
+	const { replaceHandoff } = await importModule("plan/markdown.js");
+	const flow = readFlow(dir);
+	const goalFile = join(dir, flow.goals[0].file);
+	const baseMarkdown = readFileSync(goalFile, "utf8");
+	const samples = [
+		["未发现 criteria deviation", false],
+		["no criteria deviation", false],
+		["without acceptance deviation", false],
+		["standard deviation is a statistical term", false],
+		["criteria deviation found", true],
+		["验收标准偏差", true],
+		["验收口径有调整", true],
+	];
+	for (const [handoff, expected] of samples) {
+		writeFileSync(goalFile, replaceHandoff(baseMarkdown, handoff));
+		const completed = completeGoalWithFact(dir, flow, 0, {
+			goalId: `goal-${handoff}`,
+			summary: "done",
+			acceptance: "passed",
+		});
+		assert(
+			completed.goals[0].result.criteriaChanged === expected,
+			`flow handoff ${handoff} criteriaChanged mismatch`,
+		);
+	}
 }
 
 async function completionFactClearsGoalUiScenario() {

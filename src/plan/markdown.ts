@@ -46,10 +46,35 @@ export function replaceOutcome(markdown: string, outcome: string) {
 	return replaceSection(markdown, "Outcome", outcome);
 }
 
+const CRITERIA_DEVIATION_PATTERNS = [
+	/\bcriteria\s*deviation\b/iu,
+	/\bacceptance\s+deviation\b/iu,
+	/\bacceptance\s+criteria\s+(?:changed|adjusted|updated|modified)\b/iu,
+	/验收(?:标准|口径)?.{0,8}(?:偏差|调整|变更|变化|改变)/u,
+	/criteria.{0,12}(?:有|存在|发生|出现).{0,8}偏差/iu,
+] as const;
+
+const NEGATED_CRITERIA_DEVIATION_PATTERNS = [
+	/\b(?:no|without)\s+(?:criteria\s*deviation|acceptance\s+deviation)\b/iu,
+	/\b(?:not|never)\s+(?:found|detected|seen|observed|identified)\s+(?:any\s+)?(?:criteria\s*deviation|acceptance\s+deviation)\b/iu,
+	/\b(?:criteria\s*deviation|acceptance\s+deviation)\s+(?:(?:is|are|was|were|has been)\s+)?(?:not|never)\s+(?:found|detected|seen|observed|identified)\b/iu,
+	/(?:未|无|没有|没|并未|未曾|不存在).{0,12}(?:criteria\s*deviation|acceptance\s+deviation|验收(?:标准|口径)?.{0,8}(?:偏差|调整|变更|变化|改变))/iu,
+	/验收(?:标准|口径)?.{0,8}(?:未|无|没有|没|无需|不用|不需要).{0,8}(?:偏差|调整|变更|变化|改变)/u,
+] as const;
+
 export function hasCriteriaDeviation(text: string | null | undefined) {
-	return /criteria\s*deviation|验收标准偏差|标准偏差|criteria.*偏差/iu.test(
-		text ?? "",
-	);
+	return (text ?? "")
+		.split(/[。\n\r；;!?？，,]+/u)
+		.flatMap((part) => part.split(/\b(?:but|however)\b|但(?:是)?|不过|然而/iu))
+		.some(
+			(part) =>
+				matchesAny(part, CRITERIA_DEVIATION_PATTERNS) &&
+				!matchesAny(part, NEGATED_CRITERIA_DEVIATION_PATTERNS),
+		);
+}
+
+function matchesAny(text: string, patterns: readonly RegExp[]) {
+	return patterns.some((pattern) => pattern.test(text));
 }
 
 export const TASK_LIST_ITEM = /^\s*[-*+]\s*\[[ xX~!]\]/mu;
