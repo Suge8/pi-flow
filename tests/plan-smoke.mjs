@@ -248,16 +248,16 @@ async function validateDraftConsistencyScenario() {
 				),
 		},
 		{
-			name: "flow accepts ten goals",
-			kind: "flow",
-			write: (dir) =>
-				writeFlowDraft(dir, baseFlow("F3-ten-goals", baseFlowGoals(10))),
-		},
-		{
-			name: "flow rejects eleven goals",
+			name: "flow accepts eleven goals",
 			kind: "flow",
 			write: (dir) =>
 				writeFlowDraft(dir, baseFlow("F3-eleven-goals", baseFlowGoals(11))),
+		},
+		{
+			name: "flow rejects twelve goals",
+			kind: "flow",
+			write: (dir) =>
+				writeFlowDraft(dir, baseFlow("F3-twelve-goals", baseFlowGoals(12))),
 		},
 		{
 			name: "flow rejects invalid current goal",
@@ -364,6 +364,38 @@ async function validateDraftConsistencyScenario() {
 				`${testCase.name}: CLI errors differed\nCLI:\n${cli.output}\nsource:\n${sourceOutput}`,
 			);
 	}
+	assertElevenGoalFlowValid(validateFlowDir);
+	assertDuplicateFinalRejected(validateFlowDir);
+}
+
+function assertElevenGoalFlowValid(validateFlowDir) {
+	const dir = join(out, "F6-eleven-direct");
+	writeFlowDraft(dir, baseFlow("F6-eleven-direct", baseFlowGoals(11)));
+	const source = validateFlowDir(dir);
+	assert(source.ok, `11-goal flow rejected: ${source.errors.join("\n")}`);
+	const cli = runValidateDraft(dir);
+	assert(cli.ok, `11-goal draft CLI rejected: ${cli.output}`);
+}
+
+function assertDuplicateFinalRejected(validateFlowDir) {
+	const dir = join(out, "F7-duplicate-final");
+	writeFlowDraft(
+		dir,
+		baseFlow("F7-duplicate-final", [
+			baseFlowGoal(0, "step-1.md", { role: "final_acceptance" }),
+			baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
+		]),
+	);
+	assertValidationError(
+		validateFlowDir(dir),
+		"只能有 1 个最终验收步骤（role: final_acceptance）",
+		"duplicate final acceptance",
+	);
+	const cli = runValidateDraft(dir);
+	assert(
+		!cli.ok && cli.output.includes("只能有 1 个最终验收步骤"),
+		`duplicate final acceptance CLI accepted: ${cli.output}`,
+	);
 }
 
 async function goalBuilderScenario() {

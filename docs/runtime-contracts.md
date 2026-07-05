@@ -7,6 +7,7 @@
 - `goal.json` / `flow.json` 是唯一规范状态源，当前 `schemaVersion: 5`。
 - 模型只写 `goal.semantic.json` / `flow.semantic.json` 和计划 Markdown；builder 组装规范状态。
 - `flow.semantic.json` 的 `goals[]` 可声明 `dependsOn`（先序 0-based index；缺省等同依赖前一步，`[]` 表示无前置）和 `writeScope`（模块/目录 glob；缺省视为未知写入范围）。
+- Flow 最多 10 个 `normal` 执行步骤；最后必须且只能有 1 个 `final_acceptance`，最终验收不占 10 个执行步骤名额。
 - `flow.json.parallelBatch` 只持久化已收口的并行批次状态：`null` 或缺省表示无待处理批次，失败收口后非空数组会在 HTML 标为当前等待处理。
 - 并行 worker 只写 `workers/G<index>/result.json`；批次运行中状态保存在父进程内存，所有 worker 结束前不写 `flow.json`；父进程收齐后 fan-in 写 `flow.json`，失败保留批次并写入 `errors`，取消清空 `parallelBatch` 并标记 Flow cancelled。
 - 模型不写 `checks`、`completionCursor`、`goal.html`、`flow.html`。

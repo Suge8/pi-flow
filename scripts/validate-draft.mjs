@@ -23,6 +23,7 @@ const COMPLETION_CURSORS = new Set([
 const LANGUAGES = new Set(["zh", "en"]);
 const CONTRACT_SECTIONS = ["Objective", "Scope", "Success Criteria"];
 const TASK_LIST_ITEM = /^\s*[-*+]\s*\[[ xX~!]\]/mu;
+const MAX_EXECUTION_GOALS = 10;
 
 const dir = process.argv[2];
 if (!dir)
@@ -135,20 +136,45 @@ function validateFlow(root) {
 		errors,
 	);
 	if (!Array.isArray(flow.goals)) return [...errors, "goals 必须是数组"];
-	if (flow.goals.length < 2)
+	const executionGoals = executionGoalCount(flow.goals);
+	if (executionGoals < 1)
 		errors.push(
 			"至少需要 1 个执行步骤 + 1 个最终验收步骤（role: final_acceptance）",
 		);
-	if (flow.goals.length > 10) errors.push("步骤数量超过 10，必须拆成多个 flow");
+	if (executionGoals > MAX_EXECUTION_GOALS)
+		errors.push(
+			"执行步骤数量超过 10；final acceptance 不占执行步骤名额，必须拆成多个 flow",
+		);
+	validateFinalAcceptancePlacement(flow.goals, errors);
 	if (flow.currentGoal < 0 || flow.currentGoal >= flow.goals.length)
 		errors.push("currentGoal 必须指向 goals 下标");
 	for (const [index, goal] of flow.goals.entries())
 		validateFlowGoalShape(goal, index, errors);
-	if (flow.goals.at(-1)?.role !== "final_acceptance")
-		errors.push("最后一个步骤必须是最终验收（role: final_acceptance）");
 	if (errors.length === 0)
 		for (const goal of flow.goals) validateFlowGoalFile(root, goal, errors);
 	return errors;
+}
+
+function executionGoalCount(goals) {
+	return goals.filter((goal) => flowGoalRole(goal) === "normal").length;
+}
+
+function validateFinalAcceptancePlacement(goals, errors) {
+	const finalIndexes = goals.flatMap((goal, index) =>
+		flowGoalRole(goal) === "final_acceptance" ? [index] : [],
+	);
+	if (finalIndexes.length !== 1)
+		errors.push("只能有 1 个最终验收步骤（role: final_acceptance）");
+	if (flowGoalRole(goals.at(-1)) !== "final_acceptance")
+		errors.push("最后一个步骤必须是最终验收（role: final_acceptance）");
+	for (const index of finalIndexes) {
+		if (index !== goals.length - 1)
+			errors.push(`goals[${index}] 非最终步骤必须是 normal`);
+	}
+}
+
+function flowGoalRole(goal) {
+	return isRecord(goal) ? goal.role : undefined;
 }
 
 function validateFlowStartedAt(flow, errors) {

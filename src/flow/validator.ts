@@ -16,7 +16,6 @@ import {
 } from "../shared/shape-validation.js";
 import { flowJsonPath, readFlow } from "./store.js";
 import type {
-	FlowGoal,
 	FlowGoalRole,
 	FlowGoalStatus,
 	FlowState,
@@ -43,6 +42,7 @@ const STRING_OR_NULL_GOAL_FIELDS = [
 	"snapshotHash",
 	"goalId",
 ] as const;
+const MAX_EXECUTION_GOALS = 10;
 
 export function validateFlowDir(dir: string, language?: Language) {
 	const artifact = readRequiredArtifact(
@@ -97,17 +97,20 @@ export function validateFlowShape(flow: FlowState, errors: string[]) {
 		errors.push("goals 必须是数组");
 		return;
 	}
-	if (flow.goals.length < 2)
+	const executionGoals = executionGoalCount(flow.goals);
+	if (executionGoals < 1)
 		errors.push(
 			"至少需要 1 个执行步骤 + 1 个最终验收步骤（role: final_acceptance）",
 		);
-	if (flow.goals.length > 10) errors.push("步骤数量超过 10，必须拆成多个 flow");
+	if (executionGoals > MAX_EXECUTION_GOALS)
+		errors.push(
+			"执行步骤数量超过 10；final acceptance 不占执行步骤名额，必须拆成多个 flow",
+		);
+	validateFinalAcceptancePlacement(flow.goals, errors);
 	if (flow.currentGoal < 0 || flow.currentGoal >= flow.goals.length)
 		errors.push("currentGoal 必须指向 goals 下标");
 	for (const [offset, goal] of flow.goals.entries())
 		validateGoalShape(goal, offset, errors);
-	if (!isFinalAcceptance(flow.goals.at(-1)))
-		errors.push("最后一个步骤必须是最终验收（role: final_acceptance）");
 }
 
 function validateFlowDirName(dir: string, flow: FlowState, errors: string[]) {
@@ -116,8 +119,30 @@ function validateFlowDirName(dir: string, flow: FlowState, errors: string[]) {
 		errors.push(`flow 目录名必须等于 id：${id}`);
 }
 
-export function isFinalAcceptance(goal: FlowGoal | undefined) {
-	return goal?.role === "final_acceptance";
+export function isFinalAcceptance(goal: unknown) {
+	return isRecord(goal) && goal.role === "final_acceptance";
+}
+
+function executionGoalCount(goals: unknown[]) {
+	return goals.filter(isNormalGoal).length;
+}
+
+function isNormalGoal(goal: unknown) {
+	return isRecord(goal) && goal.role === "normal";
+}
+
+function validateFinalAcceptancePlacement(goals: unknown[], errors: string[]) {
+	const finalIndexes = goals.flatMap((goal, index) =>
+		isFinalAcceptance(goal) ? [index] : [],
+	);
+	if (finalIndexes.length !== 1)
+		errors.push("只能有 1 个最终验收步骤（role: final_acceptance）");
+	if (!isFinalAcceptance(goals.at(-1)))
+		errors.push("最后一个步骤必须是最终验收（role: final_acceptance）");
+	for (const index of finalIndexes) {
+		if (index !== goals.length - 1)
+			errors.push(`goals[${index}] 非最终步骤必须是 normal`);
+	}
 }
 
 function validateStartedAt(flow: FlowState, errors: string[]) {

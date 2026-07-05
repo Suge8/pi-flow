@@ -19,7 +19,7 @@
 - 输出语言必须使用当前 language：`{{language}}`。`zh` 用中文 `title`、Goal 标题和 Goal 文件内容；`en` 用英文。
 - `title`、每个 Goal 标题和每个 `Objective` 的第一句都写给用户看：直白说明做完后得到什么，不堆函数名、命令和术语；技术细节放 `Steps`/`Verification`。HTML 报告会直接展示这些文案。
 - Flow 目录名从 `.flow/flows` 下最大 F 编号 + 1，格式 `F1-xxx`；无英文数字 slug 用 `task`。
-- 生成 2–10 个 Goal（包含最后的 final acceptance）；推荐 3–7 个；超过 10 不允许，必须要求用户拆多个 flow。
+- 生成 2–11 个 Goal（最多 10 个执行 Goal + 最后的 final acceptance）；推荐 3–7 个；超过 10 个执行 Goal 不允许，必须要求用户拆多个 flow。
 - 最后一个 Goal 必须是 final acceptance，文件名用实际序号 + `final-acceptance`，`role` 为 `final_acceptance`，如 `G3-final-acceptance.md`。
 - 每个 Goal 必须足够细，能在单独 Goal session 中完成。
 - 每个 Goal 文件必须包含：`Objective / Scope / Steps / Success Criteria / Verification / Notes / Handoff`。
@@ -35,7 +35,7 @@
 - 中文标题 Goal 文件用 `G<N>-goal.md`；英文标题可 slug，如 `G1-login-ui.md`。
 - `flow.semantic.json` 必须是 JSON 对象，顶层字段只需要 `title` 和 `goals`；不要写 `source`、`schemaVersion`、`status`、`currentGoal`、`parallelBatch`、`checks` 等运行态字段。
 - `goals` 数组顺序就是执行顺序；每项只写 `title`、`role`、`file`，以及可选的 `dependsOn` / `writeScope`。不要写 `index`，插件会按顺序重算 0-based index。
-- 每个非最终 Goal 的 `role` 必须是 `normal`；最后一个 Goal 的 `role` 必须是 `final_acceptance`；禁止使用 `implementation`。
+- 每个非最终 Goal 的 `role` 必须是 `normal`；最后一个 Goal 的 `role` 必须是 `final_acceptance`，且 `final_acceptance` 只能出现一次；禁止使用 `implementation`。
 - 每个 `file` 必须是当前 Flow 目录内的相对路径，并且对应的 Goal markdown 文件必须存在。
 - 不要把原始需求逐字复制进每个 Goal；按目标、范围、步骤和验收标准提炼。真实来源由插件按当前请求写入 canonical `flow.json`。
 - final acceptance Goal 必须读取所有 Handoff、复核 criteriaChanged、跑全局验证、检查 docs / AGENTS.md 是否需要更新并收口。它的 Steps 与普通 Goal 不同，必须覆盖所有先序 Goal 的交付物。

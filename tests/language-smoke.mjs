@@ -312,6 +312,32 @@ try {
 			!badParallelFlowResult.errors.some(hasChinese),
 		"English parallel Flow validator error leaked Chinese",
 	);
+	const badFinalRoleDir = join(out, "F1-bad-final-role");
+	mkdirSync(badFinalRoleDir, { recursive: true });
+	const badFinalRoleFlow = sampleFlow();
+	badFinalRoleFlow.id = "F1-bad-final-role";
+	badFinalRoleFlow.goals[0].role = "final_acceptance";
+	badFinalRoleFlow.goals.push({
+		...badFinalRoleFlow.goals[0],
+		index: 1,
+		title: "Final acceptance",
+		file: "goal-2.md",
+	});
+	writeFileSync(
+		join(badFinalRoleDir, "flow.json"),
+		`${JSON.stringify(badFinalRoleFlow)}\n`,
+	);
+	const badFinalRoleResult = flowValidator.validateFlowDir(badFinalRoleDir);
+	assert(
+		badFinalRoleResult.errors.includes(
+			"Exactly 1 final acceptance step is required (role: final_acceptance)",
+		) &&
+			badFinalRoleResult.errors.includes(
+				"goals[0] non-final step must be normal",
+			) &&
+			!badFinalRoleResult.errors.some(hasChinese),
+		"English final role validator error leaked Chinese",
+	);
 	const flowDir = join(out, "flow-en");
 	mkdirSync(flowDir, { recursive: true });
 	writeFileSync(

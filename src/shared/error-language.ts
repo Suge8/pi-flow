@@ -45,8 +45,12 @@ const EXACT_EN = new Map<string, string>([
 		"At least 1 execution step plus 1 final acceptance step is required (role: final_acceptance)",
 	],
 	[
-		"步骤数量超过 10，必须拆成多个 flow",
-		"Step count exceeds 10; split it into multiple flows",
+		"执行步骤数量超过 10；final acceptance 不占执行步骤名额，必须拆成多个 flow",
+		"Execution step count exceeds 10; final acceptance does not count toward the execution-step limit; split it into multiple flows",
+	],
+	[
+		"只能有 1 个最终验收步骤（role: final_acceptance）",
+		"Exactly 1 final acceptance step is required (role: final_acceptance)",
 	],
 	[
 		"最后一个步骤必须是最终验收（role: final_acceptance）",
@@ -165,6 +169,8 @@ function validationErrorLine(text: string) {
 	match = /^goals 顺序不连续：第 (\d+) 项 index 应为 (\d+)$/u.exec(text);
 	if (match)
 		return `goals order is not continuous: item ${match[1]} index should be ${match[2]}`;
+	match = /^(goals\[\d+\]) 非最终步骤必须是 normal$/u.exec(text);
+	if (match) return `${match[1]} non-final step must be normal`;
 	match = /^(goals\[\d+\]) 缺少 (.+)$/u.exec(text);
 	if (match) return `${match[1]} is missing ${match[2]}`;
 	match = /^(goals\[\d+\]) 文件路径不能逃出 flow 目录：(.+)$/u.exec(text);

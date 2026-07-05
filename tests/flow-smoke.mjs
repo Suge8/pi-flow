@@ -671,14 +671,29 @@ async function schemaScenario() {
 		),
 		"parent symlink escape Goal path not rejected",
 	);
-	const maxDir = createFlow(cwd, "F3-max", { planCount: 10 });
-	assert(validateFlowDir(maxDir).ok, "10 goals should pass");
-	createFlow(cwd, "F4-too-many", { planCount: 11 });
+	const maxDir = createFlow(cwd, "F3-max", { planCount: 11 });
+	assert(validateFlowDir(maxDir).ok, "11 goals should pass");
+	createFlow(cwd, "F4-too-many", { planCount: 12 });
 	assert(
 		validateFlowDir(join(cwd, ".flow", "flows", "F4-too-many")).errors.some(
 			(error) => error.includes("超过 10"),
 		),
-		">10 goals not rejected",
+		">10 execution goals not rejected",
+	);
+	const duplicateDir = createFlow(cwd, "F5-duplicate-final", { planCount: 2 });
+	const duplicateFlow = readFlow(duplicateDir);
+	duplicateFlow.goals[0].role = "final_acceptance";
+	writeFlow(duplicateDir, duplicateFlow);
+	const duplicateErrors = validateFlowDir(duplicateDir).errors;
+	assert(
+		duplicateErrors.includes(
+			"只能有 1 个最终验收步骤（role: final_acceptance）",
+		),
+		"duplicate final acceptance not rejected",
+	);
+	assert(
+		duplicateErrors.includes("goals[0] 非最终步骤必须是 normal"),
+		"non-last final acceptance not rejected",
 	);
 }
 
