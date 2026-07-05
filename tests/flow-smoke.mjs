@@ -103,11 +103,11 @@ try {
 	await runScenario(flowGoalSendFailureRollsBackScenario);
 	await runScenario(completionWithEventCommandContextScenario);
 	await runScenario(completionWithoutRememberedContextScenario);
+	await runScenario(flowHandoffCriteriaDeviationScenario);
 	await runScenario(stuckRefactorBContinueScenario);
 	await runScenario(completionEventUsesRememberedCommandContextScenario);
 	await runScenario(completionEmitUsesEmittedContextScenario);
 	await runScenario(completionCommandConsumesStoredFactScenario);
-	await runScenario(flowHandoffCriteriaDeviationScenario);
 	await runScenario(flowStartWithoutNewSessionScenario);
 	await runScenario(flowStartNewSessionThrowScenario);
 	await runScenario(flowStartNewSessionPreReplacementStaleThrowScenario);
