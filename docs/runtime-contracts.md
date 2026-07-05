@@ -17,8 +17,10 @@
 
 ## Flow 并行执行
 
-- 调度器是纯函数：pending Goal 依赖均 complete 后才 ready；未声明 `dependsOn` 默认依赖前一步，未声明或空 `writeScope` 保守串行。
+- 调度器是纯函数：pending Goal 依赖均 complete 后才 ready；未声明 `dependsOn` 默认依赖前一步，未声明或空 `writeScope` 保守串行；有 running Goal 或内存/落盘 `parallelBatch` 时不产生新批次。
 - 同一批 ready Goal 只有在 `writeScope` 两两不重叠时并行；重叠时按 index 取第一组不重叠子集，其余留到下一批。
+- 多波次采用批次级 fan-in：同一批所有 worker 都结束并完成 fan-in 后，父 session 才重新运行调度器启动下一批；不做 worker 级流式下游调度。
+- `final_acceptance` 是最终屏障：只有全部 `normal` Goal complete 后才 ready，且总是单独串行运行；它不参与 ready 批次的 `writeScope` 并行选择。
 - 父 session 是唯一调度者和 `flow.json` 写入者；worker 不触发下一步，不判断 fan-in。
 - Worker 命令为 `/flow worker <flowId> <goalIndex>`；每个 worker 使用 `workers/G<index>/` 下的 `session.jsonl`、`plan.md`、`goal.json`、`goal.html`，完成信号只读 `result.json`。
 - 并行批次期间主 session 显示 lane 看板并隐藏默认输入；lane 状态来自 worker JSON event 与 worker `goal.json` 的 `checks.active` / `rounds`。

@@ -28,6 +28,10 @@ function hasActiveBatch(flow: FlowState) {
 function readyBatch(flow: FlowState, candidates: number[]): ReadyBatch | null {
 	const first = candidates[0];
 	if (first === undefined) return null;
+	const finalAcceptance = candidates.find((index) =>
+		isFinalAcceptance(flow, index),
+	);
+	if (finalAcceptance !== undefined) return serialBatch(finalAcceptance);
 	if (candidates.some((index) => !hasWriteScope(flow, index)))
 		return serialBatch(first);
 	const indices = nonOverlappingCandidates(flow, candidates);
@@ -58,10 +62,25 @@ function readyGoalIndices(flow: FlowState) {
 	const ready: number[] = [];
 	for (const [index, goal] of flow.goals.entries()) {
 		if (goal.status !== "pending") continue;
+		if (goal.role === "final_acceptance") {
+			if (ordinaryGoalsComplete(flow)) ready.push(index);
+			continue;
+		}
 		if (goalDependencies(flow, index).every((item) => isComplete(flow, item)))
 			ready.push(index);
 	}
 	return ready;
+}
+
+function ordinaryGoalsComplete(flow: FlowState) {
+	return flow.goals.every(
+		(goal, index) =>
+			goal.role === "final_acceptance" || isComplete(flow, index),
+	);
+}
+
+function isFinalAcceptance(flow: FlowState, index: number) {
+	return flow.goals[index]?.role === "final_acceptance";
 }
 
 function goalDependencies(flow: FlowState, index: number) {
