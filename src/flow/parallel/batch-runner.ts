@@ -299,12 +299,19 @@ function failBatch(
 	flow: FlowState,
 	result: Omit<BatchResult, "flow">,
 ) {
+	const settled = settleFailedBatchGoals(dir, flow, result.results);
 	const lines = failureLines(flow, result.results);
 	const title =
 		flow.language === "en"
 			? "Flow parallel batch failed"
 			: "Flow 并行批次未通过";
-	const saved = writeFlow(dir, { ...flow, errors: lines });
+	const saved = writeFlow(dir, {
+		...settled,
+		status: "running",
+		currentGoal: firstFailedGoalIndex(result.results) ?? flow.currentGoal,
+		parallelBatch: null,
+		errors: lines,
+	});
 	writeFlowHtml(dir, saved);
 	sendResultCard(pi, ctx, [`[${title}]`, "", ...lines].join("\n"), {
 		tone: "neutral",
@@ -314,6 +321,53 @@ function failBatch(
 		language: flow.language,
 	});
 	return saved;
+}
+
+function settleFailedBatchGoals(
+	dir: string,
+	flow: FlowState,
+	results: WorkerResult[],
+) {
+	let settled = flow;
+	for (const result of results) {
+		if (isSuccessfulWorker(result)) {
+			settled = completeGoalWithFact(
+				dir,
+				settled,
+				result.goalIndex,
+				result.fact,
+			);
+		} else {
+			settled = resetFailedWorkerGoal(settled, result.goalIndex);
+		}
+	}
+	return settled;
+}
+
+function isSuccessfulWorker(
+	result: WorkerResult,
+): result is WorkerResult & { fact: GoalCompletionFact } {
+	return result.exitCode === 0 && result.fact !== null;
+}
+
+function firstFailedGoalIndex(results: WorkerResult[]) {
+	return results.find((result) => !isSuccessfulWorker(result))?.goalIndex;
+}
+
+function resetFailedWorkerGoal(flow: FlowState, goalIndex: number) {
+	const goal = flow.goals[goalIndex];
+	if (!goal) return flow;
+	return {
+		...flow,
+		goals: replaceGoal(flow, goalIndex, {
+			...goal,
+			status: "pending",
+			sessionFile: null,
+			sessionName: null,
+			snapshot: null,
+			snapshotHash: null,
+		}),
+	};
 }
 
 function cancelBatch(dir: string, flow: FlowState) {
@@ -331,19 +385,45 @@ function cancelBatch(dir: string, flow: FlowState) {
 }
 
 function failureLines(flow: FlowState, results: WorkerResult[]) {
-	return results.map((result) => {
-		const goal = flow.goals[result.goalIndex];
-		const label = goal
-			? flowStepLabel(result.goalIndex, goal.title, flow.language)
-			: `G${result.goalIndex}`;
-		if (!result.fact)
+	return results
+		.filter((result) => !isSuccessfulWorker(result))
+		.map((result) => {
+			const goal = flow.goals[result.goalIndex];
+			const label = goal
+				? flowStepLabel(result.goalIndex, goal.title, flow.language)
+				: `G${result.goalIndex}`;
+			const parts = [
+				workerExitSummary(result, flow.language),
+				workerResultSummary(result, flow.language),
+			];
 			return flow.language === "en"
-				? `${label}: no result.json`
-				: `${label}：缺少 result.json`;
-		return flow.language === "en"
-			? `${label}: exit ${result.exitCode ?? result.exitSignal ?? "unknown"}`
-			: `${label}：退出 ${result.exitCode ?? result.exitSignal ?? "未知"}`;
-	});
+				? `${label}: ${parts.join("; ")}`
+				: `${label}：${parts.join("；")}`;
+		});
+}
+
+function workerExitSummary(
+	result: WorkerResult,
+	language: FlowState["language"],
+) {
+	if (result.exitCode !== null)
+		return language === "en"
+			? `exit code ${result.exitCode}`
+			: `退出码 ${result.exitCode}`;
+	if (result.exitSignal)
+		return language === "en"
+			? `signal ${result.exitSignal}`
+			: `信号 ${result.exitSignal}`;
+	return language === "en" ? "exit unknown" : "退出状态未知";
+}
+
+function workerResultSummary(
+	result: WorkerResult,
+	language: FlowState["language"],
+) {
+	if (result.fact)
+		return language === "en" ? "result.json present" : "已写 result.json";
+	return language === "en" ? "missing result.json" : "缺少 result.json";
 }
 
 function deferredDone() {

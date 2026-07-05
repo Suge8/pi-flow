@@ -8,8 +8,8 @@
 - 模型只写 `goal.semantic.json` / `flow.semantic.json` 和计划 Markdown；builder 组装规范状态。
 - `flow.semantic.json` 的 `goals[]` 可声明 `dependsOn`（先序 0-based index；缺省等同依赖前一步，`[]` 表示无前置）和 `writeScope`（模块/目录 glob；缺省视为未知写入范围）。
 - Flow 最多 10 个 `normal` 执行步骤；最后必须且只能有 1 个 `final_acceptance`，最终验收不占 10 个执行步骤名额。
-- `flow.json.parallelBatch` 只持久化已收口的并行批次状态：`null` 或缺省表示无待处理批次，失败收口后非空数组会在 HTML 标为当前等待处理。
-- 并行 worker 只写 `workers/G<index>/result.json`；批次运行中状态保存在父进程内存，所有 worker 结束前不写 `flow.json`；父进程收齐后 fan-in 写 `flow.json`，失败保留批次并写入 `errors`，取消清空 `parallelBatch` 并标记 Flow cancelled。
+- `flow.json.parallelBatch` 是落盘调度门闩：`null` 或缺省表示无活动批次；运行中的并行批次只存在父进程内存和 live HTML，收口后（成功/失败/取消）写回 `null`。
+- 并行 worker 只写 `workers/G<index>/result.json`；批次运行中状态保存在父进程内存，所有 worker 结束前不写 `flow.json`。父进程收齐后 fan-in 写 `flow.json`：成功 worker 标记 complete，失败或缺 `result.json` 的 worker 回 pending。失败收口保持 Flow running，`currentGoal` 指向首个失败 Goal，`errors` 写失败 worker 的 step label、exit code / signal、是否缺 `result.json`；不自动重试，用户运行 `/flow continue` 后只调度仍 pending 的失败 Goal，已成功的同批 Goal 不重跑。取消清空 `parallelBatch` 并标记 Flow cancelled。
 - 模型不写 `checks`、`completionCursor`、`goal.html`、`flow.html`。
 - `checks.acceptance` = 完成验收；`checks.quality` = 质量检查；两者结构都是 `enabled / rounds / active`。
 - `completionCursor` 只用于内部恢复路由，用户界面不展示。

@@ -614,7 +614,7 @@ async function parallelStatusPreservesLiveReportScenario() {
 
 async function parallelBatchFailureScenario() {
 	const cwd = tempDir("parallel-batch-failure");
-	const dir = createParallelFlow(cwd, "F1-parallel-failure");
+	const dir = createParallelFailureRetryFlow(cwd, "F1-parallel-failure");
 	const restorePi = installFakePi(cwd);
 	process.env.PI_FLOW_FAKE_FAIL_INDEX = "2";
 	try {
@@ -626,26 +626,88 @@ async function parallelBatchFailureScenario() {
 
 		const flow = readFlow(dir);
 		assert(
-			flow.goals[1].status === "running",
-			"successful worker was fan-in completed after batch failure",
+			flow.goals[1].status === "complete",
+			"successful worker was not fan-in completed after batch failure",
 		);
 		assert(
-			flow.goals[2].status === "running",
-			"failed worker status changed unexpectedly",
+			flow.goals[2].status === "pending",
+			"failed worker did not return to pending",
+		);
+		assert(
+			flow.goals[2].sessionFile === null,
+			"failed worker kept stale worker session",
 		);
 		assert(
 			flow.goals[3].status === "pending",
-			"batch failure started next goal",
+			"batch failure started unbatched ready goal",
 		);
 		assert(
-			flow.parallelBatch?.length === 2,
-			"failed batch did not stay active for summary",
+			flow.goals[4].status === "pending",
+			"batch failure started final goal",
+		);
+		assert(flow.status === "running", "batch failure stopped the flow");
+		assert(
+			flow.currentGoal === 2,
+			"current goal did not point to failed worker",
+		);
+		assert(flow.parallelBatch === null, "failed batch was not cleared");
+		assert(
+			flow.errors.length === 1,
+			"batch failure should only list failed workers",
+		);
+		const error = flow.errors[0] ?? "";
+		assert(
+			error.includes("第 3 步 · Goal 3"),
+			`batch failure missing failed step label: ${error}`,
 		);
 		assert(
-			flow.errors.some((error) => error.includes("result.json")),
-			"batch failure missing summary error",
+			error.includes("退出码 1"),
+			`batch failure missing exit code: ${error}`,
+		);
+		assert(
+			error.includes("缺少 result.json"),
+			`batch failure missing result.json state: ${error}`,
 		);
 		assert(state.newSessions.length === 0, "batch failure should not start G4");
+		delete process.env.PI_FLOW_FAKE_FAIL_INDEX;
+		await commands.get("flow").handler("continue", ctx);
+		await flushScheduledGoalStart();
+		const retried = readFlow(dir);
+		assert(
+			retried.goals[1].status === "complete",
+			"manual retry reran successful worker",
+		);
+		assert(
+			retried.goals[2].status === "running",
+			"manual retry did not start failed worker",
+		);
+		assert(
+			retried.goals[3].status === "pending",
+			"manual retry started unrelated ready goal",
+		);
+		assert(
+			retried.parallelBatch === null,
+			"manual retry recreated a parallel batch",
+		);
+		assert(
+			state.newSessions.length === 1,
+			"manual retry did not open one session",
+		);
+		const workerRuns = readFileSync(join(cwd, "worker-runs.log"), "utf8")
+			.trim()
+			.split("\n");
+		assert(
+			workerRuns.filter((item) => item === "1").length === 1,
+			`successful worker reran: ${workerRuns.join(",")}`,
+		);
+		assert(
+			workerRuns.filter((item) => item === "2").length === 1,
+			`failed worker reran as parallel worker: ${workerRuns.join(",")}`,
+		);
+		assert(
+			workerRuns.filter((item) => item === "3").length === 0,
+			`unrelated ready worker ran: ${workerRuns.join(",")}`,
+		);
 	} finally {
 		delete process.env.PI_FLOW_FAKE_FAIL_INDEX;
 		restorePi();
@@ -3427,6 +3489,21 @@ function createThreeParallelFlow(cwd, id) {
 	return dir;
 }
 
+function createParallelFailureRetryFlow(cwd, id) {
+	const dir = createFlow(cwd, id, { planCount: 5 });
+	const flow = readFlow(dir);
+	flow.goals[0].status = "complete";
+	flow.goals[1].dependsOn = [0];
+	flow.goals[1].writeScope = ["src/a/**"];
+	flow.goals[2].dependsOn = [0];
+	flow.goals[2].writeScope = ["src/b/**"];
+	flow.goals[3].dependsOn = [0];
+	flow.goals[3].writeScope = ["src/a/extra/**"];
+	flow.goals[4].dependsOn = [1, 2, 3];
+	writeFlow(dir, flow);
+	return dir;
+}
+
 function installFakeWorkerRunner(cwd) {
 	const command = join(cwd, "fake-worker-runner.mjs");
 	writeFileSync(
@@ -3466,7 +3543,7 @@ function installFakePi(cwd) {
 	);
 	writeFileSync(
 		join(bin, "pi.mjs"),
-		`import { existsSync, mkdirSync, watch, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nconst args = process.argv.slice(2);\nconst session = args[args.indexOf("--session") + 1];\nconst prompt = args[args.indexOf("-p") + 1] ?? "";\nconst goalIndex = prompt.trim().split(/\\s+/u).at(-1) ?? "0";\nconst marker = (suffix) => join(process.cwd(), \`worker-\${goalIndex}.\${suffix}\`);\nconst waitForRelease = () => new Promise((resolve) => {\n\tconst releasePath = join(process.cwd(), "release-workers");\n\tif (existsSync(releasePath)) return resolve();\n\tconst watcher = watch(process.cwd(), (_event, name) => {\n\t\tif (name !== null && String(name) !== "release-workers") return;\n\t\tif (!existsSync(releasePath)) return;\n\t\twatcher.close();\n\t\tresolve();\n\t});\n});\nconsole.log(JSON.stringify({ type: "agent_start", goalIndex: Number(goalIndex) }));\nif (process.env.PI_FLOW_FAKE_HANG === "1") {\n\twriteFileSync(marker("started"), "");\n\tconst exit = () => {\n\t\twriteFileSync(marker("killed"), "");\n\t\tprocess.exit(0);\n\t};\n\tprocess.on("SIGTERM", exit);\n\tprocess.on("SIGINT", exit);\n\tsetInterval(() => undefined, 1000);\n} else if (process.env.PI_FLOW_FAKE_FAIL_INDEX === goalIndex) {\n\tprocess.exit(1);\n} else {\n\tconsole.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-" + goalIndex, toolName: "bash", result: "ok", isError: false }));\n\twriteFileSync(marker("started"), "");\n\tif (process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE === "1") {\n\t\tawait waitForRelease();\n\t}\n\tconst workerDir = dirname(session);\n\tmkdirSync(workerDir, { recursive: true });\n\twriteFileSync(join(workerDir, "result.json"), JSON.stringify({ goalId: \`worker-\${goalIndex}\`, summary: \`done \${goalIndex}\`, acceptance: "passed", sessionFile: session }, null, 2));\n\tconsole.log(JSON.stringify({ type: "agent_end", messages: [] }));\n}\n`,
+		`import { appendFileSync, existsSync, mkdirSync, watch, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nconst args = process.argv.slice(2);\nconst session = args[args.indexOf("--session") + 1];\nconst prompt = args[args.indexOf("-p") + 1] ?? "";\nconst goalIndex = prompt.trim().split(/\\s+/u).at(-1) ?? "0";\nappendFileSync(join(process.cwd(), "worker-runs.log"), goalIndex + "\\n");\nconst marker = (suffix) => join(process.cwd(), \`worker-\${goalIndex}.\${suffix}\`);\nconst waitForRelease = () => new Promise((resolve) => {\n\tconst releasePath = join(process.cwd(), "release-workers");\n\tif (existsSync(releasePath)) return resolve();\n\tconst watcher = watch(process.cwd(), (_event, name) => {\n\t\tif (name !== null && String(name) !== "release-workers") return;\n\t\tif (!existsSync(releasePath)) return;\n\t\twatcher.close();\n\t\tresolve();\n\t});\n});\nconsole.log(JSON.stringify({ type: "agent_start", goalIndex: Number(goalIndex) }));\nif (process.env.PI_FLOW_FAKE_HANG === "1") {\n\twriteFileSync(marker("started"), "");\n\tconst exit = () => {\n\t\twriteFileSync(marker("killed"), "");\n\t\tprocess.exit(0);\n\t};\n\tprocess.on("SIGTERM", exit);\n\tprocess.on("SIGINT", exit);\n\tsetInterval(() => undefined, 1000);\n} else if (process.env.PI_FLOW_FAKE_FAIL_INDEX === goalIndex) {\n\tprocess.exit(1);\n} else {\n\tconsole.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-" + goalIndex, toolName: "bash", result: "ok", isError: false }));\n\twriteFileSync(marker("started"), "");\n\tif (process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE === "1") {\n\t\tawait waitForRelease();\n\t}\n\tconst workerDir = dirname(session);\n\tmkdirSync(workerDir, { recursive: true });\n\twriteFileSync(join(workerDir, "result.json"), JSON.stringify({ goalId: \`worker-\${goalIndex}\`, summary: \`done \${goalIndex}\`, acceptance: "passed", sessionFile: session }, null, 2));\n\tconsole.log(JSON.stringify({ type: "agent_end", messages: [] }));\n}\n`,
 	);
 	chmodSync(join(bin, "pi"), 0o755);
 	const previousPath = process.env.PATH;

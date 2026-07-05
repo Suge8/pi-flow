@@ -118,7 +118,22 @@ export async function startGoalInNewSession(
 	const batch = computeReadyBatch(flow);
 	if (batch?.mode === "parallel")
 		return startParallelBatch(pi, ctx, dir, flow, batch.indices);
-	const serialGoalIndex = batch?.indices[0] ?? goalIndex;
+	return startSelectedGoalInNewSession(
+		pi,
+		ctx,
+		dir,
+		flow,
+		batch?.indices[0] ?? goalIndex,
+	);
+}
+
+export async function startSelectedGoalInNewSession(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	dir: string,
+	flow: FlowState,
+	goalIndex: number,
+): Promise<boolean> {
 	if (typeof ctx.newSession !== "function") {
 		notifyUser(
 			ctx,
@@ -138,21 +153,9 @@ export async function startGoalInNewSession(
 				replacementCtx = sessionCtx;
 				rememberFlowContext(sessionCtx);
 				try {
-					const saved = prepareGoalStart(
-						sessionCtx,
-						dir,
-						flow,
-						serialGoalIndex,
-						pi,
-					);
+					const saved = prepareGoalStart(sessionCtx, dir, flow, goalIndex, pi);
 					await bindFlowReportStatus(sessionCtx, dir, flow.language);
-					scheduleGoalPromptStart(
-						sessionCtx,
-						dir,
-						flow,
-						saved,
-						serialGoalIndex,
-					);
+					scheduleGoalPromptStart(sessionCtx, dir, flow, saved, goalIndex);
 					prepared = true;
 				} catch (error) {
 					notifyUser(

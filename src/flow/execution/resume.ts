@@ -12,6 +12,7 @@ import { currentSessionFile } from "../ownership.js";
 import { planGoalPrompt } from "../prompt.js";
 import { rememberFlowContext } from "../runtime.js";
 import { currentGoal, tryReadFlow } from "../store.js";
+import type { FlowState } from "../types.js";
 import { validateFlowDir } from "../validator.js";
 import { handleGoalCompletionEnd } from "./continue.js";
 import {
@@ -26,6 +27,7 @@ import {
 	rollbackPreparedGoalStart,
 	sendFlowGoalStartCard,
 	startGoalInNewSession,
+	startSelectedGoalInNewSession,
 } from "./start.js";
 
 export async function resumeFlow(
@@ -55,7 +57,7 @@ export async function resumeFlow(
 				"error",
 				verifiedFlow.language,
 			);
-		return startGoalInNewSession(
+		return startMissingSessionGoal(
 			pi,
 			ctx,
 			location.dir,
@@ -73,6 +75,19 @@ export async function resumeFlow(
 			await resumeInSession(pi, sessionCtx, location.dir);
 		},
 	});
+}
+
+function startMissingSessionGoal(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	dir: string,
+	flow: FlowState,
+	goalIndex: number,
+) {
+	const goal = flow.goals[goalIndex];
+	if (goal?.status === "pending" && flow.errors.length > 0)
+		return startSelectedGoalInNewSession(pi, ctx, dir, flow, goalIndex);
+	return startGoalInNewSession(pi, ctx, dir, flow, goalIndex);
 }
 
 async function resumeInSession(
