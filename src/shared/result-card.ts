@@ -111,9 +111,10 @@ class ResultCard implements Component {
 }
 
 function cardLines(line: string, width: number) {
-	return wrapLine(plainCardLine(line), Math.max(1, width)).map((item) =>
-		padLine(item, width),
-	);
+	return line
+		.split(/\r?\n/u)
+		.flatMap((part) => wrapLine(plainCardLine(part), Math.max(1, width)))
+		.map((item) => padLine(item, width));
 }
 
 function wrapLine(line: string, width: number) {

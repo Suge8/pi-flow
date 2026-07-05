@@ -68,6 +68,30 @@ try {
 		`wrap dropped characters:\n${wrapped}`,
 	);
 
+	const multilineCard = render(
+		{
+			details: {
+				tone: "neutral",
+				result: "启动",
+				title: "Flow 第 1 步 · 启动",
+				lines: ["目标：第一行\n第二行", "进度：1/2"],
+			},
+		},
+		{},
+		{ fg: (_color, text) => text },
+	);
+	const multilineLines = multilineCard.render(40).map(stripAnsi);
+	assert(
+		multilineLines.every((line) => !line.includes("\n")),
+		`card renderer leaked embedded newline:\n${multilineLines.join("\\n")}`,
+	);
+	assert(
+		multilineLines.join("\n").includes("目标：第一行") &&
+			multilineLines.join("\n").includes("第二行") &&
+			multilineLines.join("\n").includes("进度：1/2"),
+		`multiline card dropped content:\n${multilineLines.join("\n")}`,
+	);
+
 	assert(
 		summarizeReviewText("FAIL\n", "") === "",
 		"status-only failures should be representable as empty summaries",

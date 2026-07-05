@@ -186,7 +186,10 @@ export class ActivityBox implements Component {
 			lines.push(centerLine(boldText(title), width));
 			const rows = this.options.rows ?? [];
 			if (rows.length > 0) lines.push(blank);
-			for (const row of rows) lines.push(centerLine(row, width));
+			for (const row of rows) {
+				for (const line of row.split(/\r?\n/u))
+					lines.push(centerLine(line, width));
+			}
 		} else {
 			for (const line of (this.options.message ?? "").split(/\r?\n/)) {
 				lines.push(centerLine(line, width));

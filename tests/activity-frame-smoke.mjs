@@ -78,6 +78,22 @@ try {
 		multiLines.some((line) => line.includes("2·mini …")),
 		multiLines.join("\n"),
 	);
+	const multilineRowBox = new ActivityBox({
+		activity: "goal",
+		title: "🌊 Flow · 执行中",
+		rows: ["目标：第一行\n第二行", "进度：1/2"],
+	});
+	const multilineRowLines = multilineRowBox.render(40).map(stripAnsi);
+	assert(
+		multilineRowLines.every((line) => !line.includes("\n")),
+		`activity row leaked embedded newline:\n${multilineRowLines.join("\\n")}`,
+	);
+	assert(
+		multilineRowLines.join("\n").includes("目标：第一行") &&
+			multilineRowLines.join("\n").includes("第二行") &&
+			multilineRowLines.join("\n").includes("进度：1/2"),
+		`activity row dropped multiline content:\n${multilineRowLines.join("\n")}`,
+	);
 	const compactBox = new ActivityBox({
 		activity: "goal",
 		title: "🎯 目标 · 等待回复",
