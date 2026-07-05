@@ -65,6 +65,7 @@ try {
 	await runScenario(workerSpawnConfigScenario);
 	await runScenario(parallelLaneBoardThreeGoalScenario);
 	await runScenario(parallelBatchSuccessScenario);
+	await runScenario(parallelStatusPreservesLiveReportScenario);
 	await runScenario(parallelBatchFailureScenario);
 	await runScenario(parallelBatchCancelScenario);
 	await runScenario(schemaScenario);
@@ -72,6 +73,7 @@ try {
 	await runScenario(flowIdSafetyScenario);
 	await runScenario(flowRootSymlinkScenario);
 	await runScenario(statusValidationScenario);
+	await runScenario(statusRewritesNonParallelHtmlScenario);
 	await runScenario(statusTextHidesSessionPathScenario);
 	await runScenario(malformedRepairScenario);
 	await runScenario(runningValidationScenario);
@@ -550,6 +552,66 @@ async function parallelBatchSuccessScenario() {
 	}
 }
 
+async function parallelStatusPreservesLiveReportScenario() {
+	const cwd = tempDir("parallel-status-live-report");
+	const dir = createParallelFlow(cwd, "F1-parallel-status");
+	const restorePi = installFakePi(cwd);
+	process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE = "1";
+	let start;
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+
+		start = commands.get("flow").handler("start F1-parallel-status", ctx);
+		await Promise.all([
+			waitForFile(join(cwd, "worker-1.started")),
+			waitForFile(join(cwd, "worker-2.started")),
+		]);
+		const htmlPath = join(dir, "flow.html");
+		await waitForFile(htmlPath);
+		const workerDir = join(dir, "workers", "G1");
+		const changed = onceFileChanged(htmlPath);
+		writeFileSync(
+			join(workerDir, "plan.md"),
+			planMarkdown(2, false).replace(
+				"Do work.",
+				"Worker live status survives.",
+			),
+		);
+		await changed;
+		const before = readFileSync(htmlPath, "utf8");
+		assert(
+			before.includes("Worker live status survives."),
+			"parallel watcher did not write worker live report",
+		);
+
+		await commands.get("flow").handler("status F1-parallel-status", ctx);
+		const statusMessage = state.notifications.at(-1) ?? "";
+		assert(statusMessage.includes("Flow: F1-parallel-status"), statusMessage);
+		assert(statusMessage.includes("当前: Goal 2"), statusMessage);
+		assert(
+			statusMessage.includes("🌐 网页报告: http://127.0.0.1:"),
+			statusMessage,
+		);
+		const after = readFileSync(htmlPath, "utf8");
+		assert(
+			after.includes("Worker live status survives."),
+			"parallel status overwrote worker live report",
+		);
+		assert(after === before, "parallel status rewrote flow.html");
+
+		writeFileSync(join(cwd, "release-workers"), "");
+		await start;
+		await flushScheduledGoalStart();
+	} finally {
+		delete process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE;
+		writeFileSync(join(cwd, "release-workers"), "");
+		if (start) await start.catch(() => undefined);
+		restorePi();
+	}
+}
+
 async function parallelBatchFailureScenario() {
 	const cwd = tempDir("parallel-batch-failure");
 	const dir = createParallelFlow(cwd, "F1-parallel-failure");
@@ -862,6 +924,24 @@ async function statusValidationScenario() {
 	assert(
 		state.notifications.at(-1).includes("errors 必须是字符串数组"),
 		"invalid errors[] element was not reported",
+	);
+}
+
+async function statusRewritesNonParallelHtmlScenario() {
+	const cwd = tempDir("status-rewrites-html");
+	const dir = createFlow(cwd, "F1-status-rewrite");
+	const htmlPath = join(dir, "flow.html");
+	writeFileSync(htmlPath, "stale flow html");
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+
+	await commands.get("flow").handler("status F1-status-rewrite", ctx);
+	const html = readFileSync(htmlPath, "utf8");
+	assert(html.includes("Test Flow"), "nonparallel status did not render flow");
+	assert(
+		!html.includes("stale flow html"),
+		"nonparallel status did not rewrite html",
 	);
 }
 
