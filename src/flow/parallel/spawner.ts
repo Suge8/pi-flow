@@ -2,6 +2,8 @@ import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
+import { flowMainExtensionArgs } from "../../shared/child-extensions.js";
+import { readFlowConfig } from "../../shared/config.js";
 import { formatError } from "../../shared/guards.js";
 
 type WorkerProcess = ChildProcessByStdio<null, Readable, Readable>;
@@ -27,11 +29,13 @@ export interface WorkerHandle {
 export function spawnWorker(options: WorkerSpawnOptions): WorkerHandle {
 	const workerDir = join(options.flowDir, "workers", `G${options.goalIndex}`);
 	mkdirSync(workerDir, { recursive: true });
+	const runner = readFlowConfig().runner;
 	const child = spawn(
-		"pi",
+		runner.command,
 		[
 			"--mode",
 			"json",
+			...flowMainExtensionArgs(runner.extensions),
 			"--session",
 			join(workerDir, "session.jsonl"),
 			"-p",

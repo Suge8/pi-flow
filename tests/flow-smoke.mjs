@@ -31,17 +31,18 @@ function writeFlowTestConfig({
 	state = false,
 	quality = false,
 	generation,
+	runner = {},
 } = {}) {
 	writeFileSync(
 		join(out, "config.json"),
 		JSON.stringify({
 			...(generation === undefined ? {} : { generation }),
 			runner: {
-				command: "pi",
-				tools: [],
-				excludeTools: [],
-				timeoutMs: 1000,
-				extensions: [],
+				command: runner.command ?? "pi",
+				tools: runner.tools ?? [],
+				excludeTools: runner.excludeTools ?? [],
+				timeoutMs: runner.timeoutMs ?? 1000,
+				extensions: runner.extensions ?? [],
 			},
 			models: [{ model: "x", thinking: "off" }],
 			acceptance: {
@@ -61,6 +62,7 @@ try {
 	await runScenario(flowGoalPromptChecklistSyncScenario);
 	await runScenario(flowGoalRuntimePromptContextScenario);
 	await runScenario(flowWorkerCommandScenario);
+	await runScenario(workerSpawnConfigScenario);
 	await runScenario(parallelLaneBoardThreeGoalScenario);
 	await runScenario(parallelBatchSuccessScenario);
 	await runScenario(parallelBatchFailureScenario);
@@ -346,6 +348,62 @@ async function flowWorkerCommandScenario() {
 		readFileSync(join(dir, "flow.json"), "utf8") === beforeFlowJson,
 		"worker agent_end modified flow.json",
 	);
+}
+
+async function workerSpawnConfigScenario() {
+	const { spawnWorker } = await importModule("flow/parallel/spawner.js");
+	const { flowMainExtensionPath } = await importModule(
+		"shared/child-extensions.js",
+	);
+	const cwd = tempDir("worker-spawn-config");
+	const command = installFakeWorkerRunner(cwd);
+	const flowId = "F1-worker-spawn-config";
+	const flowDir = join(cwd, ".flow", "flows", flowId);
+	const userExtension = join(cwd, "user-extension.ts");
+	let handle;
+	let exited = false;
+	writeFlowTestConfig({
+		runner: {
+			command,
+			tools: ["read"],
+			excludeTools: ["write"],
+			extensions: [userExtension],
+		},
+	});
+	try {
+		handle = spawnWorker({ flowId, goalIndex: 2, flowDir, cwd });
+		const eventPromise = firstWorkerEvent(handle);
+		const exitPromise = workerExit(handle).then((exit) => {
+			exited = true;
+			return exit;
+		});
+		const argsPath = join(cwd, "worker-spawn-args.json");
+		await waitForFile(argsPath);
+		writeFileSync(join(cwd, "release-worker-spawn"), "");
+		const [event, exit] = await Promise.all([eventPromise, exitPromise]);
+		const invocation = JSON.parse(readFileSync(argsPath, "utf8"));
+		const args = invocation.args;
+		const joined = args.join(" ");
+		const sessionFile = join(flowDir, "workers", "G2", "session.jsonl");
+		const extensions = flagValues(args, "-e");
+		assert(invocation.command === command, JSON.stringify(invocation));
+		assert(exit.code === 0 && exit.signal === null, JSON.stringify(exit));
+		assert(event.type === "agent_start", JSON.stringify(event));
+		assert(flagValue(args, "--mode") === "json", joined);
+		assert(flagValue(args, "--session") === sessionFile, joined);
+		assert(
+			args.at(-2) === "-p" && args.at(-1) === `/flow worker ${flowId} 2`,
+			joined,
+		);
+		assert(args.includes("--no-extensions"), joined);
+		assert(extensions.includes(flowMainExtensionPath()), joined);
+		assert(extensions.includes(userExtension), joined);
+		assert(!args.includes("--tools"), joined);
+		assert(!args.includes("--exclude-tools"), joined);
+	} finally {
+		if (handle && !exited) handle.kill();
+		writeFlowTestConfig();
+	}
 }
 
 async function parallelLaneBoardThreeGoalScenario() {
@@ -2940,6 +2998,34 @@ function onceFileChanged(path) {
 	});
 }
 
+function firstWorkerEvent(handle) {
+	return new Promise((resolve) => {
+		const unsubscribe = handle.onEvent((event) => {
+			unsubscribe();
+			resolve(event);
+		});
+	});
+}
+
+function workerExit(handle) {
+	return new Promise((resolve) =>
+		handle.onExit((code, signal) => resolve({ code, signal })),
+	);
+}
+
+function flagValue(args, flag) {
+	const index = args.indexOf(flag);
+	return index === -1 ? undefined : args[index + 1];
+}
+
+function flagValues(args, flag) {
+	const values = [];
+	for (let index = 0; index < args.length - 1; index += 1) {
+		if (args[index] === flag) values.push(args[index + 1]);
+	}
+	return values;
+}
+
 function waitForFile(path) {
 	if (existsSync(path)) return Promise.resolve();
 	mkdirSync(dirname(path), { recursive: true });
@@ -3259,6 +3345,36 @@ function createThreeParallelFlow(cwd, id) {
 	flow.goals[4].dependsOn = [1, 2, 3];
 	writeFlow(dir, flow);
 	return dir;
+}
+
+function installFakeWorkerRunner(cwd) {
+	const command = join(cwd, "fake-worker-runner.mjs");
+	writeFileSync(
+		command,
+		`#!/usr/bin/env node
+import { existsSync, watch, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const args = process.argv.slice(2);
+writeFileSync(
+	join(process.cwd(), "worker-spawn-args.json"),
+	JSON.stringify({ args, command: process.argv[1] }, null, 2),
+);
+await new Promise((resolve) => {
+	const releasePath = join(process.cwd(), "release-worker-spawn");
+	if (existsSync(releasePath)) return resolve();
+	const watcher = watch(process.cwd(), (_event, name) => {
+		if (name !== null && String(name) !== "release-worker-spawn") return;
+		if (!existsSync(releasePath)) return;
+		watcher.close();
+		resolve();
+	});
+});
+console.log(JSON.stringify({ type: "agent_start" }));
+`,
+	);
+	chmodSync(command, 0o755);
+	return command;
 }
 
 function installFakePi(cwd) {

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 const EXTENSION_DIR = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const FLOW_CHILD_EXTENSION = join(EXTENSION_DIR, "src", "child.ts");
+const FLOW_MAIN_EXTENSION = join(EXTENSION_DIR, "src", "index.ts");
 
 export function childExtensionArgs(extensions: string[] = []) {
 	const externalExtensions = extensions.filter(
@@ -16,6 +17,20 @@ export function childExtensionArgs(extensions: string[] = []) {
 
 export function flowChildExtensionPath() {
 	return FLOW_CHILD_EXTENSION;
+}
+
+export function flowMainExtensionArgs(extensions: string[] = []) {
+	const externalExtensions = extensions.filter(
+		(extension) => extension !== FLOW_MAIN_EXTENSION,
+	);
+	return [
+		"--no-extensions",
+		...extensionArgs([FLOW_MAIN_EXTENSION, ...externalExtensions]),
+	];
+}
+
+export function flowMainExtensionPath() {
+	return FLOW_MAIN_EXTENSION;
 }
 
 function extensionArgs(extensions: string[]) {
