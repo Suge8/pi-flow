@@ -4,6 +4,7 @@ import { localizeErrors } from "./error-language.js";
 import { renderMarkdownBlock } from "./html-markdown.js";
 import { cleanReportCopy } from "./report-copy.js";
 import { reportHead } from "./report-html.js";
+import { reportIcon } from "./report-icons.js";
 
 export type Tone = "green" | "blue" | "amber" | "red" | "gray";
 
@@ -77,7 +78,15 @@ ${progressRing(args.percent, args.tone, args.caption)}
 }
 
 export function seal(text: string, tone: Tone) {
-	return `<span data-rough-seal data-tone="${tone}" class="inline-flex items-center px-2.5 py-0.5 text-xs font-semibold ${TONE_TEXT[tone]}">${escapeHtml(text)}</span>`;
+	return `<span data-rough-seal data-tone="${tone}" class="inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-semibold ${TONE_TEXT[tone]}">${toneIcon(tone)}${escapeHtml(text)}</span>`;
+}
+
+function toneIcon(tone: Tone) {
+	if (tone === "green") return reportIcon("check-circle", "h-3.5 w-3.5");
+	if (tone === "red") return reportIcon("x-circle", "h-3.5 w-3.5");
+	if (tone === "amber") return reportIcon("warning-circle", "h-3.5 w-3.5");
+	if (tone === "blue") return reportIcon("clock", "h-3.5 w-3.5");
+	return "";
 }
 
 export function sectionTitle(text: string) {

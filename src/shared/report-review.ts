@@ -17,6 +17,7 @@ import {
 	TONE_TEXT,
 	type Tone,
 } from "./report-blocks.js";
+import { reportIcon } from "./report-icons.js";
 import { formatReviewResultLines } from "./review-format.js";
 
 export interface CheckProgress {
@@ -108,21 +109,21 @@ const MODEL_TONE: Record<CheckModelStatus, Tone> = {
 	failed: "red",
 	error: "amber",
 };
-const MODEL_GLYPH: Record<CheckModelStatus, string> = {
-	running: "…",
-	passed: "✓",
-	failed: "✗",
-	error: "!",
+const MODEL_ICON: Record<CheckModelStatus, ReturnType<typeof modelIcon>> = {
+	running: modelIcon("clock"),
+	passed: modelIcon("check-circle"),
+	failed: modelIcon("x-circle"),
+	error: modelIcon("warning-circle"),
 };
 const ROUND_TONE: Record<CheckResult, Tone> = {
 	passed: "green",
 	failed: "red",
 	error: "amber",
 };
-const ROUND_GLYPH: Record<CheckResult, string> = {
-	passed: "✓",
-	failed: "✗",
-	error: "!",
+const ROUND_ICON: Record<CheckResult, string> = {
+	passed: reportIcon("check-circle", "h-3 w-3"),
+	failed: reportIcon("x-circle", "h-3 w-3"),
+	error: reportIcon("warning-circle", "h-3 w-3"),
 };
 
 function phaseHistory(
@@ -144,7 +145,7 @@ function roundItem(
 	const title = roundHistoryTitle(round, total, language);
 	const summary = clipText(round.summary, 160);
 	const details = roundDetails(round, keyPrefix, language);
-	return `<li class="flex gap-2 text-xs leading-5 text-stone-600"><span data-rough-node data-tone="${tone}"${round.result === "passed" ? ' data-fill="solid"' : ""} class="mt-0.5 grid h-4 w-4 shrink-0 place-items-center text-[9px] font-bold ${TONE_TEXT[tone]}">${ROUND_GLYPH[round.result]}</span><div class="min-w-0"><span><span class="font-medium ${TONE_TEXT[tone]}">${escapeHtml(title)}</span>${summary ? ` · ${escapeHtml(summary)}` : ""}</span>${details}</div></li>`;
+	return `<li class="flex gap-2 text-xs leading-5 text-stone-600"><span data-rough-node data-tone="${tone}"${round.result === "passed" ? ' data-fill="solid"' : ""} class="mt-0.5 grid h-4 w-4 shrink-0 place-items-center ${TONE_TEXT[tone]}">${ROUND_ICON[round.result]}</span><div class="min-w-0"><span><span class="font-medium ${TONE_TEXT[tone]}">${escapeHtml(title)}</span>${summary ? ` · ${escapeHtml(summary)}` : ""}</span>${details}</div></li>`;
 }
 
 function roundHistoryTitle(
@@ -185,5 +186,9 @@ function resultLabel(result: CheckResult, language: Language) {
 
 function modelChip(model: CheckModelSnapshot) {
 	const tone = MODEL_TONE[model.status];
-	return `<span data-rough-seal data-tone="${tone}" class="inline-flex items-center gap-1 px-2 py-0.5 font-mono text-[11px] ${TONE_TEXT[tone]}">${MODEL_GLYPH[model.status]} ${escapeHtml(model.label)}</span>`;
+	return `<span data-rough-seal data-tone="${tone}" class="inline-flex items-center gap-1 px-2 py-0.5 font-mono text-[11px] ${TONE_TEXT[tone]}">${MODEL_ICON[model.status]} ${escapeHtml(model.label)}</span>`;
+}
+
+function modelIcon(name: Parameters<typeof reportIcon>[0]) {
+	return reportIcon(name, "h-3 w-3");
 }

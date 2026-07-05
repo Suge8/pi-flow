@@ -21,6 +21,7 @@ import {
 	type Tone,
 } from "../shared/report-blocks.js";
 import { readReportText } from "../shared/report-html.js";
+import { reportIcon } from "../shared/report-icons.js";
 import { checkPhases, pendingChecks } from "../shared/report-review.js";
 import { notifyReportChanged } from "../shared/report-server.js";
 import { stepList } from "../shared/report-steps.js";
@@ -110,7 +111,7 @@ export function renderFlowHtml(dir: string, flow: FlowState) {
 		]
 			.filter(Boolean)
 			.join("\n"),
-		{ language: flow.language },
+		{ language: flow.language, width: "max-w-7xl" },
 	);
 }
 
@@ -173,11 +174,14 @@ function stepNode(
 
 function goalNode(goal: FlowGoal, tone: Tone) {
 	const fill = goal.status === "complete" ? ' data-fill="solid"' : "";
-	const glyph =
-		goal.role === "final_acceptance" || goal.status === "complete"
-			? "✓"
-			: String(goal.index + 1);
+	const glyph = goalGlyph(goal);
 	return `<span data-rough-node data-tone="${tone}"${fill} class="grid h-9 w-9 place-items-center text-xs font-bold ${TONE_TEXT[tone]}">${glyph}</span>`;
+}
+
+function goalGlyph(goal: FlowGoal) {
+	if (goal.status === "complete") return reportIcon("check-circle", "h-5 w-5");
+	if (goal.role === "final_acceptance") return reportIcon("flag", "h-5 w-5");
+	return String(goal.index + 1);
 }
 
 function goalTone(goal: FlowGoal, language: FlowState["language"]): Tone {
@@ -224,10 +228,16 @@ ${goalNode(goal, status.tone)}
 </div>
 ${seal(status.label, status.tone)}
 </div>
+<div class="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px] xl:items-start">
+<div class="min-w-0">
 ${goalStepList(markdown, goal, isCurrent, flow.language)}
-${goalReviewBlock(goal, flow.language)}
 ${handoffBlock(goal, flow.language)}
 ${goalDetails(goal, markdown, flow.language)}
+</div>
+<aside class="space-y-4 xl:sticky xl:top-6">
+${goalReviewBlock(goal, flow.language, hasFinalAcceptance(flow))}
+</aside>
+</div>
 </article>`;
 }
 
@@ -245,21 +255,29 @@ function goalStepList(
 	});
 }
 
-function goalReviewBlock(goal: FlowGoal, language: FlowState["language"]) {
+function goalReviewBlock(
+	goal: FlowGoal,
+	language: FlowState["language"],
+	finalAcceptance: boolean,
+) {
 	const checks =
 		goal.checks ?? (goal.status === "complete" ? null : pendingChecks());
-	const chips = deviationChips(goal, language);
+	const chips = deviationChips(goal, language, finalAcceptance);
 	if (!checks)
-		return `<div class="mt-4 flex flex-wrap items-center gap-3"><span${goal.result.summary ? ` title="${escapeHtml(clipText(goal.result.summary, 200))}"` : ""} class="text-xs font-medium text-emerald-800">✓ ${language === "en" ? "Checks passed" : "检查通过"}</span>${chips}</div>`;
-	return `<div class="mt-4 grid gap-5 border-t border-dashed border-stone-200 pt-4 sm:grid-cols-2">${checkPhases(checks, `g${goal.index + 1}`, language)}</div>${chips ? `<div class="mt-3 flex flex-wrap items-center gap-3">${chips}</div>` : ""}`;
+		return `<div data-rough-card data-tone="green" class="bg-emerald-50/50 p-4"><div class="flex flex-wrap items-center gap-2"><span${goal.result.summary ? ` title="${escapeHtml(clipText(goal.result.summary, 200))}"` : ""} class="inline-flex items-center gap-1 text-xs font-medium text-emerald-800">${reportIcon("check-circle", "h-4 w-4")} ${language === "en" ? "Checks passed" : "检查通过"}</span>${chips}</div></div>`;
+	return `<div data-rough-card class="bg-stone-50/50 p-4"><div class="grid gap-5">${checkPhases(checks, `g${goal.index + 1}`, language)}</div>${chips ? `<div class="mt-3 flex flex-wrap items-center gap-3">${chips}</div>` : ""}</div>`;
 }
 
-function deviationChips(goal: FlowGoal, language: FlowState["language"]) {
+function deviationChips(
+	goal: FlowGoal,
+	language: FlowState["language"],
+	finalAcceptance: boolean,
+) {
 	if (goal.status !== "complete") return "";
 	const chips: string[] = [];
 	if (goal.result.criteriaChanged)
 		chips.push(
-			`<span class="text-xs font-medium text-amber-800">▲ ${language === "en" ? "Acceptance criteria changed; final acceptance will review" : "验收口径有调整，最终验收会复核"}</span>`,
+			`<span class="text-xs font-medium text-amber-800">▲ ${criteriaDeviationText(language, finalAcceptance)}</span>`,
 		);
 	if (goal.result.handoffGenerated)
 		chips.push(
@@ -306,15 +324,46 @@ function goalDetails(
 function completionCard(flow: FlowState) {
 	const finalGoal = flow.goals.at(-1);
 	const deviation = flow.goals.some((goal) => goal.result.criteriaChanged);
+	const finalAcceptance = hasFinalAcceptance(flow);
 	const handoff = finalGoal?.result.handoff
 		? `<details data-key="final-handoff" class="mt-3"><summary class="text-xs font-medium text-emerald-800">${flow.language === "en" ? "Final handoff" : "最终交接"}</summary>${renderMarkdownBlock(clipText(finalGoal.result.handoff, 1500), "mt-2 space-y-2 text-sm leading-6 text-emerald-900")}</details>`
 		: "";
 	return card(
-		`<p class="text-base font-semibold text-emerald-900">✓ ${flow.language === "en" ? "All complete" : "全部完成"}</p>
-<p class="mt-1 text-xs text-emerald-800">${deviation ? (flow.language === "en" ? "Acceptance criteria changed during execution and final acceptance reviewed it" : "执行中有验收口径调整，最终验收已复核") : flow.language === "en" ? "All steps passed checks with no acceptance deviation" : "全部步骤通过检查，无验收偏差"}</p>
+		`<p class="inline-flex items-center gap-2 text-base font-semibold text-emerald-900">${reportIcon("seal-check", "h-5 w-5")} ${flow.language === "en" ? "All complete" : "全部完成"}</p>
+<p class="mt-1 text-xs text-emerald-800">${deviation ? completionDeviationText(flow.language, finalAcceptance) : flow.language === "en" ? "All steps passed checks with no acceptance deviation" : "全部步骤通过检查，无验收偏差"}</p>
 ${handoff}`,
 		{ tone: "green", bg: "bg-emerald-50/60" },
 	);
+}
+
+function hasFinalAcceptance(flow: FlowState) {
+	return flow.goals.some((goal) => goal.role === "final_acceptance");
+}
+
+function criteriaDeviationText(
+	language: FlowState["language"],
+	finalAcceptance: boolean,
+) {
+	if (finalAcceptance)
+		return language === "en"
+			? "Acceptance criteria changed; final acceptance will review"
+			: "验收口径有调整，最终验收会复核";
+	return language === "en"
+		? "Acceptance criteria changed; recorded in this step's checks"
+		: "验收口径有调整，已在本步骤检查中记录";
+}
+
+function completionDeviationText(
+	language: FlowState["language"],
+	finalAcceptance: boolean,
+) {
+	if (finalAcceptance)
+		return language === "en"
+			? "Acceptance criteria changed during execution and final acceptance reviewed it"
+			: "执行中有验收口径调整，最终验收已复核";
+	return language === "en"
+		? "Acceptance criteria changed during execution and was recorded in step checks"
+		: "执行中有验收口径调整，已在步骤检查中记录";
 }
 
 function contextDetails(dir: string, flow: FlowState) {
@@ -339,7 +388,7 @@ function sourceLabel(dir: string, flow: FlowState) {
 
 function safeDisplayPath(dir: string, path: string) {
 	if (!isAbsolute(path)) return path;
-	const projectRoot = join(dir, "..", "..", "..");
+	const projectRoot = join(dir, "..", "..");
 	const withinProject = relative(projectRoot, path);
 	if (
 		withinProject &&

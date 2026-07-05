@@ -3,6 +3,7 @@ import type { Language } from "./config.js";
 import { copy } from "./copy.js";
 import { inline } from "./html-markdown.js";
 import { TONE_TEXT, type Tone } from "./report-blocks.js";
+import { reportIcon } from "./report-icons.js";
 
 export interface StepListOptions {
 	/** details data-key 前缀，跨卡片唯一（如 "step" / "g0-step"）。 */
@@ -44,7 +45,7 @@ function stepRow(
 		: "";
 	return `<li class="relative flex gap-3 ${isLast ? "" : "pb-5"}">
 ${connector}
-<span data-rough-node data-tone="${state.tone}"${step.done ? ' data-fill="solid"' : ""} class="grid h-7 w-7 shrink-0 place-items-center text-[11px] font-bold ${TONE_TEXT[state.tone]}">${state.glyph}</span>
+<span data-rough-node data-tone="${state.tone}"${step.done ? ' data-fill="solid"' : ""} class="grid h-7 w-7 shrink-0 place-items-center text-[11px] font-bold ${TONE_TEXT[state.tone]}">${stepGlyph(state.glyph)}</span>
 <div class="min-w-0 flex-1 pt-1">
 <p class="flex flex-wrap items-center gap-2 text-sm font-medium leading-5 ${isCurrent ? "text-stone-900" : "text-stone-700"}"><span>${inline(step.title)}</span>${stateBadge(state.label, state.tone)}</p>
 ${detail}
@@ -61,6 +62,13 @@ function stepState(step: PlanStep, index: number, language: Language) {
 	if (step.status === "blocked")
 		return { glyph: "!", label: t.blocked, tone: "amber" as Tone };
 	return { glyph: String(index + 1), label: t.todo, tone: "gray" as Tone };
+}
+
+function stepGlyph(glyph: string) {
+	if (glyph === "✓") return reportIcon("check-circle", "h-4 w-4");
+	if (glyph === "…") return reportIcon("clock", "h-4 w-4");
+	if (glyph === "!") return reportIcon("warning-circle", "h-4 w-4");
+	return glyph;
 }
 
 function stateBadge(label: string, tone: Tone) {
