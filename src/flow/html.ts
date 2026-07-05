@@ -127,25 +127,41 @@ function heroSubtitle(flow: FlowState, total: number) {
 }
 
 function stepperCard(flow: FlowState) {
+	const currentIndexes = currentFlowGoalIndexes(flow);
 	const parts: string[] = [];
 	flow.goals.forEach((goal, index) => {
 		if (index > 0) {
-			const done = flow.goals[index - 1].status === "complete";
 			parts.push(
-				`<span data-rough-line data-tone="${done ? "green" : "gray"}" class="mt-[18px] h-1 min-w-5 flex-1"></span>`,
+				`<span data-rough-line data-tone="${stepperLineTone(flow, index, currentIndexes)}" class="mt-[18px] h-1 min-w-5 flex-1"></span>`,
 			);
 		}
-		parts.push(stepNode(goal, flow));
+		parts.push(stepNode(goal, flow, currentIndexes));
 	});
 	return card(
 		`${sectionTitle(copy(flow.language).stepProgress)}<div class="mt-4 flex items-start overflow-x-auto pb-1">${parts.join("")}</div>`,
 	);
 }
 
-function stepNode(goal: FlowGoal, flow: FlowState) {
+function stepperLineTone(
+	flow: FlowState,
+	index: number,
+	currentIndexes: Set<number>,
+): Tone {
+	if (
+		hasParallelBatch(flow) &&
+		isCurrentGoal(flow.goals[index], currentIndexes)
+	)
+		return "blue";
+	return flow.goals[index - 1].status === "complete" ? "green" : "gray";
+}
+
+function stepNode(
+	goal: FlowGoal,
+	flow: FlowState,
+	currentIndexes: Set<number>,
+) {
 	const tone = goalTone(goal, flow.language);
-	const isCurrent =
-		goal.index === flow.currentGoal && goal.status !== "complete";
+	const isCurrent = isCurrentGoal(goal, currentIndexes);
 	const deviation = goal.result.criteriaChanged
 		? '<span class="absolute -right-1.5 -top-1.5 text-[10px] font-bold text-amber-700">▲</span>'
 		: "";
@@ -168,9 +184,24 @@ function goalTone(goal: FlowGoal, language: FlowState["language"]): Tone {
 	return goalStatus(language)[goal.status]?.tone ?? "gray";
 }
 
+function currentFlowGoalIndexes(flow: FlowState) {
+	return new Set(
+		hasParallelBatch(flow) ? flow.parallelBatch : [flow.currentGoal],
+	);
+}
+
+function hasParallelBatch(
+	flow: FlowState,
+): flow is FlowState & { parallelBatch: number[] } {
+	return Array.isArray(flow.parallelBatch) && flow.parallelBatch.length > 0;
+}
+
+function isCurrentGoal(goal: FlowGoal, currentIndexes: Set<number>) {
+	return currentIndexes.has(goal.index) && goal.status !== "complete";
+}
+
 function goalCard(dir: string, goal: FlowGoal, flow: FlowState) {
-	const isCurrent =
-		goal.index === flow.currentGoal && goal.status !== "complete";
+	const isCurrent = isCurrentGoal(goal, currentFlowGoalIndexes(flow));
 	const status = goalStatus(flow.language)[goal.status] ?? {
 		label: goal.status,
 		tone: "gray" as Tone,

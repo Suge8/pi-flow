@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+	chmodSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
@@ -9,7 +10,7 @@ import {
 	watch,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -59,6 +60,11 @@ writeFlowTestConfig();
 try {
 	await runScenario(flowGoalPromptChecklistSyncScenario);
 	await runScenario(flowGoalRuntimePromptContextScenario);
+	await runScenario(flowWorkerCommandScenario);
+	await runScenario(parallelLaneBoardThreeGoalScenario);
+	await runScenario(parallelBatchSuccessScenario);
+	await runScenario(parallelBatchFailureScenario);
+	await runScenario(parallelBatchCancelScenario);
 	await runScenario(schemaScenario);
 	await runScenario(badJsonScenario);
 	await runScenario(flowIdSafetyScenario);
@@ -99,6 +105,8 @@ try {
 	await runScenario(completionCommandConsumesStoredFactScenario);
 	await runScenario(flowStartWithoutNewSessionScenario);
 	await runScenario(flowStartNewSessionThrowScenario);
+	await runScenario(flowStartNewSessionPreReplacementStaleThrowScenario);
+	await runScenario(flowStartNewSessionPostReplacementThrowScenario);
 	await runScenario(englishFlowDynamicNotificationsScenario);
 	await runScenario(flowRuntimeNotificationsUseArtifactLanguageScenario);
 	await runScenario(englishFlowCardsUseArtifactLanguageScenario);
@@ -107,7 +115,10 @@ try {
 	await runScenario(startResumeCancelScenario);
 	await runScenario(sessionNameSyncScenario);
 	await runScenario(snapshotMutationScenario);
+	await runScenario(snapshotCheckboxMutationMessageScenario);
 	await runScenario(flowGoalWatcherScenario);
+	await runScenario(flowParallelMainGoalWatcherScenario);
+	await runScenario(flowParallelWatcherScenario);
 	await runScenario(sessionContextIsolationScenario);
 	await runScenario(ownershipScenario);
 	await runScenario(completionScenario);
@@ -261,6 +272,294 @@ async function flowGoalRuntimePromptContextScenario() {
 	);
 }
 
+async function flowWorkerCommandScenario() {
+	const cwd = tempDir("flow-worker-command");
+	const dir = createFlow(cwd, "F1-worker-command", { planCount: 3 });
+	const flow = readFlow(dir);
+	writeFlow(dir, {
+		...flow,
+		status: "running",
+		startedAt: Date.now(),
+	});
+	const beforeFlowJson = readFileSync(join(dir, "flow.json"), "utf8");
+	const state = newState(cwd);
+	state.stalePiAfterSessionReplacement = true;
+	const { commands, handlers } = await loadExtension(state);
+	const launcherSessionFile = join(cwd, "launcher-session.jsonl");
+	const ctx = commandContext(state, cwd, launcherSessionFile);
+
+	await commands.get("flow").handler("worker F1-worker-command 1", ctx);
+
+	const workerDir = join(dir, "workers", "G1");
+	const sessionFile = join(workerDir, "session.jsonl");
+	const workerCtx = commandContext(state, cwd, sessionFile);
+	const copiedPlan = readFileSync(join(workerDir, "plan.md"), "utf8");
+	assert(
+		copiedPlan === readFileSync(join(dir, "G2-plan.md"), "utf8"),
+		"worker plan.md was not copied from the selected flow goal",
+	);
+	const artifact = readGoalArtifact(workerDir);
+	assert(artifact.status === "running", "worker goal artifact not running");
+	assert(
+		state.switches.at(-1) === sessionFile &&
+			artifact.sessionFile === sessionFile,
+		"worker goal artifact did not switch into worker session file",
+	);
+	assert(
+		artifact.snapshot === copiedPlan && artifact.snapshotHash,
+		"worker goal artifact missing snapshot",
+	);
+	assert(existsSync(join(workerDir, "goal.html")), "worker goal.html missing");
+	assert(
+		state.hiddenMessages
+			.at(-1)
+			.includes(".flow/flows/F1-worker-command/workers/G1/plan.md"),
+		"worker prompt did not point at worker plan.md",
+	);
+	assert(
+		readFileSync(join(dir, "flow.json"), "utf8") === beforeFlowJson,
+		"worker start modified flow.json",
+	);
+
+	workerCtx.mode = "json";
+	await emit(
+		handlers,
+		"agent_end",
+		{ messages: [{ role: "assistant", stopReason: "stop" }] },
+		workerCtx,
+	);
+	const result = JSON.parse(
+		readFileSync(join(workerDir, "result.json"), "utf8"),
+	);
+	assert(
+		result.goalId &&
+			result.sessionFile === sessionFile &&
+			result.checks?.acceptance,
+		"worker result.json did not persist completion fact",
+	);
+	assert(
+		readFileSync(join(dir, "flow.json"), "utf8") === beforeFlowJson,
+		"worker completion event modified flow.json",
+	);
+	assert(
+		readFileSync(join(dir, "flow.json"), "utf8") === beforeFlowJson,
+		"worker agent_end modified flow.json",
+	);
+}
+
+async function parallelLaneBoardThreeGoalScenario() {
+	const { showParallelLaneBoard } = await importModule(
+		"flow/parallel/lane-ui.js",
+	);
+	const cwd = tempDir("parallel-lane-board");
+	const dir = createThreeParallelFlow(cwd, "F1-lane-board");
+	const flow = readFlow(dir);
+	flow.status = "running";
+	flow.startedAt = Date.now();
+	flow.currentGoal = 1;
+	flow.parallelBatch = [1, 2, 3];
+	flow.goals[1].status = "running";
+	flow.goals[2].status = "running";
+	flow.goals[3].status = "running";
+	const state = newState(cwd);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	const board = showParallelLaneBoard(ctx, dir, flow, [1, 2, 3]);
+
+	let text = latestWidgetText(state);
+	assert(text.includes("3 lanes"), `lane count missing:\n${text}`);
+	assert(
+		text.includes("Goal 2") &&
+			text.includes("Goal 3") &&
+			text.includes("Goal 4"),
+		`three parallel goals missing:\n${text}`,
+	);
+	assert(count(text, "验收: 等待") === 3, text);
+
+	writeWorkerGoalArtifact(dir, flow, 1, runningChecks());
+	board.updateWorkerEvent(1, { type: "message_end" });
+	text = latestWidgetText(state);
+	assert(text.includes("验收: 进行中"), text);
+
+	writeWorkerGoalArtifact(dir, flow, 1, passedChecks());
+	board.updateWorkerEvent(1, { type: "agent_end" });
+	text = latestWidgetText(state);
+	assert(text.includes("✓ G2") && text.includes("验收: 通过"), text);
+
+	writeWorkerGoalArtifact(dir, flow, 2, failedChecks());
+	board.updateWorkerEvent(2, { type: "agent_end" });
+	text = latestWidgetText(state);
+	assert(text.includes("✗ G3") && text.includes("验收: 失败"), text);
+
+	board.updateWorkerExit(3, 1, null);
+	text = latestWidgetText(state);
+	assert(text.includes("✗ G4") && text.includes("验收: 错误"), text);
+	board.dispose();
+	assert(
+		state.widgets.filter((item) => item.key === "flow-parallel-lanes").at(-1)
+			?.content === undefined,
+		"lane board was not cleared",
+	);
+}
+
+async function parallelBatchSuccessScenario() {
+	const cwd = tempDir("parallel-batch-success");
+	const dir = createParallelFlow(cwd, "F1-parallel-success");
+	const beforeFlowJson = readFileSync(join(dir, "flow.json"), "utf8");
+	const restorePi = installFakePi(cwd);
+	process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE = "1";
+	let start;
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+
+		start = commands.get("flow").handler("start F1-parallel-success", ctx);
+		await Promise.all([
+			waitForFile(join(cwd, "worker-1.started")),
+			waitForFile(join(cwd, "worker-2.started")),
+		]);
+		await waitForCondition(
+			() => latestWidgetText(state).includes("tool: bash"),
+			"parallel lane widget did not show worker tool event",
+		);
+		const laneText = latestWidgetText(state);
+		const { isFlowEditorInputHidden } = await importCachedModule(
+			"shared/activity-frame.js",
+		);
+		assert(
+			isFlowEditorInputHidden(),
+			"parallel batch did not hide editor input",
+		);
+		assert(
+			laneText.includes("Goal 2") && laneText.includes("Goal 3"),
+			`parallel lane widget missing batch goals:\n${laneText}`,
+		);
+		assert(
+			state.widgets.some(
+				(item) =>
+					item.key === "flow-parallel-lanes" &&
+					item.options?.placement === "aboveEditor" &&
+					item.content,
+			),
+			"parallel lane widget was not mounted above editor",
+		);
+		assert(
+			state.workingVisible.includes(false),
+			"parallel batch did not hide default working row",
+		);
+		assert(
+			readFileSync(join(dir, "flow.json"), "utf8") === beforeFlowJson,
+			"parallel batch start modified flow.json before workers completed",
+		);
+		writeFileSync(join(cwd, "release-workers"), "");
+		await start;
+		await flushScheduledGoalStart();
+
+		const flow = readFlow(dir);
+		assert(flow.goals[1].status === "complete", "parallel G2 not complete");
+		assert(flow.goals[2].status === "complete", "parallel G3 not complete");
+		assert(
+			flow.goals[3].status === "running",
+			"next serial goal did not start",
+		);
+		assert(flow.currentGoal === 3, "parallel fan-in did not advance to G4");
+		assert(flow.parallelBatch === null, "parallel batch was not cleared");
+		assert(
+			state.widgets.filter((item) => item.key === "flow-parallel-lanes").at(-1)
+				?.content === undefined,
+			"parallel lane widget was not cleared",
+		);
+		assert(
+			state.workingVisible.includes(true),
+			"parallel batch did not restore default working row",
+		);
+		assert(
+			!isFlowEditorInputHidden(),
+			"parallel batch did not restore editor input",
+		);
+		assert(state.newSessions.length === 1, "G4 did not start in a new session");
+		assert(
+			existsSync(join(dir, "workers", "G1", "result.json")) &&
+				existsSync(join(dir, "workers", "G2", "result.json")),
+			"worker result.json files missing",
+		);
+	} finally {
+		delete process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE;
+		writeFileSync(join(cwd, "release-workers"), "");
+		if (start) await start.catch(() => undefined);
+		restorePi();
+	}
+}
+
+async function parallelBatchFailureScenario() {
+	const cwd = tempDir("parallel-batch-failure");
+	const dir = createParallelFlow(cwd, "F1-parallel-failure");
+	const restorePi = installFakePi(cwd);
+	process.env.PI_FLOW_FAKE_FAIL_INDEX = "2";
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+
+		await commands.get("flow").handler("start F1-parallel-failure", ctx);
+
+		const flow = readFlow(dir);
+		assert(
+			flow.goals[1].status === "running",
+			"successful worker was fan-in completed after batch failure",
+		);
+		assert(
+			flow.goals[2].status === "running",
+			"failed worker status changed unexpectedly",
+		);
+		assert(
+			flow.goals[3].status === "pending",
+			"batch failure started next goal",
+		);
+		assert(
+			flow.parallelBatch?.length === 2,
+			"failed batch did not stay active for summary",
+		);
+		assert(
+			flow.errors.some((error) => error.includes("result.json")),
+			"batch failure missing summary error",
+		);
+		assert(state.newSessions.length === 0, "batch failure should not start G4");
+	} finally {
+		delete process.env.PI_FLOW_FAKE_FAIL_INDEX;
+		restorePi();
+	}
+}
+
+async function parallelBatchCancelScenario() {
+	const cwd = tempDir("parallel-batch-cancel");
+	const dir = createParallelFlow(cwd, "F1-parallel-cancel");
+	const restorePi = installFakePi(cwd);
+	process.env.PI_FLOW_FAKE_HANG = "1";
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		const start = commands.get("flow").handler("start F1-parallel-cancel", ctx);
+		await Promise.all([
+			waitForFile(join(cwd, "worker-1.started")),
+			waitForFile(join(cwd, "worker-2.started")),
+		]);
+
+		await commands.get("flow").handler("cancel", ctx);
+
+		const flow = readFlow(dir);
+		assert(flow.status === "cancelled", "parallel cancel did not cancel flow");
+		assert(flow.parallelBatch === null, "parallel cancel did not clear batch");
+		assert(existsSync(join(cwd, "worker-1.killed")), "worker 1 was not killed");
+		assert(existsSync(join(cwd, "worker-2.killed")), "worker 2 was not killed");
+		await start;
+	} finally {
+		delete process.env.PI_FLOW_FAKE_HANG;
+		restorePi();
+	}
+}
+
 async function schemaScenario() {
 	const { validateFlowDir } = await importModule("flow/validator.js");
 	const cwd = tempDir("schema");
@@ -268,6 +567,24 @@ async function schemaScenario() {
 	assert(!validateFlowDir(dir).ok, "missing flow.json passed");
 	createFlow(cwd, "F1-schema");
 	assert(validateFlowDir(dir).ok, "valid flow failed");
+	const flowWithParallelFields = readFlow(dir);
+	flowWithParallelFields.parallelBatch = [0, 1];
+	flowWithParallelFields.goals[1].dependsOn = [0];
+	flowWithParallelFields.goals[0].writeScope = ["src/api/**"];
+	writeFlow(dir, flowWithParallelFields);
+	assert(
+		validateFlowDir(dir).ok,
+		`parallel flow fields rejected: ${validateFlowDir(dir).errors.join(" | ")}`,
+	);
+	flowWithParallelFields.goals[1].dependsOn = "G1";
+	writeFlow(dir, flowWithParallelFields);
+	assert(
+		validateFlowDir(dir).errors.some((error) =>
+			error.includes("goals[1].dependsOn 必须是数组"),
+		),
+		"bad dependsOn not rejected",
+	);
+	createFlow(cwd, "F1-schema");
 	const missingStartedAt = readFlow(dir);
 	delete missingStartedAt.startedAt;
 	writeFileSync(join(dir, "flow.json"), JSON.stringify(missingStartedAt));
@@ -638,6 +955,19 @@ async function htmlScenario() {
 	assert(
 		enabledHtml.includes("等待") && !enabledHtml.includes("未启用"),
 		"enabled checks should all show 等待",
+	);
+	const parallelFlow = readFlow(dir);
+	parallelFlow.parallelBatch = [0, 1];
+	parallelFlow.goals[0].status = "running";
+	parallelFlow.goals[1].status = "running";
+	const parallelHtml = readFileSync(writeFlowHtml(dir, parallelFlow), "utf8");
+	assert(
+		count(parallelHtml, " · 当前") === 2,
+		"parallel batch did not mark every active goal current",
+	);
+	assert(
+		parallelHtml.includes('data-tone="blue" class="mt-[18px] h-1'),
+		"parallel batch stepper line did not show active tone",
 	);
 	assert(
 		draftHtml.includes('data-key="g0-step-0" open') &&
@@ -1016,6 +1346,8 @@ async function englishFlowAlignmentStartGenerationScenario() {
 					"generating a recoverable multi-session Pi Flow Goal queue",
 				) &&
 				state.hiddenMessages.at(-1).includes("Alignment summary:") &&
+				state.hiddenMessages.at(-1).includes("`dependsOn`") &&
+				state.hiddenMessages.at(-1).includes("`writeScope`") &&
 				!state.hiddenMessages.at(-1).includes("# Interrogate me"),
 			"English start generation should send the Flow generation prompt",
 		);
@@ -1052,6 +1384,11 @@ async function generateScenario() {
 		"flow plan prompt missing semantic artifact rule",
 	);
 	assert(
+		state.hiddenMessages.at(-1).includes("`dependsOn`") &&
+			state.hiddenMessages.at(-1).includes("`writeScope`"),
+		"flow plan prompt missing parallel schema fields",
+	);
+	assert(
 		!state.hiddenMessages.at(-1).includes("flow.json 最小骨架") &&
 			!state.hiddenMessages.at(-1).includes("flow.json.schemaVersion"),
 		"flow plan prompt still asks model to write canonical flow.json",
@@ -1076,9 +1413,11 @@ async function generateScenario() {
 		),
 		"flow live html not opened",
 	);
-	assert(
-		state.notifications.some((item) => item.includes("Flow 计划已生成并启动")),
-		"auto-start summary missing",
+	await flushScheduledGoalStart();
+	assertChineseFlowCard(
+		state,
+		"Flow 第 1 步 · Goal 1 已启动",
+		"auto-start start card missing",
 	);
 	assert(
 		state.newSessions.length === 1,
@@ -1120,6 +1459,7 @@ async function generateScenario() {
 async function flowAutoStartUsesCommandContextScenario() {
 	const cwd = tempDir("flow-autostart-command-context");
 	const state = newState(cwd);
+	state.staleCtxAfterSessionReplacement = true;
 	const { commands, handlers } = await loadExtension(state);
 	const sessionFile = join(cwd, "planning.jsonl");
 	const commandCtx = commandContext(state, cwd, sessionFile);
@@ -1128,11 +1468,30 @@ async function flowAutoStartUsesCommandContextScenario() {
 	const eventCtx = commandContext(state, cwd, sessionFile);
 	eventCtx.newSession = undefined;
 	await emit(handlers, "agent_end", { messages: [] }, eventCtx);
+	await flushScheduledGoalStart();
 	const flow = readFlow(join(cwd, ".flow", "flows", "F1-autostart"));
 	assert(flow.status === "running", "flow auto-start ignored command context");
 	assert(
 		state.newSessions.length === 1,
 		"flow auto-start did not create session",
+	);
+	assertChineseFlowCard(
+		state,
+		"Flow 第 1 步 · Goal 1 已启动",
+		"flow auto-start did not show start card",
+	);
+	const startCardIndex = state.customMessages.findIndex(
+		(item) => item.message.details?.title === "Flow 第 1 步 · Goal 1 已启动",
+	);
+	const goalPromptIndex = state.customMessages.findIndex(
+		(item) =>
+			item.message.customType === "pi-flow-goal-prompt" &&
+			String(item.message.content).includes("只执行当前 Goal"),
+	);
+	assert(goalPromptIndex >= 0, "flow auto-start goal prompt missing");
+	assert(
+		startCardIndex < goalPromptIndex,
+		"flow auto-start card should be sent before the Goal prompt that triggers tool output",
 	);
 	assert(
 		!state.notifications.some((message) => message.includes("不支持新建会话")),
@@ -1169,6 +1528,15 @@ async function semanticFlowGenerationEndScenario() {
 	const dir = writeFlowSemanticDraft(cwd, "F1-semantic-only", {
 		title: "Semantic Only",
 	});
+	const semantic = JSON.parse(
+		readFileSync(join(dir, "flow.semantic.json"), "utf8"),
+	);
+	semantic.goals[0].writeScope = ["src/api/**"];
+	semantic.goals[1].dependsOn = [0];
+	writeFileSync(
+		join(dir, "flow.semantic.json"),
+		`${JSON.stringify(semantic, null, 2)}\n`,
+	);
 	assert(
 		!existsSync(join(dir, "flow.json")),
 		"semantic setup prewrote flow.json",
@@ -1182,6 +1550,20 @@ async function semanticFlowGenerationEndScenario() {
 	assert(
 		validation.ok,
 		`semantic flow build invalid: ${validation.errors.join("\n")}`,
+	);
+	const flow = readFlow(dir);
+	assert(
+		flow.parallelBatch === null,
+		"semantic flow missing parallelBatch null",
+	);
+	assert(
+		flow.goals[0].writeScope?.[0] === "src/api/**" &&
+			flow.goals[1].dependsOn?.[0] === 0,
+		"semantic parallel fields were not preserved",
+	);
+	assert(
+		!("dependsOn" in flow.goals[0]) && !("writeScope" in flow.goals[1]),
+		"builder wrote absent parallel fields into flow goals",
 	);
 }
 
@@ -1531,24 +1913,27 @@ async function pendingGenerationScenario() {
 		"second same-cwd generation was not rejected",
 	);
 	assert(state.hiddenMessages.length === 1, "rejected generation sent prompt");
-	writeFlowSemanticDraft(cwd, "F1-a");
+	const dir = writeFlowSemanticDraft(cwd, "F1-a");
 	await emit(handlers, "agent_end", { messages: [] }, ctxB);
 	assert(
-		!state.notifications.some((message) => message.includes("Flow 计划已生成")),
+		!existsSync(join(dir, "flow.json")),
 		"wrong session consumed pending generation",
 	);
 	await emit(handlers, "agent_end", { messages: [] }, ctxA);
-	const generated = state.notifications.find((message) =>
-		message.includes("Flow 计划已生成"),
-	);
-	assert(generated, "owning session did not consume pending generation");
+	await flushScheduledGoalStart();
+	const flow = readFlow(dir);
 	assert(
-		generated.includes("Flow 计划已生成并启动"),
-		`auto-start summary missing: ${generated}`,
+		flow.status === "running",
+		"owning session did not consume pending generation",
 	);
 	assert(
 		state.newSessions.length === 1,
 		"owning generation did not auto-start",
+	);
+	assertChineseFlowCard(
+		state,
+		"Flow 第 1 步 · Goal 1 已启动",
+		"owning generation did not show start card",
 	);
 }
 
@@ -1567,10 +1952,11 @@ async function englishFlowGeneratedSummaryUsesArtifactLanguageScenario() {
 			title: "English Flow",
 		});
 		await emit(handlers, "agent_end", { messages: [] }, ctx);
-		const notice = state.notifications.at(-1) ?? "";
-		assert(
-			notice.includes("Flow plan generated and started") && !hasChinese(notice),
-			notice,
+		await flushScheduledGoalStart();
+		assertFlowCard(
+			state,
+			"Flow Step 1 · Goal 1 started",
+			"English Flow start card was translated by artifact language",
 		);
 	} finally {
 		if (originalLanguage === undefined) delete process.env.PI_FLOW_LANGUAGE;
@@ -1882,6 +2268,56 @@ async function flowStartNewSessionThrowScenario() {
 	assert(flow.status === "draft", "newSession failure changed flow state");
 	assert(
 		state.notifications.at(-1).includes("Flow 步骤会话启动失败：boom"),
+		state.notifications.join("\n"),
+	);
+}
+
+async function flowStartNewSessionPreReplacementStaleThrowScenario() {
+	const cwd = tempDir("flow-new-session-pre-replacement-throw");
+	const dir = createFlow(cwd, "F1-pre-replacement-throw");
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const sessionFile = join(cwd, "planning.jsonl");
+	const ctx = commandContext(state, cwd, sessionFile);
+	ctx.newSession = async () => {
+		state.staleSessionFiles.add(sessionFile);
+		throw new Error("boom before replacement");
+	};
+	let thrown = "";
+	try {
+		await commands.get("flow").handler("start", ctx);
+	} catch (error) {
+		thrown = error instanceof Error ? error.message : String(error);
+	}
+	const flow = readFlow(dir);
+	assert(
+		flow.status === "draft",
+		"pre-replacement newSession failure changed flow state",
+	);
+	assert(
+		thrown.includes("Flow 步骤会话启动失败：boom before replacement"),
+		thrown || "pre-replacement newSession failure was swallowed",
+	);
+}
+
+async function flowStartNewSessionPostReplacementThrowScenario() {
+	const cwd = tempDir("flow-new-session-post-replacement-throw");
+	const dir = createFlow(cwd, "F1-post-replacement-throw");
+	const state = newState(cwd);
+	state.staleCtxAfterSessionReplacement = true;
+	state.throwReplacedSessionFile = true;
+	const { commands } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("start", ctx);
+	const flow = readFlow(dir);
+	assert(
+		flow.status === "draft",
+		"post-replacement newSession failure changed flow state",
+	);
+	assert(
+		state.notifications
+			.at(-1)
+			.includes("Flow 步骤会话启动失败：boom after replacement"),
 		state.notifications.join("\n"),
 	);
 }
@@ -2329,6 +2765,31 @@ async function snapshotMutationScenario() {
 	);
 }
 
+async function snapshotCheckboxMutationMessageScenario() {
+	const { planSnapshotError, planSnapshotHash } =
+		await importModule("flow/snapshot.js");
+	const cwd = tempDir("snapshot-checkbox");
+	const dir = createFlow(cwd, "F1-snapshot-checkbox");
+	const flow = readFlow(dir);
+	const planFile = join(dir, flow.goals[0].file);
+	const snapshot = readFileSync(planFile, "utf8").replace(
+		"- Done.",
+		"* [ ] Done.",
+	);
+	writeFileSync(planFile, snapshot.replace("* [ ] Done.", "* [x] Done."));
+	flow.goals[0].snapshot = snapshot;
+	flow.goals[0].snapshotHash = planSnapshotHash(snapshot);
+	const error = planSnapshotError(dir, flow.goals[0], "zh") ?? "";
+	assert(
+		error.includes("Success Criteria 第 1 行从 [ ] 改成 [x]"),
+		`checkbox snapshot error lacked line detail: ${error}`,
+	);
+	assert(
+		error.includes("验收合同") && error.includes("Verification/Handoff"),
+		`checkbox snapshot error lacked recovery guidance: ${error}`,
+	);
+}
+
 async function flowGoalWatcherScenario() {
 	const { writeFlowHtml } = await importModule("flow/html.js");
 	const { closeFlowGoalWatcher, watchCurrentFlowGoal } =
@@ -2354,6 +2815,101 @@ async function flowGoalWatcherScenario() {
 	closeFlowGoalWatcher();
 }
 
+async function flowParallelMainGoalWatcherScenario() {
+	const { writeFlowHtml } = await importModule("flow/html.js");
+	const { closeFlowGoalWatcher, watchParallelBatch } =
+		await importModule("flow/watcher.js");
+	const cwd = tempDir("flow-parallel-main-watch");
+	const dir = createThreeParallelFlow(cwd, "F1-parallel-main-watch");
+	const flow = readFlow(dir);
+	flow.status = "running";
+	flow.startedAt = Date.now();
+	flow.currentGoal = 1;
+	flow.parallelBatch = [1, 2, 3];
+	for (const goalIndex of [1, 2, 3]) flow.goals[goalIndex].status = "running";
+	writeFlow(dir, flow);
+	writeFlowHtml(dir, flow);
+	const htmlPath = join(dir, "flow.html");
+	watchParallelBatch(dir, flow, [1, 2, 3]);
+	await new Promise((resolve) => setTimeout(resolve, 50));
+
+	const changed = onceFileChanged(htmlPath);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	const goalFile = join(dir, flow.goals[1].file);
+	writeFileSync(
+		goalFile,
+		readFileSync(goalFile, "utf8").replace(
+			"- [ ] Do work.",
+			"- [x] Main goal watcher checked.",
+		),
+	);
+	await changed;
+	const html = readFileSync(htmlPath, "utf8");
+	assert(
+		html.includes("Main goal watcher checked.") && count(html, " · 当前") === 3,
+		"parallel watcher did not render three-goal main markdown changes",
+	);
+	closeFlowGoalWatcher();
+}
+
+async function flowParallelWatcherScenario() {
+	const { writeFlowHtml } = await importModule("flow/html.js");
+	const { closeFlowGoalWatcher, watchParallelBatch } =
+		await importModule("flow/watcher.js");
+	const cwd = tempDir("flow-parallel-watch");
+	const dir = createThreeParallelFlow(cwd, "F1-parallel-watch");
+	const flow = readFlow(dir);
+	flow.status = "running";
+	flow.startedAt = Date.now();
+	flow.currentGoal = 1;
+	flow.parallelBatch = [1, 2, 3];
+	for (const goalIndex of [1, 2, 3]) flow.goals[goalIndex].status = "running";
+	writeFlow(dir, flow);
+	const workerDir = join(dir, "workers", "G1");
+	mkdirSync(workerDir, { recursive: true });
+	writeFileSync(
+		join(workerDir, "plan.md"),
+		planMarkdown(2, false).replace("Do work.", "Worker live old."),
+	);
+	writeFileSync(
+		join(workerDir, "goal.json"),
+		`${JSON.stringify(workerGoalArtifact(flow, 1, emptyChecks()), null, 2)}\n`,
+	);
+	writeFlowHtml(dir, flow);
+	const htmlPath = join(dir, "flow.html");
+	watchParallelBatch(dir, flow, [1, 2, 3]);
+	await new Promise((resolve) => setTimeout(resolve, 50));
+
+	const planChanged = onceFileChanged(htmlPath);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	writeFileSync(
+		join(workerDir, "plan.md"),
+		planMarkdown(2, false).replace("Do work.", "Worker live new."),
+	);
+	await planChanged;
+	assert(
+		readFileSync(htmlPath, "utf8").includes("Worker live new."),
+		"parallel watcher did not render worker plan.md changes",
+	);
+
+	const passed = emptyChecks();
+	passed.acceptance.rounds = [
+		{ round: 1, result: "passed", summary: "worker acceptance passed" },
+	];
+	const checksChanged = onceFileChanged(htmlPath);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	writeFileSync(
+		join(workerDir, "goal.json"),
+		`${JSON.stringify(workerGoalArtifact(flow, 1, passed), null, 2)}\n`,
+	);
+	await checksChanged;
+	assert(
+		readFileSync(htmlPath, "utf8").includes("worker acceptance passed"),
+		"parallel watcher did not render worker goal.json changes",
+	);
+	closeFlowGoalWatcher();
+}
+
 function onceFileChanged(path) {
 	return new Promise((resolve, reject) => {
 		const timeout = setTimeout(() => {
@@ -2366,6 +2922,36 @@ function onceFileChanged(path) {
 			resolve();
 		});
 	});
+}
+
+function waitForFile(path) {
+	if (existsSync(path)) return Promise.resolve();
+	mkdirSync(dirname(path), { recursive: true });
+	return new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			watcher.close();
+			reject(new Error(`file did not appear: ${path}`));
+		}, 5000);
+		const finish = () => {
+			clearTimeout(timeout);
+			watcher.close();
+			resolve();
+		};
+		const watcher = watch(dirname(path), (_event, name) => {
+			if (name !== null && String(name) !== basename(path)) return;
+			if (existsSync(path)) finish();
+		});
+		if (existsSync(path)) finish();
+	});
+}
+
+async function waitForCondition(predicate, message) {
+	const deadline = Date.now() + 1000;
+	while (Date.now() < deadline) {
+		if (predicate()) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error(message);
 }
 
 async function sessionContextIsolationScenario() {
@@ -2600,6 +3186,52 @@ function createFlow(cwd, id, options = {}) {
 	return dir;
 }
 
+function createParallelFlow(cwd, id) {
+	const dir = createFlow(cwd, id, { planCount: 4 });
+	const flow = readFlow(dir);
+	flow.goals[0].status = "complete";
+	flow.goals[1].dependsOn = [0];
+	flow.goals[1].writeScope = ["src/a/**"];
+	flow.goals[2].dependsOn = [0];
+	flow.goals[2].writeScope = ["src/b/**"];
+	flow.goals[3].dependsOn = [1, 2];
+	writeFlow(dir, flow);
+	return dir;
+}
+
+function createThreeParallelFlow(cwd, id) {
+	const dir = createFlow(cwd, id, { planCount: 5 });
+	const flow = readFlow(dir);
+	flow.goals[0].status = "complete";
+	for (const goalIndex of [1, 2, 3]) {
+		flow.goals[goalIndex].dependsOn = [0];
+		flow.goals[goalIndex].writeScope = [`src/${goalIndex}/**`];
+	}
+	flow.goals[4].dependsOn = [1, 2, 3];
+	writeFlow(dir, flow);
+	return dir;
+}
+
+function installFakePi(cwd) {
+	const bin = join(cwd, "bin");
+	mkdirSync(bin, { recursive: true });
+	writeFileSync(
+		join(bin, "pi"),
+		`#!/usr/bin/env bash\nexec node "$0.mjs" "$@"\n`,
+	);
+	writeFileSync(
+		join(bin, "pi.mjs"),
+		`import { existsSync, mkdirSync, watch, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nconst args = process.argv.slice(2);\nconst session = args[args.indexOf("--session") + 1];\nconst prompt = args[args.indexOf("-p") + 1] ?? "";\nconst goalIndex = prompt.trim().split(/\\s+/u).at(-1) ?? "0";\nconst marker = (suffix) => join(process.cwd(), \`worker-\${goalIndex}.\${suffix}\`);\nconst waitForRelease = () => new Promise((resolve) => {\n\tconst releasePath = join(process.cwd(), "release-workers");\n\tif (existsSync(releasePath)) return resolve();\n\tconst watcher = watch(process.cwd(), (_event, name) => {\n\t\tif (name !== null && String(name) !== "release-workers") return;\n\t\tif (!existsSync(releasePath)) return;\n\t\twatcher.close();\n\t\tresolve();\n\t});\n});\nconsole.log(JSON.stringify({ type: "agent_start", goalIndex: Number(goalIndex) }));\nif (process.env.PI_FLOW_FAKE_HANG === "1") {\n\twriteFileSync(marker("started"), "");\n\tconst exit = () => {\n\t\twriteFileSync(marker("killed"), "");\n\t\tprocess.exit(0);\n\t};\n\tprocess.on("SIGTERM", exit);\n\tprocess.on("SIGINT", exit);\n\tsetInterval(() => undefined, 1000);\n} else if (process.env.PI_FLOW_FAKE_FAIL_INDEX === goalIndex) {\n\tprocess.exit(1);\n} else {\n\tconsole.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-" + goalIndex, toolName: "bash", result: "ok", isError: false }));\n\twriteFileSync(marker("started"), "");\n\tif (process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE === "1") {\n\t\tawait waitForRelease();\n\t}\n\tconst workerDir = dirname(session);\n\tmkdirSync(workerDir, { recursive: true });\n\twriteFileSync(join(workerDir, "result.json"), JSON.stringify({ goalId: \`worker-\${goalIndex}\`, summary: \`done \${goalIndex}\`, acceptance: "passed", sessionFile: session }, null, 2));\n\tconsole.log(JSON.stringify({ type: "agent_end", messages: [] }));\n}\n`,
+	);
+	chmodSync(join(bin, "pi"), 0o755);
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${bin}:${previousPath ?? ""}`;
+	return () => {
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+	};
+}
+
 function writeFlowSemanticDraft(cwd, id, options = {}) {
 	const dir = join(cwd, ".flow", "flows", id);
 	mkdirSync(dir, { recursive: true });
@@ -2711,6 +3343,50 @@ function emptyChecks() {
 	};
 }
 
+function writeWorkerGoalArtifact(dir, flow, goalIndex, checks) {
+	const workerDir = join(dir, "workers", `G${goalIndex}`);
+	mkdirSync(workerDir, { recursive: true });
+	writeFileSync(
+		join(workerDir, "goal.json"),
+		`${JSON.stringify(workerGoalArtifact(flow, goalIndex, checks), null, 2)}\n`,
+	);
+}
+
+function workerGoalArtifact(flow, goalIndex, checks) {
+	const goal = flow.goals[goalIndex];
+	return {
+		schemaVersion: 5,
+		language: flow.language,
+		id: `G${goalIndex}`,
+		title: goal.title,
+		status: "running",
+		completionCursor: null,
+		source: flow.source,
+		createdAt: Date.now(),
+		updatedAt: Date.now(),
+		repairAttempts: 0,
+		errors: [],
+		sessionFile: null,
+		sessionName: null,
+		snapshot: null,
+		snapshotHash: null,
+		runtimeGoalId: `worker-${goalIndex}`,
+		result: { summary: null, outcome: null },
+		checks,
+	};
+}
+
+function runningChecks() {
+	return {
+		...emptyChecks(),
+		acceptance: {
+			enabled: true,
+			rounds: [],
+			active: [{ label: "model", status: "running" }],
+		},
+	};
+}
+
 function passedChecks() {
 	return {
 		acceptance: {
@@ -2721,6 +3397,17 @@ function passedChecks() {
 		quality: {
 			enabled: true,
 			rounds: [{ round: 1, result: "passed", summary: "质量检查通过" }],
+			active: null,
+		},
+	};
+}
+
+function failedChecks() {
+	return {
+		...emptyChecks(),
+		acceptance: {
+			enabled: true,
+			rounds: [{ round: 1, result: "failed", summary: "完成验收失败" }],
 			active: null,
 		},
 	};
@@ -2850,28 +3537,37 @@ function recordSend(state, message, options) {
 
 function commandContext(state, cwd, sessionFile, replaced = false) {
 	state.activeSessionFile = sessionFile;
+	const ui = {
+		async confirm(title, message) {
+			state.confirms.push({ title, message });
+			return state.confirm;
+		},
+		async select(_title, options) {
+			state.selects.push(options);
+			return state.select ?? options[1];
+		},
+		notify(message, level) {
+			state.notifications.push(`${message}:${level ?? "info"}`);
+		},
+		setStatus(_key, value) {
+			state.statuses.push(value);
+		},
+		setWorkingVisible(value) {
+			state.workingVisible.push(value);
+		},
+		setWidget(key, content, options) {
+			state.widgets.push({ key, content, options });
+		},
+	};
 	const ctx = {
 		cwd,
 		hasUI: true,
-		ui: {
-			async confirm(title, message) {
-				state.confirms.push({ title, message });
-				return state.confirm;
-			},
-			async select(_title, options) {
-				state.selects.push(options);
-				return state.select ?? options[1];
-			},
-			notify(message, level) {
-				state.notifications.push(`${message}:${level ?? "info"}`);
-			},
-			setStatus(_key, value) {
-				state.statuses.push(value);
-			},
-			setWorkingVisible() {},
-			setWidget(key, content, options) {
-				state.widgets.push({ key, content, options });
-			},
+		get ui() {
+			if (state.staleSessionFiles.has(sessionFile))
+				throw new Error(
+					"This extension ctx is stale after session replacement or reload.",
+				);
+			return ui;
 		},
 		isIdle() {
 			return state.idle;
@@ -2879,13 +3575,15 @@ function commandContext(state, cwd, sessionFile, replaced = false) {
 		hasPendingMessages() {
 			return state.pending;
 		},
-		sessionManager: sessionManager(state, cwd, sessionFile),
+		sessionManager: sessionManager(state, cwd, sessionFile, replaced),
 		async waitForIdle() {},
 		async newSession(options) {
 			const nextFile = join(cwd, `session-${++state.sessionCount}.jsonl`);
 			state.newSessions.push({ from: sessionFile, to: nextFile });
 			writeFileSync(nextFile, "");
 			if (state.stalePiAfterSessionReplacement) state.piStale = true;
+			if (state.staleCtxAfterSessionReplacement)
+				state.staleSessionFiles.add(sessionFile);
 			const nextCtx = commandContext(state, cwd, nextFile, true);
 			state.activeCtx = nextCtx;
 			await options?.withSession?.(nextCtx);
@@ -2894,6 +3592,8 @@ function commandContext(state, cwd, sessionFile, replaced = false) {
 		async switchSession(path, options) {
 			state.switches.push(path);
 			if (state.stalePiAfterSessionReplacement) state.piStale = true;
+			if (state.staleCtxAfterSessionReplacement)
+				state.staleSessionFiles.add(sessionFile);
 			const nextCtx = commandContext(state, cwd, path, true);
 			state.activeCtx = nextCtx;
 			await options?.withSession?.(nextCtx);
@@ -2915,9 +3615,11 @@ function commandContext(state, cwd, sessionFile, replaced = false) {
 	return ctx;
 }
 
-function sessionManager(state, cwd, sessionFile) {
+function sessionManager(state, cwd, sessionFile, replaced = false) {
 	return {
 		getSessionFile() {
+			if (replaced && state.throwReplacedSessionFile)
+				throw new Error("boom after replacement");
 			return sessionFile;
 		},
 		getSessionDir() {
@@ -2958,6 +3660,7 @@ function newState(cwd) {
 		statuses: [],
 		customMessages: [],
 		widgets: [],
+		workingVisible: [],
 		execs: [],
 		sessionNames: [],
 		switches: [],
@@ -2969,6 +3672,9 @@ function newState(cwd) {
 		failSend: false,
 		piStale: false,
 		stalePiAfterSessionReplacement: false,
+		staleCtxAfterSessionReplacement: false,
+		staleSessionFiles: new Set(),
+		throwReplacedSessionFile: false,
 	};
 }
 
@@ -3101,7 +3807,10 @@ function latestWidgetText(state) {
 	const content = state.widgets.at(-1)?.content;
 	const widget =
 		typeof content === "function"
-			? content(undefined, { fg: (_color, value) => value })
+			? content(
+					{ requestRender() {} },
+					{ fg: (_color, value) => value, bold: (value) => value },
+				)
 			: content;
 	return widget?.render ? widget.render(100).join("\n") : "";
 }

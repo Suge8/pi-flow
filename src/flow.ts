@@ -7,6 +7,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { onFlowGoalCompleted } from "./flow/completion.js";
 import {
+	isWorkerContext,
+	registerWorkerCommand,
+	runWorkerCommand,
+} from "./flow/execution/worker-command.js";
+import {
 	cancelFlow,
 	continueFlow,
 	handleGoalCompletionEnd,
@@ -41,14 +46,12 @@ import {
 	sendOrchestrationPrompt,
 } from "./shared/internal-prompt.js";
 import { liveReportUrl } from "./shared/report-server.js";
-import {
-	installLocalizedUi,
-	localizeUserText,
-	notifyUser,
-} from "./shared/ui-language.js";
+import { installLocalizedUi, localizeUserText } from "./shared/ui-language.js";
 
 export default function flowExtension(pi: ExtensionAPI) {
+	registerWorkerCommand(pi);
 	onFlowGoalCompleted((fact, emittedCtx) => {
+		if (isWorkerContext(emittedCtx)) return;
 		rememberCompletionFact(fact);
 		const ctx = emittedCtx
 			? (emittedCtx as ExtensionContext)
@@ -68,22 +71,10 @@ export default function flowExtension(pi: ExtensionAPI) {
 	pi.on("agent_end", async (event, ctx) => {
 		const generated = await handleGenerationEnd(pi, ctx, event);
 		if (generated?.autoStart) {
-			const started = await startFlow(pi, generated.startContext, generated.id);
-			notifyUser(
-				ctx,
-				generated.language === "en"
-					? started
-						? `Flow plan generated and started: ${generated.id}`
-						: `Flow plan generated, but auto-start failed. Run /flow start ${generated.id}.`
-					: started
-						? `Flow 计划已生成并启动：${generated.id}`
-						: `Flow 计划已生成，但自动启动失败。运行 /flow start ${generated.id}。`,
-				started ? "info" : "warning",
-				generated.language,
-			);
+			await startFlow(pi, generated.startContext, generated.id);
 			return;
 		}
-		await handleGoalCompletionEnd(pi, ctx);
+		if (!isWorkerContext(ctx)) await handleGoalCompletionEnd(pi, ctx);
 	});
 	pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return;
@@ -160,6 +151,7 @@ async function handleFlowCommand(
 			return ctx.ui.notify("用法：/flow continue", "warning");
 		return continueFlow(pi, ctx);
 	}
+	if (command === "worker") return runWorkerCommand(pi, ctx, rest);
 	if (command === "cancel") {
 		if (rest.length > 0) return ctx.ui.notify("用法：/flow cancel", "warning");
 		if (clearFlowGeneration(ctx))

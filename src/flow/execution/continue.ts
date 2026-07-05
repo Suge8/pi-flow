@@ -217,6 +217,23 @@ function completeCurrentGoal(
 	fact: GoalCompletionFact,
 ) {
 	const goalIndex = flow.currentGoal;
+	const completed = completeGoalWithFact(dir, flow, goalIndex, fact);
+	const final = goalIndex === flow.goals.length - 1;
+	const saved = writeFlow(dir, {
+		...completed,
+		status: final ? "complete" : "running",
+		currentGoal: final ? goalIndex : goalIndex + 1,
+	});
+	writeFlowHtml(dir, saved);
+	return saved;
+}
+
+export function completeGoalWithFact(
+	dir: string,
+	flow: FlowState,
+	goalIndex: number,
+	fact: GoalCompletionFact,
+) {
 	const goal = flow.goals[goalIndex];
 	const handoff = readOrGenerateHandoff(dir, goal, fact);
 	const goals = replaceGoal(flow, goalIndex, {
@@ -232,15 +249,7 @@ function completeCurrentGoal(
 		},
 		checks: fact.checks ?? goal.checks,
 	});
-	const final = goalIndex === flow.goals.length - 1;
-	const saved = writeFlow(dir, {
-		...flow,
-		status: final ? "complete" : "running",
-		currentGoal: final ? goalIndex : goalIndex + 1,
-		goals,
-	});
-	writeFlowHtml(dir, saved);
-	return saved;
+	return { ...flow, goals };
 }
 
 function commandContextForAutoStart(

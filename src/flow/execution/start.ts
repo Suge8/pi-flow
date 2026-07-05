@@ -14,8 +14,13 @@ import { sendResultCard } from "../../shared/result-card.js";
 import { notifyUser } from "../../shared/ui-language.js";
 import { writeFlowHtml } from "../html.js";
 import { currentSessionFile } from "../ownership.js";
+import {
+	activeParallelBatch,
+	runParallelBatch,
+} from "../parallel/batch-runner.js";
 import { planGoalPrompt } from "../prompt.js";
 import { rememberFlowContext } from "../runtime.js";
+import { computeReadyBatch } from "../scheduler.js";
 import { planSnapshotHash } from "../snapshot.js";
 import { findFlow, latestFlow, writeFlow } from "../store.js";
 import type { FlowGoal, FlowLocation, FlowState } from "../types.js";
@@ -79,6 +84,16 @@ export async function startFlow(
 		notifyUser(ctx, flowCannotStartMessage(flow), "warning", flow.language);
 		return false;
 	}
+	const activeBatch = activeParallelBatch(ctx.cwd);
+	if (activeBatch) {
+		notifyUser(
+			ctx,
+			runningFlowMessage(activeBatch.flow),
+			"warning",
+			activeBatch.flow.language,
+		);
+		return false;
+	}
 	const running = runningFlowOrNotify(ctx);
 	if (running === null) return false;
 	if (running) {
@@ -99,7 +114,11 @@ export async function startGoalInNewSession(
 	dir: string,
 	flow: FlowState,
 	goalIndex: number,
-) {
+): Promise<boolean> {
+	const batch = computeReadyBatch(flow);
+	if (batch?.mode === "parallel")
+		return startParallelBatch(pi, ctx, dir, flow, batch.indices);
+	const serialGoalIndex = batch?.indices[0] ?? goalIndex;
 	if (typeof ctx.newSession !== "function") {
 		notifyUser(
 			ctx,
@@ -112,14 +131,28 @@ export async function startGoalInNewSession(
 		return false;
 	}
 	let prepared = false;
+	let replacementCtx: ExtensionCommandContext | undefined;
 	try {
 		const result = await ctx.newSession({
 			withSession: async (sessionCtx) => {
+				replacementCtx = sessionCtx;
 				rememberFlowContext(sessionCtx);
 				try {
-					const saved = prepareGoalStart(sessionCtx, dir, flow, goalIndex, pi);
+					const saved = prepareGoalStart(
+						sessionCtx,
+						dir,
+						flow,
+						serialGoalIndex,
+						pi,
+					);
 					await bindFlowReportStatus(sessionCtx, dir, flow.language);
-					scheduleGoalPromptStart(sessionCtx, dir, flow, saved, goalIndex);
+					scheduleGoalPromptStart(
+						sessionCtx,
+						dir,
+						flow,
+						saved,
+						serialGoalIndex,
+					);
 					prepared = true;
 				} catch (error) {
 					notifyUser(
@@ -136,15 +169,42 @@ export async function startGoalInNewSession(
 		});
 		return prepared && !result.cancelled;
 	} catch (error) {
-		if (!isStaleSessionError(error))
-			notifyUser(
-				ctx,
-				flowStepSessionStartFailedMessage(formatError(error), flow.language),
-				"error",
-				flow.language,
-			);
+		const message = flowStepSessionStartFailedMessage(
+			formatError(error),
+			flow.language,
+		);
+		const notified = replacementCtx
+			? notifySessionStartFailed(replacementCtx, message, flow.language)
+			: notifySessionStartFailed(ctx, message, flow.language);
+		if (!notified) throw new Error(message);
 		return false;
 	}
+}
+
+async function startParallelBatch(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	dir: string,
+	flow: FlowState,
+	batchIndices: number[],
+): Promise<boolean> {
+	await bindFlowReportStatus(ctx, dir, flow.language);
+	const result = await runParallelBatch(ctx, dir, flow, batchIndices, pi, {
+		signal: ctx.signal,
+	});
+	if (
+		!result.allSuccess ||
+		result.cancelled ||
+		result.flow.status === "complete"
+	)
+		return result.allSuccess && !result.cancelled;
+	return startGoalInNewSession(
+		pi,
+		ctx,
+		dir,
+		result.flow,
+		result.flow.currentGoal,
+	);
 }
 
 export function prepareGoalStart(
@@ -276,6 +336,20 @@ function runningFlowMessage(flow: FlowState) {
 	return flow.language === "en"
 		? `A Flow is already running: ${flow.id}`
 		: `已有运行中的 Flow：${flow.id}`;
+}
+
+function notifySessionStartFailed(
+	ctx: ExtensionCommandContext,
+	message: string,
+	language: FlowState["language"],
+) {
+	try {
+		notifyUser(ctx, message, "error", language);
+		return true;
+	} catch (notifyError) {
+		if (isStaleSessionError(notifyError)) return false;
+		throw notifyError;
+	}
 }
 
 function flowStepSessionStartFailedMessage(

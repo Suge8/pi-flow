@@ -5,6 +5,10 @@ import { settledChecks } from "../../shared/report-review.js";
 import { confirmUser, notifyUser } from "../../shared/ui-language.js";
 import { writeFlowHtml } from "../html.js";
 import { currentSessionFile } from "../ownership.js";
+import {
+	activeParallelBatch,
+	cancelParallelBatch,
+} from "../parallel/batch-runner.js";
 import { rememberFlowContext } from "../runtime.js";
 import { currentGoal, writeFlow } from "../store.js";
 import { closeFlowGoalWatcher } from "../watcher.js";
@@ -43,6 +47,8 @@ export async function pauseFlow(ctx: ExtensionCommandContext) {
 }
 
 export async function cancelFlow(ctx: ExtensionCommandContext) {
+	const activeBatch = activeParallelBatch(ctx.cwd);
+	if (activeBatch) return cancelActiveParallelFlow(ctx, activeBatch);
 	const location = runningFlowOrNotify(ctx);
 	if (location === null) return;
 	if (!location) return notifyNoRunningFlow(ctx);
@@ -59,9 +65,11 @@ export async function cancelFlow(ctx: ExtensionCommandContext) {
 		);
 		if (!confirmed) return;
 	}
+	const parallelCancelled = cancelParallelBatch(location.dir);
 	const saved = writeFlow(location.dir, {
 		...location.flow,
 		status: "cancelled",
+		parallelBatch: null,
 		goals: location.flow.goals.map((goal) => ({
 			...goal,
 			checks: settledChecks(goal.checks),
@@ -69,23 +77,49 @@ export async function cancelFlow(ctx: ExtensionCommandContext) {
 	});
 	closeFlowGoalWatcher();
 	writeFlowHtml(location.dir, saved);
-	if (
-		plan?.sessionFile &&
-		plan.sessionFile !== currentSessionFile(ctx) &&
-		existsSync(plan.sessionFile)
-	) {
-		await ctx.switchSession(plan.sessionFile, {
-			withSession: async (sessionCtx) => {
-				rememberFlowContext(sessionCtx);
-				pauseGoalFromFlow(sessionCtx);
-			},
-		});
-	} else pauseGoalFromFlow(ctx);
+	if (!parallelCancelled) {
+		if (
+			plan?.sessionFile &&
+			plan.sessionFile !== currentSessionFile(ctx) &&
+			existsSync(plan.sessionFile)
+		) {
+			await ctx.switchSession(plan.sessionFile, {
+				withSession: async (sessionCtx) => {
+					rememberFlowContext(sessionCtx);
+					pauseGoalFromFlow(sessionCtx);
+				},
+			});
+		} else pauseGoalFromFlow(ctx);
+	}
 	notifyUser(
 		ctx,
 		flowCancelledMessage(saved.id, saved.language),
 		"warning",
 		saved.language,
+	);
+}
+
+async function cancelActiveParallelFlow(
+	ctx: ExtensionCommandContext,
+	batch: NonNullable<ReturnType<typeof activeParallelBatch>>,
+) {
+	const confirmed = await confirmUser(
+		ctx,
+		batch.flow.language === "en" ? "Cancel Flow?" : "取消 Flow？",
+		batch.flow.language === "en"
+			? `${batch.flow.id} will be cancelled. Files are kept.`
+			: `将取消 ${batch.flow.id}，文件会保留。`,
+		undefined,
+		batch.flow.language,
+	);
+	if (!confirmed) return;
+	batch.cancel();
+	await batch.wait();
+	notifyUser(
+		ctx,
+		flowCancelledMessage(batch.flow.id, batch.flow.language),
+		"warning",
+		batch.flow.language,
 	);
 }
 

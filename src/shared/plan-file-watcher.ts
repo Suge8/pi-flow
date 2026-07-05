@@ -1,28 +1,26 @@
-import { type FSWatcher, watch } from "node:fs";
+import { existsSync, type FSWatcher, watch } from "node:fs";
+import { basename, dirname } from "node:path";
 
 type WatchOptions = {
+	keepExisting?: boolean;
 	skipIfSame?: boolean;
 };
 
 export function createPlanFileWatcher() {
-	let activeWatcher: FSWatcher | undefined;
-	let activeFile: string | undefined;
+	const activeWatchers = new Map<string, FSWatcher>();
 
 	function watchFile(
 		file: string,
 		refresh: () => void,
 		options: WatchOptions = {},
 	) {
-		if (options.skipIfSame && activeFile === file) return;
-		close();
-		activeFile = file;
+		if (isSameWatch(file, options)) return;
+		if (options.keepExisting) closeFile(file);
+		else close();
 		try {
-			activeWatcher = watch(file, { persistent: false }, () => {
-				if (activeFile !== file) return;
-				refreshSafely(refresh);
-			});
+			activeWatchers.set(file, createWatcher(file, refresh));
 		} catch {
-			activeFile = undefined;
+			activeWatchers.delete(file);
 		}
 	}
 
@@ -31,9 +29,50 @@ export function createPlanFileWatcher() {
 	}
 
 	function close() {
-		activeWatcher?.close();
-		activeWatcher = undefined;
-		activeFile = undefined;
+		for (const watcher of activeWatchers.values()) watcher.close();
+		activeWatchers.clear();
+	}
+
+	function closeFile(file: string) {
+		activeWatchers.get(file)?.close();
+		activeWatchers.delete(file);
+	}
+
+	function isSameWatch(file: string, options: WatchOptions) {
+		if (!options.skipIfSame || !activeWatchers.has(file)) return false;
+		return options.keepExisting || activeWatchers.size === 1;
+	}
+
+	function createWatcher(file: string, refresh: () => void) {
+		return existsSync(file)
+			? watchExistingFile(file, refresh)
+			: watchParentForFile(file, refresh);
+	}
+
+	function watchExistingFile(file: string, refresh: () => void) {
+		let watcher: FSWatcher;
+		watcher = watch(file, { persistent: false }, () => {
+			if (activeWatchers.get(file) !== watcher) return;
+			refreshSafely(refresh);
+		});
+		return watcher;
+	}
+
+	function watchParentForFile(file: string, refresh: () => void) {
+		let watcher: FSWatcher;
+		watcher = watch(dirname(file), { persistent: false }, (_event, name) => {
+			if (activeWatchers.get(file) !== watcher) return;
+			if (name !== null && String(name) !== basename(file)) return;
+			if (!existsSync(file)) return;
+			refreshSafely(refresh);
+			try {
+				watcher.close();
+				activeWatchers.set(file, watchExistingFile(file, refresh));
+			} catch {
+				activeWatchers.delete(file);
+			}
+		});
+		return watcher;
 	}
 
 	return { watchFile, refresh, close };

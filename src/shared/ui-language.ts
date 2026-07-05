@@ -117,11 +117,6 @@ const EN_REPLACEMENTS: [string, string][] = [
 		"当前目录已有 Flow 计划在生成中；等它完成后再运行 /flow。",
 		"This directory already has a Flow plan being generated; wait for it to finish before running /flow again.",
 	],
-	["Flow 计划已生成并启动", "Flow plan generated and started"],
-	[
-		"Flow 计划已生成，但自动启动失败。运行 /flow start",
-		"Flow plan generated, but auto-start failed. Run /flow start",
-	],
 	["Flow 计划已生成", "Flow plan generated"],
 	[
 		"计划已开始生成；完成后会自动校验。",

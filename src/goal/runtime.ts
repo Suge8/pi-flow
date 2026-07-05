@@ -198,6 +198,11 @@ export type FlowGoalContinueResult =
 	| "no_goal"
 	| "not_resumable";
 
+interface FlowGoalStartOptions {
+	artifact?: { artifactDir: string; artifactId: string };
+	rememberFlowContext?: boolean;
+}
+
 export { yieldForGoalReviewCard };
 
 export function cancelGoalRecoveryAfterUserAction() {
@@ -488,7 +493,9 @@ export default function goal(pi: ExtensionAPI) {
 			return;
 		}
 		if (finalAssistant?.stopReason === "stop") {
-			scheduleGoalStateReview(ctx, goalRuntimeState.activeGoal);
+			if (ctx.mode === "json" || ctx.mode === "print")
+				await startGoalStateReview(ctx, goalRuntimeState.activeGoal);
+			else scheduleGoalStateReview(ctx, goalRuntimeState.activeGoal);
 			return;
 		}
 		if (goalRuntimeState.completionAuditPending?.goalId === goalId) return;
@@ -504,6 +511,7 @@ export default function goal(pi: ExtensionAPI) {
 export async function startGoalFromFlow(
 	input: string | { objective: string; prompt: string },
 	ctx: StatusContext,
+	options: FlowGoalStartOptions = {},
 ) {
 	const objective = typeof input === "string" ? input : input.objective;
 	const prompt = typeof input === "string" ? input : input.prompt;
@@ -539,9 +547,13 @@ export async function startGoalFromFlow(
 		trimmed,
 		undefined,
 		currentTokenTotal(ctx),
-		undefined,
+		options.artifact,
 		language,
 	);
+	if (goalRuntimeState.activeGoal.artifactDir) {
+		syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
+		watchGoalPlan(goalRuntimeState.activeGoal.artifactDir);
+	}
 	persistGoal(goalRuntimeState.activeGoal, ctx);
 	updateStatus(ctx, goalRuntimeState.activeGoal);
 	const started = await sendRuntimePrompt(pi, ctx, prompt, { language });
@@ -549,7 +561,7 @@ export async function startGoalFromFlow(
 		clearActiveGoal(ctx);
 		return false;
 	}
-	rememberFlowContext(ctx);
+	if (options.rememberFlowContext !== false) rememberFlowContext(ctx);
 	return true;
 }
 
@@ -2429,8 +2441,9 @@ function clearGoalUi(ctx: StatusContext) {
 
 function goalTodoPromptContext(
 	ctx: StatusContext,
-	_goal: ActiveGoal,
+	goal: ActiveGoal,
 ): GoalTodoPromptContext {
+	if (goal.artifactDir) return {};
 	const flow = flowContext(ctx);
 	if (!flow) return {};
 	return {

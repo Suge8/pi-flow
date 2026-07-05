@@ -72,7 +72,6 @@ export interface FlowGenerationReady {
 	kind: "ready";
 	id: string;
 	autoStart: boolean;
-	language: Language;
 	startContext: ExtensionCommandContext;
 }
 
@@ -221,7 +220,6 @@ export async function handleGenerationEnd(
 			kind: "ready",
 			id: flow.id,
 			autoStart: pending.autoStart === true,
-			language: flow.language,
 			startContext: pending.startContext,
 		};
 	}
