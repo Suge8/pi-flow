@@ -137,8 +137,7 @@ cp config.template.json config.json
 ### 30 seconds to start
 
 ```text
-/goal          # Single target: plan → execute → accept → quality check
-/flow          # Multi-goal: chain goals, advance and hand off one by one
+/flow          # Plan → execute → accept → quality check; single-step or multi-step automatically
 /review        # Quality-check AI operations
 ```
 
@@ -148,30 +147,27 @@ cp config.template.json config.json
 Inline request:
 
 ```text
-/goal Fix login state after refresh
+/flow Fix login state after refresh
 /flow Refactor the login flow in safe steps
 ```
 
 Markdown request file:
 
 ```text
-/goal task.md
+/flow task.md
 /flow plan.md
 ```
 
 Continue, cancel, status:
 
 ```text
-/goal continue | cancel | status
 /flow continue | cancel | status
 ```
 
 Target a previous item:
 
 ```text
-/goal status <id>
-/goal start <id>
-/flow status <id>
+/flow status <id>   # full id or short id, e.g. F1
 /flow start <id>
 ```
 
@@ -184,8 +180,7 @@ Request → plan → execution → completion acceptance → quality check → c
                            ↘ keep fixing if a check fails ↙
 ```
 
-- `/goal` — one focused target.
-- `/flow` — massive work, multi-goal chain with per-goal plan / accept / report / handoff.
+- `/flow` — one entrance for focused tasks and larger multi-step work; each step has plan / accept / report / handoff.
 - Reports run at `http://127.0.0.1:<port>`.
 - Completion acceptance: "Is the requirement truly done?"
 - Quality checks: "Is the implementation clean, reliable, and maintainable?"
@@ -321,8 +316,7 @@ cp config.template.json config.json
 ### 30 秒开始
 
 ```text
-/goal          # 单目标：计划 → 执行 → 验收 → 质量检查
-/flow          # 多目标：串联多个 goal，逐个推进并交接
+/flow          # 计划 → 执行 → 验收 → 质量检查；自动判断单步或多步
 /review        # 对 AI 操作做质量检查
 ```
 
@@ -332,30 +326,27 @@ cp config.template.json config.json
 直接带需求：
 
 ```text
-/goal 修复刷新后的登录状态
+/flow 修复刷新后的登录状态
 /flow 重构登录流程，分步骤安全推进
 ```
 
 把 md 文件作为需求：
 
 ```text
-/goal task.md
+/flow task.md
 /flow plan.md
 ```
 
 继续、取消、状态：
 
 ```text
-/goal continue | cancel | status
 /flow continue | cancel | status
 ```
 
 指定历史目标：
 
 ```text
-/goal status <id>
-/goal start <id>
-/flow status <id>
+/flow status <id>   # 支持完整 id 或短 id，例如 F1
 /flow start <id>
 ```
 

@@ -4,13 +4,13 @@
 
 ## 状态
 
-- `goal.json` / `flow.json` 是唯一规范状态源，当前 `schemaVersion: 5`。
-- 模型只写 `goal.semantic.json` / `flow.semantic.json` 和计划 Markdown；builder 组装规范状态。
+- `flow.json` 是唯一规范状态源，当前 `schemaVersion: 6`。
+- 模型只写 `flow.semantic.json` 和计划 Markdown；builder 组装规范状态。
 - `flow.semantic.json` 的 `goals[]` 可声明 `dependsOn`（先序 0-based index；缺省等同依赖前一步，`[]` 表示无前置）和 `writeScope`（模块/目录 glob；缺省视为未知写入范围）。
-- Flow 最多 10 个 `normal` 执行步骤；最后必须且只能有 1 个 `final_acceptance`，最终验收不占 10 个执行步骤名额。
+- Flow 最多 10 个 `normal` 执行步骤；单步 Flow 只含 1 个 `normal` 且不写 `final_acceptance`；多步 Flow 最后必须且只能有 1 个 `final_acceptance`，最终验收不占 10 个执行步骤名额。
 - `flow.json.parallelBatch` 是落盘调度门闩：`null` 或缺省表示无活动批次；运行中的并行批次只存在父进程内存和 live HTML，收口后（成功/失败/取消）写回 `null`。
-- 并行 worker 只写 `workers/G<index>/result.json`；批次运行中状态保存在父进程内存，所有 worker 结束前不写 `flow.json`。父进程收齐后 fan-in 写 `flow.json`：成功 worker 标记 complete，失败或缺 `result.json` 的 worker 回 pending。失败收口保持 Flow running，`currentGoal` 指向首个失败 Goal，`errors` 写失败 worker 的 step label、exit code / signal、是否缺 `result.json`；不自动重试，用户运行 `/flow continue` 后只调度仍 pending 的失败 Goal，已成功的同批 Goal 不重跑。取消清空 `parallelBatch` 并标记 Flow cancelled。
-- 模型不写 `checks`、`completionCursor`、`goal.html`、`flow.html`。
+- 并行 worker 只在 `workers/G<index>/` 写内部 `plan.md`、`state.json` 和完成信号 `result.json`；批次运行中主状态保存在父进程内存，所有 worker 结束前不写 `flow.json`。父进程收齐后 fan-in 写 `flow.json`：成功 worker 标记 complete，失败或缺 `result.json` 的 worker 回 pending。失败收口保持 Flow running，`currentGoal` 指向首个失败 Goal，`errors` 写失败 worker 的 step label、exit code / signal、是否缺 `result.json`；不自动重试，用户运行 `/flow continue` 后只调度仍 pending 的失败 Goal，已成功的同批 Goal 不重跑。取消清空 `parallelBatch` 并标记 Flow cancelled。
+- 模型不写 `checks`、`completionCursor`、`flow.html`。
 - `checks.acceptance` = 完成验收；`checks.quality` = 质量检查；两者结构都是 `enabled / rounds / active`。
 - `completionCursor` 只用于内部恢复路由，用户界面不展示。
 - Flow 总用时只读 `startedAt`：草稿为 `null`，运行态必须是时间戳；不能用 `createdAt` 兜底。
@@ -20,11 +20,11 @@
 - 调度器是纯函数：pending Goal 依赖均 complete 后才 ready；未声明 `dependsOn` 默认依赖前一步，未声明或空 `writeScope` 保守串行；有 running Goal 或内存/落盘 `parallelBatch` 时不产生新批次。
 - 同一批 ready Goal 只有在 `writeScope` 两两不重叠时并行；重叠时按 index 取第一组不重叠子集，其余留到下一批。
 - 多波次采用批次级 fan-in：同一批所有 worker 都结束并完成 fan-in 后，父 session 才重新运行调度器启动下一批；不做 worker 级流式下游调度。
-- `final_acceptance` 是最终屏障：只有全部 `normal` Goal complete 后才 ready，且总是单独串行运行；它不参与 ready 批次的 `writeScope` 并行选择。
+- `final_acceptance` 是多步 Flow 的最终屏障：只有全部 `normal` step complete 后才 ready，且总是单独串行运行；它不参与 ready 批次的 `writeScope` 并行选择。
 - 父 session 是唯一调度者和 `flow.json` 写入者；worker 不触发下一步，不判断 fan-in。
-- Worker 命令为 `/flow worker <flowId> <goalIndex>`；每个 worker 使用 `workers/G<index>/` 下的 `session.jsonl`、`plan.md`、`goal.json`、`goal.html`，完成信号只读 `result.json`。
-- 并行批次期间主 session 显示 lane 看板并隐藏默认输入；lane 状态来自 worker JSON event 与 worker `goal.json` 的 `checks.active` / `rounds`。
-- `flow.html` 在并行批次期间监听批次内 Goal markdown、worker `plan.md` 与 worker `goal.json`，用 worker artifact 渲染实时卡片；批次结束后关闭 watcher。
+- Worker 命令为 `/flow worker <flowId> <goalIndex>`；每个 worker 使用 `workers/G<index>/` 下的 `session.jsonl`、`plan.md`、`state.json`，完成信号只读 `result.json`。
+- 并行批次期间主 session 显示 lane 看板并隐藏默认输入；lane 状态来自 worker JSON event 与 worker `state.json` 的 `checks.active` / `rounds`。
+- `flow.html` 在并行批次期间监听批次内 step markdown、worker `plan.md` 与 worker `state.json`，用 worker 内部状态渲染实时卡片；批次结束后关闭 watcher。
 
 ## 计划 Markdown Todo
 
@@ -48,7 +48,7 @@
 
 ## 角色模型
 
-- `modelRoles.planner` 用于 `/goal` / `/flow` 对齐、生成、repair 入口；`modelRoles.executor` 用于 `/goal start` 与 Flow 新步骤启动入口。
+- `modelRoles.planner` 用于 `/flow` 对齐、生成、repair 入口；`modelRoles.executor` 用于 Flow 新步骤启动入口。
 - planner / executor 只能是 `"current"` 或 `{ model, thinking }`；模型名必须是精确 `provider/model-id`，`thinking` 必填。
 - 插件只在阶段入口用公开 API `pi.setModel()` / `pi.setThinkingLevel()` 切一次；不恢复、不持久化原模型，不在后续 prompt 抢回。
 - 配置模型不可用或未登录时阻塞并提示，不 fallback。
