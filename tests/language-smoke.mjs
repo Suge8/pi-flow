@@ -283,6 +283,35 @@ try {
 			!badFlow.errors.some((error) => error.includes("必须")),
 		"English Flow validator error leaked Chinese",
 	);
+	const badParallelFlowDir = join(out, "F1-bad-parallel");
+	mkdirSync(badParallelFlowDir, { recursive: true });
+	const badParallelFlow = sampleFlow();
+	badParallelFlow.id = "F1-bad-parallel";
+	badParallelFlow.parallelBatch = "bad";
+	badParallelFlow.goals.push({
+		...badParallelFlow.goals[0],
+		index: 1,
+		title: "Final acceptance",
+		role: "final_acceptance",
+		file: "goal-2.md",
+		dependsOn: [1],
+	});
+	writeFileSync(
+		join(badParallelFlowDir, "flow.json"),
+		`${JSON.stringify(badParallelFlow)}\n`,
+	);
+	const badParallelFlowResult =
+		flowValidator.validateFlowDir(badParallelFlowDir);
+	assert(
+		badParallelFlowResult.errors.includes(
+			"parallelBatch must be an array or null",
+		) &&
+			badParallelFlowResult.errors.includes(
+				"goals[1].dependsOn[0] must point to an earlier goals index",
+			) &&
+			!badParallelFlowResult.errors.some(hasChinese),
+		"English parallel Flow validator error leaked Chinese",
+	);
 	const flowDir = join(out, "flow-en");
 	mkdirSync(flowDir, { recursive: true });
 	writeFileSync(

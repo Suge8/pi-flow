@@ -186,7 +186,11 @@ function validationErrorLine(text: string) {
 	if (match) return `${match[1]} must match ${match[2]}`;
 	match = /^(.+) 必须在 (\d+) 到 (\d+) 之间$/u.exec(text);
 	if (match) return `${match[1]} must be between ${match[2]} and ${match[3]}`;
-	match = /^(.+) 必须是 (.+)$/u.exec(text);
+	match = /^(.+) 必须指向先序 goals 下标$/u.exec(text);
+	if (match) return `${match[1]} must point to an earlier goals index`;
+	match = /^(.+) 必须指向 goals 下标$/u.exec(text);
+	if (match) return `${match[1]} must point to a goals index`;
+	match = /^(.+) 必须是\s*(.+)$/u.exec(text);
 	if (match) return `${match[1]} must be ${validationTypeText(match[2])}`;
 	match = /^(.+) 必须为 (.+)$/u.exec(text);
 	if (match) return `${match[1]} must be ${validationTypeText(match[2])}`;
@@ -248,6 +252,7 @@ function typeText(text: string) {
 		.replace("字符串数组", "a string array")
 		.replace("非空字符串", "a non-empty string")
 		.replace("字符串或 null", "a string or null")
+		.replace("数组或 null", "an array or null")
 		.replace("非空数组", "a non-empty array")
 		.replace("布尔值", "a boolean")
 		.replace("时间戳", "a timestamp")

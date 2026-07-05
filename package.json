@@ -50,7 +50,7 @@
 		"release:patch": "npm run release -- patch",
 		"release:minor": "npm run release -- minor",
 		"release:major": "npm run release -- major",
-		"test": "node tests/language-smoke.mjs && node tests/plan-smoke.mjs && node tests/session-transcript-smoke.mjs && node tests/goal-review-smoke.mjs && node tests/review-smoke.mjs && node tests/activity-frame-smoke.mjs && node tests/status-smoke.mjs && node tests/report-server-smoke.mjs && node tests/goal-activity-smoke.mjs && node tests/result-card-smoke.mjs && node tests/service-tier-smoke.mjs && node tests/model-roles-smoke.mjs && node tests/flow-smoke.mjs && node tests/footer-smoke.mjs && node tests/copy-lint-smoke.mjs",
+		"test": "node tests/language-smoke.mjs && node tests/plan-smoke.mjs && node tests/scheduler.smoke.mjs && node tests/session-transcript-smoke.mjs && node tests/goal-review-smoke.mjs && node tests/review-smoke.mjs && node tests/activity-frame-smoke.mjs && node tests/status-smoke.mjs && node tests/report-server-smoke.mjs && node tests/goal-activity-smoke.mjs && node tests/result-card-smoke.mjs && node tests/service-tier-smoke.mjs && node tests/model-roles-smoke.mjs && node tests/flow-smoke.mjs && node tests/footer-smoke.mjs && node tests/copy-lint-smoke.mjs",
 		"typecheck": "tsc --noEmit",
 		"prepublishOnly": "npm run check && npm test"
 	},

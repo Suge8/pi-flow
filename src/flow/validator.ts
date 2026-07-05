@@ -88,6 +88,11 @@ export function validateFlowShape(flow: FlowState, errors: string[]) {
 		errors.push("repairAttempts 必须是整数");
 	validateSource(flow.source, errors);
 	validateErrorsArray(flow.errors, errors);
+	validateParallelBatch(
+		flow.parallelBatch,
+		Array.isArray(flow.goals) ? flow.goals.length : undefined,
+		errors,
+	);
 	if (!Array.isArray(flow.goals)) {
 		errors.push("goals 必须是数组");
 		return;
@@ -146,6 +151,12 @@ function validateGoalShape(
 	)
 		errors.push(`goals[${expectedIndex}] role 非法：${String(goal.role)}`);
 	if (!nonEmpty(goal.file)) errors.push(`goals[${expectedIndex}] 缺少 file`);
+	validateDependsOn(goal.dependsOn, expectedIndex, errors);
+	validateWriteScope(
+		goal.writeScope,
+		`goals[${expectedIndex}].writeScope`,
+		errors,
+	);
 	if (
 		typeof goal.status !== "string" ||
 		!GOAL_STATUSES.has(goal.status as FlowGoalStatus)
@@ -179,6 +190,66 @@ function validateGoalShape(
 			);
 	}
 	validateChecks(goal.checks, errors, `goals[${expectedIndex}].checks`);
+}
+
+function validateParallelBatch(
+	value: unknown,
+	goalCount: number | undefined,
+	errors: string[],
+) {
+	if (value === undefined || value === null) return;
+	if (!Array.isArray(value)) {
+		errors.push("parallelBatch 必须是数组或 null");
+		return;
+	}
+	validateGoalIndexArray(value, "parallelBatch", goalCount, errors);
+}
+
+function validateDependsOn(
+	value: unknown,
+	goalIndex: number,
+	errors: string[],
+) {
+	if (value === undefined) return;
+	if (!Array.isArray(value)) {
+		errors.push(`goals[${goalIndex}].dependsOn 必须是数组`);
+		return;
+	}
+	validateGoalIndexArray(
+		value,
+		`goals[${goalIndex}].dependsOn`,
+		goalIndex,
+		errors,
+		"必须指向先序 goals 下标",
+	);
+}
+
+function validateGoalIndexArray(
+	values: unknown[],
+	path: string,
+	maxExclusive: number | undefined,
+	errors: string[],
+	outOfRangeMessage = "必须指向 goals 下标",
+) {
+	for (const [index, value] of values.entries()) {
+		const itemPath = `${path}[${index}]`;
+		if (typeof value !== "number" || !Number.isInteger(value)) {
+			errors.push(`${itemPath} 必须是整数`);
+			continue;
+		}
+		if (value < 0 || (maxExclusive !== undefined && value >= maxExclusive))
+			errors.push(`${itemPath} ${outOfRangeMessage}`);
+	}
+}
+
+function validateWriteScope(value: unknown, path: string, errors: string[]) {
+	if (value === undefined) return;
+	if (!Array.isArray(value)) {
+		errors.push(`${path} 必须是数组`);
+		return;
+	}
+	if (!value.every((item) => typeof item === "string"))
+		errors.push(`${path} 必须是字符串数组`);
 }
 
 function validateGoalFiles(dir: string, flow: FlowState, errors: string[]) {

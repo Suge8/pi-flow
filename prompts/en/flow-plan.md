@@ -30,10 +30,11 @@ Rules:
 - Write each Step as `- [ ] **Short title**: technical detail`; short title <= 20 Chinese chars or concise English, user-readable; detail can be technical.
   (e.g. `- [ ] **Add verifyToken**: implement verifyToken(token) in auth.ts, handle TokenExpiredError and invalid signature, return parsed payload`)
 - Include the `Handoff` heading when generating; content may be empty.
-- Put dependencies only in `Scope` or `Notes`; do not add structured dependency fields.
+- `dependsOn` is an optional field on each `goals` item. Its value is an array of 0-based indexes of earlier Goals; when omitted, it defaults to depending on the previous Goal; write `[]` when there are explicitly no prerequisites.
+- `writeScope` is an optional field on each `goals` item. Its value is an array of module/directory-level globs (e.g. `src/api/**`); do not list exact files. When omitted, the write range is unknown and the scheduler will conservatively serialize it.
 - Chinese titles use `G<N>-goal.md`; English titles may slug, e.g. `G1-login-ui.md`.
-- `flow.semantic.json` must be a JSON object with only `title` and `goals`; do not write `source`, `schemaVersion`, `status`, `currentGoal`, `checks`, or other runtime fields.
-- The `goals` array order is the execution order. Each item only needs `title`, `role`, and `file`. Do not write `index`; the extension recalculates 0-based indexes from order.
+- `flow.semantic.json` must be a JSON object with only top-level `title` and `goals`; do not write `source`, `schemaVersion`, `status`, `currentGoal`, `parallelBatch`, `checks`, or other runtime fields.
+- The `goals` array order is the execution order. Each item only needs `title`, `role`, `file`, and optional `dependsOn` / `writeScope`. Do not write `index`; the extension recalculates 0-based indexes from order.
 - Non-final Goals use role `normal`; the last Goal uses role `final_acceptance`; do not use `implementation`.
 - Each `file` must be a relative path inside the current Flow directory, and the referenced Goal markdown file must exist.
 - Do not copy the original request verbatim into each Goal; distill it into objective, scope, steps, and success criteria. The extension writes the real source into canonical `flow.json` from the current request.
@@ -48,14 +49,15 @@ Rules:
 - Ask one blocking question only when the target is missing, requirements conflict, or an irreversible decision cannot be reasonably assumed. End the question with `<!-- pi-flow:need-input -->` on its own line.
 - If a question can be answered by reading the codebase, docs, or existing `.flow` files, inspect them instead of asking the user.
 
-Minimal `flow.semantic.json` skeleton:
+Minimal `flow.semantic.json` skeleton with optional parallel fields:
 
 ```json
 {
   "title": "Task title",
   "goals": [
-    { "title": "First Goal", "role": "normal", "file": "G1-goal.md" },
-    { "title": "Final acceptance", "role": "final_acceptance", "file": "G2-final-acceptance.md" }
+    { "title": "First Goal", "role": "normal", "file": "G1-goal.md", "dependsOn": [], "writeScope": ["src/api/**"] },
+    { "title": "Second Goal", "role": "normal", "file": "G2-goal.md", "dependsOn": [], "writeScope": ["src/ui/**"] },
+    { "title": "Final acceptance", "role": "final_acceptance", "file": "G3-final-acceptance.md", "dependsOn": [0, 1] }
   ]
 }
 ```

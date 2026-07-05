@@ -6,7 +6,13 @@ import type { FlowGoal, FlowGoalRole, FlowSource, FlowState } from "./types.js";
 
 export interface FlowSemanticInput {
 	title: string;
-	goals: Array<{ title: string; role: FlowGoalRole; file: string }>;
+	goals: Array<{
+		title: string;
+		role: FlowGoalRole;
+		file: string;
+		dependsOn?: number[];
+		writeScope?: string[];
+	}>;
 }
 
 export function buildFlowArtifact(
@@ -27,6 +33,7 @@ export function buildFlowArtifact(
 		updatedAt: now,
 		startedAt: null,
 		currentGoal: 0,
+		parallelBatch: null,
 		repairAttempts: 0,
 		errors: [],
 		goals: input.goals.map(flowGoal),
@@ -42,6 +49,8 @@ function flowGoal(
 		title: goal.title,
 		role: goal.role,
 		file: goal.file,
+		...(goal.dependsOn === undefined ? {} : { dependsOn: goal.dependsOn }),
+		...(goal.writeScope === undefined ? {} : { writeScope: goal.writeScope }),
 		status: "pending",
 		completionCursor: null,
 		sessionFile: null,

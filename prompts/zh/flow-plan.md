@@ -30,10 +30,11 @@
 - `Steps` 每项写成 `- [ ] **短标题**：技术细节`：短标题 ≤20 字、用户视角人话；技术细节给执行 AI，可精确技术化。HTML 报告把标题直接展示给用户、细节折叠。
   （例：`- [ ] **添加 verifyToken**：在 auth.ts 实现 verifyToken(token)，处理过期和签名错误，返回解析后的 payload`）
 - 生成时 `Handoff` 标题必须有，内容可空。
-- 依赖只写进 `Scope` 或 `Notes` 文本；不写结构化依赖字段。
+- `dependsOn` 是每个 `goals` 项的可选字段，值为先序 Goal 的 0-based index 数组；不写时默认依赖前一个 Goal；明确无前置依赖时写 `[]`。
+- `writeScope` 是每个 `goals` 项的可选字段，值为模块/目录级 glob 数组（如 `src/api/**`），不要写具体文件；不写视为未知写入范围，调度器会保守串行化。
 - 中文标题 Goal 文件用 `G<N>-goal.md`；英文标题可 slug，如 `G1-login-ui.md`。
-- `flow.semantic.json` 必须是 JSON 对象，字段只需要 `title` 和 `goals`；不要写 `source`、`schemaVersion`、`status`、`currentGoal`、`checks` 等运行态字段。
-- `goals` 数组顺序就是执行顺序；每项只写 `title`、`role`、`file`。不要写 `index`，插件会按顺序重算 0-based index。
+- `flow.semantic.json` 必须是 JSON 对象，顶层字段只需要 `title` 和 `goals`；不要写 `source`、`schemaVersion`、`status`、`currentGoal`、`parallelBatch`、`checks` 等运行态字段。
+- `goals` 数组顺序就是执行顺序；每项只写 `title`、`role`、`file`，以及可选的 `dependsOn` / `writeScope`。不要写 `index`，插件会按顺序重算 0-based index。
 - 每个非最终 Goal 的 `role` 必须是 `normal`；最后一个 Goal 的 `role` 必须是 `final_acceptance`；禁止使用 `implementation`。
 - 每个 `file` 必须是当前 Flow 目录内的相对路径，并且对应的 Goal markdown 文件必须存在。
 - 不要把原始需求逐字复制进每个 Goal；按目标、范围、步骤和验收标准提炼。真实来源由插件按当前请求写入 canonical `flow.json`。
@@ -48,14 +49,15 @@
 - 只有目标缺失、需求互斥、不可逆决策无法合理假设，导致不能生成可执行草稿时，才问一个阻塞问题；问题末尾单独输出 `<!-- pi-flow:need-input -->`。
 - 如果问题能通过阅读代码库、文档或现有 `.flow` 文件回答，就自己查，不要问用户。
 
-`flow.semantic.json` 最小骨架：
+`flow.semantic.json` 最小骨架（含可选并行字段示例）：
 
 ```json
 {
   "title": "任务标题",
   "goals": [
-    { "title": "第一个 Goal", "role": "normal", "file": "G1-goal.md" },
-    { "title": "最终验收", "role": "final_acceptance", "file": "G2-final-acceptance.md" }
+    { "title": "第一个 Goal", "role": "normal", "file": "G1-goal.md", "dependsOn": [], "writeScope": ["src/api/**"] },
+    { "title": "第二个 Goal", "role": "normal", "file": "G2-goal.md", "dependsOn": [], "writeScope": ["src/ui/**"] },
+    { "title": "最终验收", "role": "final_acceptance", "file": "G3-final-acceptance.md", "dependsOn": [0, 1] }
   ]
 }
 ```

@@ -24,6 +24,8 @@ export interface FlowGoal {
 	title: string;
 	role: FlowGoalRole;
 	file: string;
+	dependsOn?: number[];
+	writeScope?: string[];
 	status: FlowGoalStatus;
 	completionCursor: CompletionCursor;
 	sessionFile: string | null;
@@ -46,6 +48,7 @@ export interface FlowState {
 	updatedAt: number;
 	startedAt: number | null;
 	currentGoal: number;
+	parallelBatch?: number[] | null;
 	repairAttempts: number;
 	errors: string[];
 	goals: FlowGoal[];
