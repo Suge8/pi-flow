@@ -60,9 +60,11 @@ try {
 	await runScenario(retryAutoResumeCancelsOnUserInputScenario);
 	await runScenario(websocketLimitAutoContinueScenario);
 	await runScenario(goalCompletionIncludesStateReviewHistoryScenario);
+	await runScenario(goalCompletionNoSummaryUsesDetailsFallbackScenario);
 	await runScenario(yieldForGoalReviewCardScenario);
 	await runScenario(stateReviewPassCardBeforeQualityScenario);
 	await runScenario(goalCompleteWithQualityReviewScenario);
+	await runScenario(goalQualityNoSummaryUsesDetailsFallbackScenario);
 	await runScenario(
 		goalScopedManualQualityReviewIncludesGoalInstructionScenario,
 	);
@@ -82,6 +84,7 @@ try {
 	await runScenario(flowQualityRepairResumeOwnsActivityBoxScenario);
 	await runScenario(goalCompletionFactWriteFailurePausesScenario);
 	await runScenario(flowGoalCompleteCardTitleScenario);
+	await runScenario(flowGoalQualityNoSummaryUsesDetailsFallbackScenario);
 	await runScenario(persistedGoalLoadedBeforeAgentEndScenario);
 	console.log("goal review smoke ok");
 } finally {
@@ -1101,7 +1104,7 @@ function websocketLimitPayload() {
 
 async function goalCompletionIncludesStateReviewHistoryScenario() {
 	const failCommand = script(
-		"FAIL\n\n## 完成验收发现目标未完成\n- 问题: 缺验证\n",
+		"FAIL\n\n## 完成验收发现目标未完成\n- 问题:\n  缺验证\n",
 	);
 	writeConfig({
 		goal: {
@@ -1168,13 +1171,61 @@ async function goalCompletionIncludesStateReviewHistoryScenario() {
 	);
 	assert(card.message.content.includes("完成验收："), card.message.content);
 	assert(
-		card.message.content.includes("第 1 轮未通过 · 缺验证"),
+		card.message.content.includes("第 1 轮 ❌ 缺验证"),
 		card.message.content,
 	);
 	assert(
-		card.message.content.includes("第 2 轮通过 · 验证通过"),
+		card.message.content.includes("第 2 轮 ✅ 验证通过"),
 		card.message.content,
 	);
+	const artifact = JSON.parse(
+		readFileSync(
+			join(ctx.cwd, ".flow", "goals", "G1-test", "goal.json"),
+			"utf8",
+		),
+	);
+	assert(
+		artifact.checks.acceptance.rounds[0].summary === "",
+		JSON.stringify(artifact.checks.acceptance.rounds[0]),
+	);
+	const html = readFileSync(
+		join(ctx.cwd, ".flow", "goals", "G1-test", "goal.html"),
+		"utf8",
+	);
+	assert(!html.includes("见本轮详情"), html);
+}
+
+async function goalCompletionNoSummaryUsesDetailsFallbackScenario() {
+	writeConfig({
+		goal: {
+			enabled: true,
+			reviewOnComplete: false,
+			models: [{ model: "test/auditor", thinking: "off" }],
+		},
+		command: sequenceScript(["FAIL\n", "PASS\n"]),
+	});
+	const state = createState();
+	const { commands, handlers } = await loadGoalExtension(state);
+	const ctx = mockContext(state);
+	await startGoal(commands, ctx, "无摘要验收兜底");
+	await handlers.get("agent_end")(
+		{ messages: [{ role: "assistant", stopReason: "stop" }] },
+		ctx,
+	);
+	await handlers.get("agent_end")(
+		{ messages: [{ role: "assistant", stopReason: "stop" }] },
+		ctx,
+	);
+	const final = state.messages.at(-1).message.content;
+	assert(final.includes("第 1 轮 ❌ 见本轮详情"), final);
+	assert(final.includes("第 2 轮 ✅"), final);
+	assert(!final.includes("完成验收判定未通过"), final);
+	assert(!final.includes("完成验收通过。"), final);
+	const html = readFileSync(
+		join(ctx.cwd, ".flow", "goals", "G1-test", "goal.html"),
+		"utf8",
+	);
+	assert(!html.includes("见本轮详情"), html);
 }
 
 async function yieldForGoalReviewCardScenario() {
@@ -1278,7 +1329,7 @@ async function goalCompleteWithQualityReviewScenario() {
 		final.message.content,
 	);
 	assert(
-		final.message.content.includes("质量检查：通过 · 质量 OK"),
+		final.message.content.includes("质量检查：✅ 质量 OK"),
 		final.message.content,
 	);
 	assert(
@@ -1337,6 +1388,45 @@ async function goalCompleteWithQualityReviewScenario() {
 		completion.data.summary === "完成验收未启用",
 		JSON.stringify(completion.data),
 	);
+}
+
+async function goalQualityNoSummaryUsesDetailsFallbackScenario() {
+	writeConfig({
+		goal: { enabled: false, reviewOnComplete: true },
+		review: { enabled: true, mode: "autoFix" },
+		command: sequenceScript(["FAIL\n", "PASS\n质量已验证\n"]),
+	});
+	const state = createState();
+	const { commands, handlers } = await loadGoalExtension(state);
+	const ctx = mockContext(state);
+	await startGoal(commands, ctx, "无摘要质量兜底");
+	await handlers.get("agent_end")(
+		{ messages: [{ role: "assistant", stopReason: "stop" }] },
+		ctx,
+	);
+	await handlers.get("agent_end")(
+		{ messages: [{ role: "assistant", stopReason: "stop" }] },
+		ctx,
+	);
+	const final = state.messages.at(-1).message.content;
+	assert(final.includes("第 1 轮 ❌ 见本轮详情"), final);
+	assert(final.includes("第 2 轮 ✅ 质量已验证"), final);
+	assert(!final.includes("质量检查未通过。"), final);
+	const artifact = JSON.parse(
+		readFileSync(
+			join(ctx.cwd, ".flow", "goals", "G1-test", "goal.json"),
+			"utf8",
+		),
+	);
+	assert(
+		artifact.checks.quality.rounds[0].summary === "质量检查未通过。",
+		JSON.stringify(artifact.checks.quality.rounds[0]),
+	);
+	const html = readFileSync(
+		join(ctx.cwd, ".flow", "goals", "G1-test", "goal.html"),
+		"utf8",
+	);
+	assert(!html.includes("见本轮详情"), html);
 }
 
 async function goalScopedManualQualityReviewIncludesGoalInstructionScenario() {
@@ -1742,11 +1832,11 @@ fi`);
 	);
 	assert(final.message.content.includes("质量检查："), final.message.content);
 	assert(
-		final.message.content.includes("第 1 轮未通过 · 缺少质量验证"),
+		final.message.content.includes("第 1 轮 ❌ 缺少质量验证"),
 		final.message.content,
 	);
 	assert(
-		final.message.content.includes("第 2 轮通过 · 质量已验证"),
+		final.message.content.includes("第 2 轮 ✅ 质量已验证"),
 		final.message.content,
 	);
 	assert(
@@ -2080,6 +2170,10 @@ async function flowGoalCompleteCardTitleScenario() {
 		card.message.content.startsWith("[Flow 第 1 步 · Login 已完成]"),
 		card.message.content,
 	);
+	assert(
+		card.message.content.includes("质量检查：✅ 质量 OK"),
+		card.message.content,
+	);
 	assert(!card.message.content.includes("⏱ 总用时"), card.message.content);
 	assert(
 		card.message.details.lines.join("\n").includes("⏱ 总用时：当前步骤") &&
@@ -2148,6 +2242,46 @@ async function flowGoalCompleteCardTitleScenario() {
 			factChecks.quality.active === null,
 		JSON.stringify(factChecks),
 	);
+}
+
+async function flowGoalQualityNoSummaryUsesDetailsFallbackScenario() {
+	writeConfig({
+		goal: { enabled: false, reviewOnComplete: true },
+		review: { enabled: true, mode: "autoFix" },
+		command: sequenceScript(["FAIL\n", "PASS\n质量 OK\n"]),
+	});
+	const cwd = join(out, "flow-quality-no-summary-cwd");
+	const sessionFile = join(cwd, "goal-session.jsonl");
+	writeFlow(cwd, sessionFile);
+	const state = createState();
+	const { handlers, module } = await loadGoalExtension(state);
+	const ctx = mockContext(state, cwd, sessionFile);
+	await module.startGoalFromFlow("Flow objective", ctx);
+	await handlers.get("agent_end")(
+		{ messages: [{ role: "assistant", stopReason: "stop" }] },
+		ctx,
+	);
+	await handlers.get("agent_end")(
+		{ messages: [{ role: "assistant", stopReason: "stop" }] },
+		ctx,
+	);
+	const card = state.messages.at(-1).message.content;
+	assert(card.startsWith("[Flow 第 1 步 · Login 已完成]"), card);
+	assert(card.includes("第 1 轮 ❌ 见本轮详情"), card);
+	assert(card.includes("第 2 轮 ✅ 质量 OK"), card);
+	assert(!card.includes("质量检查未通过。"), card);
+	const flow = JSON.parse(
+		readFileSync(join(cwd, ".flow", "flows", "F1-login", "flow.json"), "utf8"),
+	);
+	assert(
+		flow.goals[0].checks.quality.rounds[0].summary === "质量检查未通过。",
+		JSON.stringify(flow.goals[0].checks.quality.rounds[0]),
+	);
+	const html = readFileSync(
+		join(cwd, ".flow", "flows", "F1-login", "flow.html"),
+		"utf8",
+	);
+	assert(!html.includes("见本轮详情"), html);
 }
 
 async function persistedGoalLoadedBeforeAgentEndScenario() {

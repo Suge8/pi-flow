@@ -417,21 +417,86 @@ function completionPhaseLines(
 		return [language === "en" ? `${label}: disabled` : `${label}：未启用`];
 	if (history.length === 1) {
 		const [round] = history;
-		return [
-			`${label}${separator}${resultLabel(round.result, language)} · ${completionSummary(round)}`,
-		];
+		return [formatCompletionRound(`${label}${separator}`, round, language)];
 	}
 	return [
 		`${label}${separator}`,
-		...history.map(
-			(round) =>
-				`${roundLabel(round.round, language)}${resultLabel(round.result, language)} · ${completionSummary(round)}`,
+		...history.map((round) =>
+			formatCompletionRound(roundLabel(round.round, language), round, language),
 		),
 	];
 }
 
-function completionSummary(round: ReviewHistoryEntry) {
-	return clipText(round.summary, 180);
+function formatCompletionRound(
+	prefix: string,
+	round: ReviewHistoryEntry,
+	language: ActiveGoal["language"],
+) {
+	const summary = completionSummary(round, language);
+	const gap = prefix.endsWith("：") ? "" : " ";
+	return `${prefix}${gap}${resultIcon(round.result)}${summary ? ` ${summary}` : ""}`;
+}
+
+function completionSummary(
+	round: ReviewHistoryEntry,
+	language: ActiveGoal["language"],
+) {
+	const summary =
+		visibleCompletionSummary(round.summary) || detailsSummary(round.details);
+	if (summary) return clipText(summary, 180);
+	if (round.result === "passed") return "";
+	return language === "en" ? "see this round's details" : "见本轮详情";
+}
+
+function visibleCompletionSummary(summary: string) {
+	const text = summary.trim();
+	return STATUS_ONLY_SUMMARIES.has(text.replace(/[。.]$/u, "")) ? "" : text;
+}
+
+const STATUS_ONLY_SUMMARIES = new Set([
+	"完成验收通过",
+	"完成验收判定未通过",
+	"完成验收失败",
+	"质量检查通过",
+	"质量检查未通过",
+	"质量检查失败",
+	"Completion acceptance passed",
+	"Completion acceptance judged the goal incomplete",
+	"Completion acceptance failed",
+	"Quality check passed",
+	"Quality check failed",
+]);
+
+function detailsSummary(details: string | undefined) {
+	if (!details) return "";
+	const lines = details
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+	const issueIndex = lines.findIndex((line) => /^- (问题|Issue):/u.test(line));
+	if (issueIndex === -1) return "";
+	const issue = lines[issueIndex].replace(/^- (问题|Issue):\s*/u, "");
+	return cleanCompletionDetail(
+		issue || nextIssueDetail(lines.slice(issueIndex + 1)),
+	);
+}
+
+function nextIssueDetail(lines: string[]) {
+	return lines.find(issueDetailCandidate) ?? "";
+}
+
+function issueDetailCandidate(line: string) {
+	if (line.startsWith("#") || /^(模型|Model)\s+\d+\s+·\s+/iu.test(line))
+		return false;
+	if (/^- (问题|Issue):\s*$/u.test(line)) return false;
+	return !STATUS_ONLY_SUMMARIES.has(line.replace(/[。.]$/u, ""));
+}
+
+function cleanCompletionDetail(line: string) {
+	return line
+		.replace(/^[-*+]\s+/u, "")
+		.replace(/`([^`]+)`/gu, "$1")
+		.trim();
 }
 
 function recordFlowGoalCompletion(
@@ -527,13 +592,10 @@ function reviewRound(entry: ReviewHistoryEntry) {
 	};
 }
 
-function resultLabel(
-	result: ReviewHistoryEntry["result"],
-	language: ActiveGoal["language"],
-) {
-	if (result === "passed") return language === "en" ? "passed" : "通过";
-	if (result === "failed") return language === "en" ? "failed" : "未通过";
-	return language === "en" ? "error" : "错误";
+function resultIcon(result: ReviewHistoryEntry["result"]) {
+	if (result === "passed") return "✅";
+	if (result === "failed") return "❌";
+	return "🛑";
 }
 
 function stateReviewSummary(goal: ActiveGoal): string {

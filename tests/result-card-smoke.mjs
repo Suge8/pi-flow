@@ -21,6 +21,9 @@ try {
 	const { registerResultCardRenderer } = await import(
 		`file://${join(srcOut, "shared/result-card.js")}?t=${Date.now()}`
 	);
+	const { summarizeReviewText } = await import(
+		`file://${join(srcOut, "shared/review-format.js")}?t=${Date.now()}`
+	);
 
 	let render;
 	registerResultCardRenderer({
@@ -63,6 +66,11 @@ try {
 				"问题:完成验收的系统失败/超时/启动失败被压成普通“未通过”，会继续走triggerTurn:true的原目标推进",
 			),
 		`wrap dropped characters:\n${wrapped}`,
+	);
+
+	assert(
+		summarizeReviewText("FAIL\n", "") === "",
+		"status-only failures should be representable as empty summaries",
 	);
 
 	for (const width of [1, 2, 10, 40, 124]) {
