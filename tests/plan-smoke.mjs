@@ -444,19 +444,46 @@ async function goalBuilderScenario() {
 
 async function flowBuilderScenario() {
 	const { buildFlowArtifact } = await importModule("flow/builder.js");
+	const { computeReadyBatch } = await importModule("flow/scheduler.js");
 	const { validateFlowDir } = await importModule("flow/validator.js");
 	const dir = join(out, "F4-semantic-builder");
 	const semantic = {
 		title: "Semantic Flow",
 		goals: [
-			{ title: "Build", role: "normal", file: "G1-build.md" },
-			{ title: "Final", role: "final_acceptance", file: "G2-final.md" },
+			{
+				title: "Build base",
+				role: "normal",
+				file: "G1-build.md",
+				dependsOn: [],
+				writeScope: ["src/base/**"],
+			},
+			{
+				title: "Build API",
+				role: "normal",
+				file: "G2-api.md",
+				dependsOn: [0],
+				writeScope: ["src/api/**"],
+			},
+			{
+				title: "Build UI",
+				role: "normal",
+				file: "G3-ui.md",
+				dependsOn: [0],
+				writeScope: ["src/ui/**"],
+			},
+			{
+				title: "Final",
+				role: "final_acceptance",
+				file: "G4-final.md",
+				dependsOn: [1, 2],
+				writeScope: ["docs/final/**"],
+			},
 		],
 	};
 	mkdirSync(dir, { recursive: true });
 	writeJson(join(dir, "flow.semantic.json"), semantic);
-	writeFileSync(join(dir, "G1-build.md"), markdown());
-	writeFileSync(join(dir, "G2-final.md"), markdown());
+	for (const goal of semantic.goals)
+		writeFileSync(join(dir, goal.file), markdown());
 	const flow = buildFlowArtifact(
 		dir,
 		readJson(join(dir, "flow.semantic.json")),
@@ -487,13 +514,30 @@ async function flowBuilderScenario() {
 	assert(
 		persisted.id === "F4-semantic-builder" &&
 			persisted.title === "Semantic Flow" &&
-			persisted.goals.length === 2,
+			persisted.goals.length === 4,
 		"flow builder did not persist semantic title/goals",
+	);
+	assert(
+		JSON.stringify(persisted.goals[1].dependsOn) === JSON.stringify([0]) &&
+			JSON.stringify(persisted.goals[1].writeScope) ===
+				JSON.stringify(["src/api/**"]),
+		"flow builder did not persist semantic parallel fields",
 	);
 	const validation = validateFlowDir(dir);
 	assert(
 		validation.ok,
 		`flow builder output invalid: ${validation.errors.join("\n")}`,
+	);
+	const schedulable = {
+		...flow,
+		goals: flow.goals.map((goal, index) =>
+			index === 0 ? { ...goal, status: "complete" } : goal,
+		),
+	};
+	assert(
+		JSON.stringify(computeReadyBatch(schedulable)) ===
+			JSON.stringify({ mode: "parallel", indices: [1, 2] }),
+		"semantic parallel fields did not influence scheduler",
 	);
 }
 
