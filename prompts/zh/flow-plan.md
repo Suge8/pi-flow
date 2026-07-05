@@ -3,12 +3,12 @@
 目标：根据当前会话上下文、用户输入或 md 文件，创建一个 draft Flow：
 
 ```text
-.flow/flows/<id>/
+.flow/<id>/
   flow.semantic.json
   flow.html  # 插件会生成；你无需手写
   G1-*.md
   G2-*.md
-  G<N>-final-acceptance.md
+  G<N>-final-acceptance.md  # 仅多步 Flow 需要
 ```
 
 规则：
@@ -18,9 +18,10 @@
 - 禁止手写或测试 `flow.html`；HTML 由插件在校验通过后用内置渲染器生成，并由本地测试覆盖。不要把 HTML 报告模板或候选项结构复制进 Flow goal 文件。
 - 输出语言必须使用当前 language：`{{language}}`。`zh` 用中文 `title`、Goal 标题和 Goal 文件内容；`en` 用英文。
 - `title`、每个 Goal 标题和每个 `Objective` 的第一句都写给用户看：直白说明做完后得到什么，不堆函数名、命令和术语；技术细节放 `Steps`/`Verification`。HTML 报告会直接展示这些文案。
-- Flow 目录名从 `.flow/flows` 下最大 F 编号 + 1，格式 `F1-xxx`；无英文数字 slug 用 `task`。
-- 生成 2–11 个 Goal（最多 10 个执行 Goal + 最后的 final acceptance）；推荐 3–7 个；超过 10 个执行 Goal 不允许，必须要求用户拆多个 flow。
-- 最后一个 Goal 必须是 final acceptance，文件名用实际序号 + `final-acceptance`，`role` 为 `final_acceptance`，如 `G3-final-acceptance.md`。
+- Flow 目录名从 `.flow` 下最大 F 编号 + 1，格式 `F1-xxx`；无英文数字 slug 用 `task`。
+- 生成 1–11 个 Goal（最多 10 个执行 Goal + 多步 Flow 最后的 final acceptance）；推荐 1–7 个；超过 10 个执行 Goal 不允许，必须要求用户拆多个 flow。
+- 单步 Flow 只生成 1 个 `normal` Goal，不要生成 final acceptance。
+- 多步 Flow 必须以 final acceptance 收口：最后一个 Goal 文件名用实际序号 + `final-acceptance`，`role` 为 `final_acceptance`，如 `G3-final-acceptance.md`。
 - 每个 Goal 必须足够细，能在单独 Goal session 中完成。
 - 每个 Goal 文件必须包含：`Objective / Scope / Steps / Success Criteria / Verification / Notes / Handoff`。
 - 每个 Goal 的 `Success Criteria` 必须是普通 bullet，禁止 checkbox；完成状态和证据写入 `Verification` / `Handoff`，不要写入 `Success Criteria`。
@@ -35,10 +36,10 @@
 - 中文标题 Goal 文件用 `G<N>-goal.md`；英文标题可 slug，如 `G1-login-ui.md`。
 - `flow.semantic.json` 必须是 JSON 对象，顶层字段只需要 `title` 和 `goals`；不要写 `source`、`schemaVersion`、`status`、`currentGoal`、`parallelBatch`、`checks` 等运行态字段。
 - `goals` 数组顺序就是执行顺序；每项只写 `title`、`role`、`file`，以及可选的 `dependsOn` / `writeScope`。不要写 `index`，插件会按顺序重算 0-based index。
-- 每个非最终 Goal 的 `role` 必须是 `normal`；最后一个 Goal 的 `role` 必须是 `final_acceptance`，且 `final_acceptance` 只能出现一次；禁止使用 `implementation`。
+- 单步 Flow 的唯一 Goal、以及多步 Flow 的每个非最终 Goal，`role` 必须是 `normal`；多步 Flow 最后一个 Goal 的 `role` 必须是 `final_acceptance`，且 `final_acceptance` 只能出现一次；禁止使用 `implementation`。
 - 每个 `file` 必须是当前 Flow 目录内的相对路径，并且对应的 Goal markdown 文件必须存在。
 - 不要把原始需求逐字复制进每个 Goal；按目标、范围、步骤和验收标准提炼。真实来源由插件按当前请求写入 canonical `flow.json`。
-- final acceptance Goal 必须读取所有 Handoff、复核 criteriaChanged、跑全局验证、检查 docs / AGENTS.md 是否需要更新并收口。它的 Steps 与普通 Goal 不同，必须覆盖所有先序 Goal 的交付物。
+- 只有多步 Flow 才写 final acceptance Goal；它必须读取所有 Handoff、复核 criteriaChanged、跑全局验证、检查 docs / AGENTS.md 是否需要更新并收口。它的 Steps 与普通 Goal 不同，必须覆盖所有先序 Goal 的交付物。
   Steps 参考结构（按实际情况调整）：
   - [ ] **读所有 Handoff**：逐一确认每个 Goal 的 Handoff 产出物和遗留问题
   - [ ] **全局验证**：运行全局验证命令，确认端到端流程 exit 0

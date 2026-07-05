@@ -3,7 +3,7 @@ import type { ActiveGoal } from "./runtime.js";
 export interface GoalTodoPromptContext {
 	planPath?: string;
 	recordSection?: "Outcome" | "Handoff";
-	stateFile?: "goal.json" | "flow.json";
+	stateFile?: "flow.json" | "state.json";
 }
 
 export function buildGoalPrompt(
@@ -16,13 +16,13 @@ export function buildGoalPrompt(
 			goal.tokenBudget === undefined
 				? ""
 				: `\nToken budget: ${formatTokenCount(goal.tokenBudget)}.`;
-		return `Goal mode is active. Complete this goal fully:\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}${budgetLine}\n\n${goalPersistenceRules("this goal", todoContext, goal.language)}`;
+		return `Flow step mode is active. Complete this step fully:\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}${budgetLine}\n\n${goalPersistenceRules("this step", todoContext, goal.language)}`;
 	}
 	const budgetLine =
 		goal.tokenBudget === undefined
 			? ""
 			: `\n令牌预算：${formatTokenCount(goal.tokenBudget)}。`;
-	return `目标模式已激活。完整完成这个目标：\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}${budgetLine}\n\n${goalPersistenceRules("这个目标", todoContext, goal.language)}`;
+	return `Flow 步骤模式已激活。完整完成这个步骤：\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}${budgetLine}\n\n${goalPersistenceRules("这个步骤", todoContext, goal.language)}`;
 }
 
 export function buildResumePrompt(
@@ -35,13 +35,13 @@ export function buildResumePrompt(
 			goal.tokenBudget === undefined
 				? ""
 				: `\nToken budget: used ${formatBudget(goal)}.`;
-		return `The user explicitly resumed the paused /goal. Continue working toward this goal:\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}${budgetLine}\n\n${goalPersistenceRules("this goal", todoContext, goal.language)}`;
+		return `The user explicitly resumed the paused Flow step. Continue working toward this step:\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}${budgetLine}\n\n${goalPersistenceRules("this step", todoContext, goal.language)}`;
 	}
 	const budgetLine =
 		goal.tokenBudget === undefined
 			? ""
 			: `\n令牌预算：已使用 ${formatBudget(goal)}。`;
-	return `用户明确恢复了已暂停的 /goal。继续朝这个目标工作：\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}${budgetLine}\n\n${goalPersistenceRules("这个目标", todoContext, goal.language)}`;
+	return `用户明确恢复了已暂停的 Flow 步骤。继续朝这个步骤工作：\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}${budgetLine}\n\n${goalPersistenceRules("这个步骤", todoContext, goal.language)}`;
 }
 
 export function buildGoalSystemPrompt(
@@ -54,13 +54,13 @@ export function buildGoalSystemPrompt(
 			goal.tokenBudget === undefined
 				? ""
 				: `\n- Respect the goal token budget (used ${formatBudget(goal)}).`;
-		return `Active /goal:\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}\n\nGoal mode rules:\n- Keep going until the active goal is fully solved end to end.\n- This goal persists across turns. Ending this turn does not require shrinking the goal to what fits now.\n- Keep the full goal unchanged. If it cannot be completed now, make concrete progress toward the real requested final state, keep the goal active, and do not redefine success around a smaller or easier task.\n- Treat the current worktree, command output, tests, and external state as authoritative.\n- Do not redefine the goal as a smaller task; review every requirement before completion.\n- Do not stop at analysis, planning, TODO lists, partial fixes, or suggested next steps.\n- When available tools are needed, implement and verify autonomously.\n- ${todoRule(todoContext, goal.language)}\n- Do not handwrite or modify ${todoContext.stateFile}; runtime and check state are maintained by the extension.\n- Persist through recoverable tool failures by trying reasonable alternatives instead of yielding early.\n- If the goal is not done when a turn ends, expect automatic completion acceptance or automatic continuation.${budgetLine}`;
+		return `Active Flow step:\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}\n\nFlow step rules:\n- Keep going until the active step is fully solved end to end.\n- This step persists across turns. Ending this turn does not require shrinking the step to what fits now.\n- Keep the full step unchanged. If it cannot be completed now, make concrete progress toward the real requested final state, keep the step active, and do not redefine success around a smaller or easier task.\n- Treat the current worktree, command output, tests, and external state as authoritative.\n- Do not redefine the step as a smaller task; review every requirement before completion.\n- Do not stop at analysis, planning, TODO lists, partial fixes, or suggested next steps.\n- When available tools are needed, implement and verify autonomously.\n- ${todoRule(todoContext, goal.language)}\n- Do not handwrite or modify ${todoContext.stateFile}; runtime and check state are maintained by the extension.\n- Persist through recoverable tool failures by trying reasonable alternatives instead of yielding early.\n- If the step is not done when a turn ends, expect automatic completion acceptance or automatic continuation.${budgetLine}`;
 	}
 	const budgetLine =
 		goal.tokenBudget === undefined
 			? ""
 			: `\n- 尊重目标令牌预算（已使用 ${formatBudget(goal)}）。`;
-	return `活动的 /goal：\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}\n\n目标模式规则：\n- 持续推进，直到活动目标端到端地完全解决。\n- 这个目标跨回合持久存在。结束本回合并不要求把目标缩小成现在能放得下的内容。\n- 保持完整目标不变。如果现在无法完成，就朝真实请求的最终状态取得具体进展，让目标保持活动状态，并且不要围绕更小或更容易的任务重新定义成功。\n- 将当前工作树、命令输出、测试和外部状态视为权威。\n- 不要把目标重新定义成更小的任务；完成前要审查每一个要求。\n- 不要停在分析、计划、TODO 列表、部分修复或建议的下一步。\n- 当完成目标需要可用工具时，自主执行实现和验证。\n- ${todoRule(todoContext, goal.language)}\n- 不要手写或修改 ${todoContext.stateFile}；运行状态和检查状态由插件维护。\n- 通过尝试合理替代方案来坚持处理可恢复的工具失败，而不是过早让步。\n- 如果目标在一个回合结束时还没有完成，预期会有自动完成验收或自动延续。${budgetLine}`;
+	return `活动的 Flow 步骤：\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}\n\nFlow 步骤规则：\n- 持续推进，直到活动步骤端到端地完全解决。\n- 这个步骤跨回合持久存在。结束本回合并不要求把步骤缩小成现在能放得下的内容。\n- 保持完整步骤不变。如果现在无法完成，就朝真实请求的最终状态取得具体进展，让步骤保持活动状态，并且不要围绕更小或更容易的任务重新定义成功。\n- 将当前工作树、命令输出、测试和外部状态视为权威。\n- 不要把步骤重新定义成更小的任务；完成前要审查每一个要求。\n- 不要停在分析、计划、TODO 列表、部分修复或建议的下一步。\n- 当完成步骤需要可用工具时，自主执行实现和验证。\n- ${todoRule(todoContext, goal.language)}\n- 不要手写或修改 ${todoContext.stateFile}；运行状态和检查状态由插件维护。\n- 通过尝试合理替代方案来坚持处理可恢复的工具失败，而不是过早让步。\n- 如果步骤在一个回合结束时还没有完成，预期会有自动完成验收或自动延续。${budgetLine}`;
 }
 
 export function buildContinuePrompt(
@@ -70,8 +70,8 @@ export function buildContinuePrompt(
 ): string {
 	const todoContext = todoPromptContext(goal, context);
 	if (goal.language === "en")
-		return `Continue the active /goal until it is complete:\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}\n\nThis is automatic continuation #${goal.iteration}. Current files, command output, tests, and external state are authoritative; re-check them as needed.${goalPersistenceRules("this goal", todoContext, goal.language)}\n\n${continuationMarkerComment(marker)}`;
-	return `继续活动的 /goal，直到它完成：\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}\n\n这是自动延续 #${goal.iteration}。当前文件、命令输出、测试和外部状态是权威；按需重新检查它们。${goalPersistenceRules("这个目标", todoContext, goal.language)}\n\n${continuationMarkerComment(marker)}`;
+		return `Continue the active Flow step until it is complete:\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}\n\nThis is automatic continuation #${goal.iteration}. Current files, command output, tests, and external state are authoritative; re-check them as needed.${goalPersistenceRules("this step", todoContext, goal.language)}\n\n${continuationMarkerComment(marker)}`;
+	return `继续活动的 Flow 步骤，直到它完成：\n\n${goalObjectiveBlock(goal)}${goalPlanLine(todoContext, goal.language)}\n\n这是自动延续 #${goal.iteration}。当前文件、命令输出、测试和外部状态是权威；按需重新检查它们。${goalPersistenceRules("这个步骤", todoContext, goal.language)}\n\n${continuationMarkerComment(marker)}`;
 }
 
 export function goalObjectiveBlock(goal: Pick<ActiveGoal, "text">): string {
@@ -107,7 +107,8 @@ function todoPromptContext(
 			context.planPath ??
 			(goal.artifactDir ? `${goal.artifactDir}/plan.md` : "plan.md"),
 		recordSection: context.recordSection ?? "Outcome",
-		stateFile: context.stateFile ?? "goal.json",
+		stateFile:
+			context.stateFile ?? (goal.artifactDir ? "state.json" : "flow.json"),
 	};
 }
 

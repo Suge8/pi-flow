@@ -277,14 +277,10 @@ function sendCompletionCard(
 		goal.language === "en"
 			? `⏱ Total elapsed: ${durationSince(goal.startedAt)}`
 			: `⏱ 总用时：${durationSince(goal.startedAt)}`;
-	void refreshReportStatus(
-		ctx,
-		goal.artifactDir ? join(goal.artifactDir, "goal.html") : undefined,
-		goal.language,
-	);
+	void refreshReportStatus(ctx, undefined, goal.language);
 	const content = [
-		goal.language === "en" ? "[Goal complete]" : "[目标已完成]",
-		goal.language === "en" ? `Goal: ${displayText}` : `目标：${displayText}`,
+		goal.language === "en" ? "[Flow step complete]" : "[Flow 步骤已完成]",
+		goal.language === "en" ? `Step: ${displayText}` : `步骤：${displayText}`,
 		...checkLines,
 		"",
 		goal.language === "en" ? "Next:" : "下一步：",
@@ -297,11 +293,11 @@ function sendCompletionCard(
 		{
 			tone: "success",
 			result: "完成",
-			title: goal.language === "en" ? "Goal complete" : "目标已完成",
+			title: goal.language === "en" ? "Flow step complete" : "Flow 步骤已完成",
 			lines: [
 				goal.language === "en"
-					? `Goal: ${displayText}`
-					: `目标：${displayText}`,
+					? `Step: ${displayText}`
+					: `步骤：${displayText}`,
 				...checkLines,
 				totalLine,
 			],

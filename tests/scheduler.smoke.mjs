@@ -223,7 +223,7 @@ function multiWaveFlow(completedIndices) {
 
 function flow(goals, overrides = {}) {
 	return {
-		schemaVersion: 5,
+		schemaVersion: 6,
 		language: "zh",
 		id: "F1-scheduler",
 		title: "Scheduler",

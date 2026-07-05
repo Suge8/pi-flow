@@ -10,9 +10,10 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { writeGoalHtml } from "../../goal/html.js";
-import { artifactChecks } from "../../goal/persistence.js";
-import { writeGoalArtifact } from "../../goal/store.js";
+import {
+	artifactChecks,
+	writeStepRuntimeState,
+} from "../../goal/persistence.js";
 import { objectiveFromPlan } from "../../goal/validator.js";
 import { startGoalFromFlow } from "../../goal.js";
 import { formatError } from "../../shared/guards.js";
@@ -21,12 +22,11 @@ import { notifyUser } from "../../shared/ui-language.js";
 import { onFlowGoalCompleted } from "../completion.js";
 import { currentSessionFile } from "../ownership.js";
 import { planGoalPrompt } from "../prompt.js";
-import { planSnapshotHash } from "../snapshot.js";
 import { findFlow } from "../store.js";
 import type { FlowGoal, FlowState, GoalCompletionFact } from "../types.js";
 import { flowSessionName } from "../util.js";
 import { validateFlowDir } from "../validator.js";
-import { flowStatusLabel } from "./shared.js";
+import { flowNotFoundMessage, flowStatusLabel } from "./shared.js";
 
 interface WorkerJob {
 	resultPath: string;
@@ -141,15 +141,7 @@ async function startWorkerGoal(
 	rmSync(resultPath, { force: true });
 	const sessionName = flowSessionName(flow, goal);
 	setSessionName(pi, ctx, sessionName);
-	writeWorkerGoalArtifact(
-		ctx,
-		workerDir,
-		workerId,
-		flow,
-		goal,
-		markdown,
-		sessionName,
-	);
+	writeWorkerGoalArtifact(ctx, workerDir, goal, sessionName);
 	setWorkerJob(ctx, { resultPath, completed: false });
 	const promptGoal = { ...goal, file: `workers/${workerId}/plan.md` };
 	const started = await startGoalFromFlow(
@@ -174,34 +166,20 @@ async function startWorkerGoal(
 function writeWorkerGoalArtifact(
 	ctx: ExtensionCommandContext,
 	workerDir: string,
-	workerId: string,
-	flow: FlowState,
 	goal: FlowGoal,
-	markdown: string,
 	sessionName: string,
 ) {
 	const now = Date.now();
-	const artifact = writeGoalArtifact(workerDir, {
-		schemaVersion: 5,
-		language: flow.language,
-		id: workerId,
-		title: goal.title,
+	writeStepRuntimeState(workerDir, {
 		status: "running",
 		completionCursor: null,
-		source: flow.source,
-		createdAt: now,
-		updatedAt: now,
-		repairAttempts: 0,
-		errors: [],
+		runtimeGoalId: null,
 		sessionFile: currentSessionFile(ctx) ?? null,
 		sessionName,
-		snapshot: markdown,
-		snapshotHash: planSnapshotHash(markdown),
-		runtimeGoalId: null,
 		result: { summary: null, outcome: null },
 		checks: artifactChecks([], [], goal.checks),
+		updatedAt: now,
 	});
-	writeGoalHtml(workerDir, artifact);
 }
 
 function workerPromptFlow(flow: FlowState, promptGoal: FlowGoal) {
@@ -277,12 +255,6 @@ function workerUsageMessage(language: "zh" | "en") {
 	return language === "en"
 		? "Usage: /flow worker <flowId> <goalIndex>"
 		: "用法：/flow worker <flowId> <goalIndex>";
-}
-
-function flowNotFoundMessage(flowId: string, language: "zh" | "en") {
-	return language === "en"
-		? `Flow not found: ${flowId}`
-		: `未找到 Flow：${flowId}`;
 }
 
 function validationFailedMessage(errors: string[], language: "zh" | "en") {

@@ -90,7 +90,7 @@ export function planGoalPrompt(
 
 Flow id: ${flow.id}
 Goal: ${goal.index + 1}/${flow.goals.length} — ${goal.title}
-Current plan markdown: .flow/flows/${flow.id}/${goal.file}
+Current plan markdown: .flow/${flow.id}/${goal.file}
 
 Full current Goal plan snapshot:
 
@@ -116,7 +116,7 @@ ${finalAcceptanceBlock(goal, previous, deviations, flow.language)}`;
 
 Flow id: ${flow.id}
 Goal: ${goal.index + 1}/${flow.goals.length} — ${goal.title}
-当前计划 markdown: .flow/flows/${flow.id}/${goal.file}
+当前计划 markdown: .flow/${flow.id}/${goal.file}
 
 当前 Goal plan 完整 snapshot：
 

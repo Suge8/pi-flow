@@ -4,14 +4,9 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { sendResultCard } from "./result-card.js";
 
-type GenerationKind = "goal" | "flow";
+type GenerationKind = "flow";
 
 const ALIGNMENT_START_COPY = {
-	goal: {
-		icon: "🎯",
-		title: "开始对齐目标",
-		lines: ["先问清关键点，再生成计划。", "等待 AI 提问。"],
-	},
 	flow: {
 		icon: "🌊",
 		title: "开始对齐 Flow",

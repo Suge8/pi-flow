@@ -9,7 +9,6 @@ import {
 	nonEmpty,
 } from "../src/shared/guards.ts";
 
-const GOAL_ID_PATTERN = /^G[1-9]\d*-[a-z0-9-]+$/u;
 const FLOW_ID_PATTERN = /^F[1-9]\d*-[a-z0-9-]+$/u;
 const MODEL_STATUSES = new Set(["running", "passed", "failed", "error"]);
 const CHECK_RESULTS = new Set(["passed", "failed", "error"]);
@@ -26,88 +25,21 @@ const TASK_LIST_ITEM = /^\s*[-*+]\s*\[[ xX~!]\]/mu;
 const MAX_EXECUTION_GOALS = 10;
 
 const dir = process.argv[2];
-if (!dir)
-	fail([
-		"用法：node scripts/validate-draft.mjs <.flow/flows/F1-id|.flow/goals/G1-id>",
-	]);
+if (!dir) fail(["用法：node scripts/validate-draft.mjs <.flow/F1-id>"]);
 
 const root = resolve(dir);
-const errors = existsSync(join(root, "goal.json"))
-	? validateGoal(root)
-	: existsSync(join(root, "flow.json"))
-		? validateFlow(root)
-		: ["缺少 goal.json 或 flow.json"];
+const errors = existsSync(join(root, "flow.json"))
+	? validateFlow(root)
+	: ["缺少 flow.json"];
 
 if (errors.length) fail(errors, draftLanguage(root));
 console.log(`OK ${root}`);
-
-function validateGoal(root) {
-	const errors = [];
-	const goal = readArtifact(join(root, "goal.json"), "goal.json", errors);
-	if (!goal) return errors;
-	if (goal.schemaVersion !== 5) errors.push("schemaVersion 必须为 5");
-	validateLanguage(goal.language, errors);
-	if (!GOAL_ID_PATTERN.test(String(goal.id ?? "")))
-		errors.push("id 必须匹配 G1-xxx");
-	validateArtifactDirName(
-		root,
-		goal.id,
-		GOAL_ID_PATTERN,
-		"目标目录名必须等于 id",
-		errors,
-	);
-	if (!nonEmpty(goal.title)) errors.push("title 必须是非空字符串");
-	if (
-		![
-			"draft",
-			"running",
-			"paused",
-			"budget_limited",
-			"complete",
-			"cancelled",
-		].includes(goal.status)
-	)
-		errors.push(`status 非法：${goal.status}`);
-	for (const key of ["createdAt", "updatedAt"])
-		if (!Number.isFinite(goal[key])) errors.push(`${key} 必须是时间戳`);
-	if (!Number.isInteger(goal.repairAttempts))
-		errors.push("repairAttempts 必须是整数");
-	validateCompletionCursor(goal.completionCursor, "completionCursor", errors);
-	validateSource(goal.source, errors);
-	validateStringArray(goal.errors, "errors", errors);
-	for (const key of [
-		"sessionFile",
-		"sessionName",
-		"snapshot",
-		"snapshotHash",
-		"runtimeGoalId",
-	])
-		validateStringOrNull(goal[key], key, errors);
-	validateResult(goal.result, ["summary", "outcome"], "result", errors);
-	validateChecks(goal.checks, errors);
-	if (errors.length === 0)
-		validateMarkdownFile(
-			join(root, "plan.md"),
-			[
-				"Objective",
-				"Scope",
-				"Steps",
-				"Success Criteria",
-				"Verification",
-				"Notes",
-				"Outcome",
-			],
-			"plan.md",
-			errors,
-		);
-	return errors;
-}
 
 function validateFlow(root) {
 	const errors = [];
 	const flow = readArtifact(join(root, "flow.json"), "flow.json", errors);
 	if (!flow) return errors;
-	if (flow.schemaVersion !== 5) errors.push("schemaVersion 必须为 5");
+	if (flow.schemaVersion !== 6) errors.push("schemaVersion 必须为 6");
 	validateLanguage(flow.language, errors);
 	if (!FLOW_ID_PATTERN.test(String(flow.id ?? "")))
 		errors.push("id 必须匹配 F1-xxx");
@@ -137,15 +69,12 @@ function validateFlow(root) {
 	);
 	if (!Array.isArray(flow.goals)) return [...errors, "goals 必须是数组"];
 	const executionGoals = executionGoalCount(flow.goals);
-	if (executionGoals < 1)
-		errors.push(
-			"至少需要 1 个执行步骤 + 1 个最终验收步骤（role: final_acceptance）",
-		);
+	if (executionGoals < 1) errors.push("至少需要 1 个执行步骤");
 	if (executionGoals > MAX_EXECUTION_GOALS)
 		errors.push(
 			"执行步骤数量超过 10；final acceptance 不占执行步骤名额，必须拆成多个 flow",
 		);
-	validateFinalAcceptancePlacement(flow.goals, errors);
+	validateFinalAcceptancePlacement(flow.goals, executionGoals, errors);
 	if (flow.currentGoal < 0 || flow.currentGoal >= flow.goals.length)
 		errors.push("currentGoal 必须指向 goals 下标");
 	for (const [index, goal] of flow.goals.entries())
@@ -159,12 +88,16 @@ function executionGoalCount(goals) {
 	return goals.filter((goal) => flowGoalRole(goal) === "normal").length;
 }
 
-function validateFinalAcceptancePlacement(goals, errors) {
+function validateFinalAcceptancePlacement(goals, executionGoals, errors) {
 	const finalIndexes = goals.flatMap((goal, index) =>
 		flowGoalRole(goal) === "final_acceptance" ? [index] : [],
 	);
+	if (executionGoals === 1) {
+		if (finalIndexes.length > 0) errors.push("单步 Flow 不使用最终验收步骤");
+		return;
+	}
 	if (finalIndexes.length !== 1)
-		errors.push("只能有 1 个最终验收步骤（role: final_acceptance）");
+		errors.push("多步 Flow 必须有 1 个最终验收步骤（role: final_acceptance）");
 	if (flowGoalRole(goals.at(-1)) !== "final_acceptance")
 		errors.push("最后一个步骤必须是最终验收（role: final_acceptance）");
 	for (const index of finalIndexes) {
@@ -332,21 +265,6 @@ function validateArtifactDirName(root, idValue, pattern, message, errors) {
 		errors.push(`${message}：${id}`);
 }
 
-function validateMarkdownFile(path, sections, prefix, errors) {
-	if (!existsSync(path))
-		return errors.push(
-			prefix === "plan.md" ? "缺少 plan.md" : `${prefix} 文件不存在`,
-		);
-	let markdown = "";
-	try {
-		markdown = readFileSync(path, "utf8");
-	} catch (error) {
-		return errors.push(`${prefix} 读取失败：${formatError(error)}`);
-	}
-	for (const error of validateMarkdown(markdown, sections))
-		errors.push(`${prefix} ${error}`);
-}
-
 function validateMarkdown(markdown, sections) {
 	const errors = [];
 	for (const section of sections)
@@ -494,14 +412,12 @@ function isInside(root, target) {
 	return !pathFromRoot.startsWith("..") && !isAbsolute(pathFromRoot);
 }
 function draftLanguage(root) {
-	for (const name of ["goal.json", "flow.json"]) {
-		try {
-			const language = JSON.parse(
-				readFileSync(join(root, name), "utf8"),
-			).language;
-			if (language === "zh" || language === "en") return language;
-		} catch {}
-	}
+	try {
+		const language = JSON.parse(
+			readFileSync(join(root, "flow.json"), "utf8"),
+		).language;
+		if (language === "zh" || language === "en") return language;
+	} catch {}
 	return undefined;
 }
 

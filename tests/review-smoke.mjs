@@ -796,7 +796,8 @@ async function goalScopeCancelNotificationUsesResumeCommandScenario() {
 	const goalMessage = cancelNotification({
 		options: { scope: { kind: "goal", goalText: "Goal" } },
 	});
-	assert(goalMessage.includes("/goal continue"), goalMessage);
+	assert(goalMessage.includes("/flow continue"), goalMessage);
+	assert(!goalMessage.includes("/goal continue"), goalMessage);
 }
 
 async function passAndErrorReviewerStopsScenario() {

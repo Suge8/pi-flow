@@ -4,6 +4,7 @@ import { formatError } from "../shared/guards.js";
 import { runtimeLanguage } from "../shared/language.js";
 import { liveReportUrl } from "../shared/report-server.js";
 import { notifyUser } from "../shared/ui-language.js";
+import { flowNotFoundMessage } from "./execution/shared.js";
 import { statusText } from "./execution.js";
 import { writeFlowHtml } from "./html.js";
 import { activeParallelBatch } from "./parallel/batch-runner.js";
@@ -40,13 +41,21 @@ export async function showStatus(
 			language,
 		);
 	}
+	if (activeBatch && location?.id === activeBatch.flow.id)
+		return notifyStatus(
+			ctx,
+			activeBatch.flow,
+			join(activeBatch.dir, "flow.html"),
+		);
 	if (!location) {
 		const language = runtimeLanguage();
 		return notifyUser(
 			ctx,
-			language === "en"
-				? "No Flow in the current directory."
-				: "当前目录没有 Flow。",
+			id
+				? flowNotFoundMessage(id, language)
+				: language === "en"
+					? "No Flow in the current directory."
+					: "当前目录没有 Flow。",
 			"info",
 			language,
 		);

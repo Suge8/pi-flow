@@ -187,10 +187,10 @@ function toolCallLabel(event: Record<string, unknown>) {
 
 function readWorkerChecksStatus(dir: string, goalIndex: number) {
 	try {
-		const artifact = JSON.parse(
-			readFileSync(join(dir, "workers", `G${goalIndex}`, "goal.json"), "utf8"),
+		const state = JSON.parse(
+			readFileSync(join(dir, "workers", `G${goalIndex}`, "state.json"), "utf8"),
 		) as { checks?: GoalChecks };
-		return checksStatus(artifact.checks);
+		return checksStatus(state.checks);
 	} catch {
 		return undefined;
 	}

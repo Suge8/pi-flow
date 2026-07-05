@@ -23,7 +23,7 @@ export function buildFlowArtifact(
 ): FlowState {
 	const now = Date.now();
 	return writeFlow(dir, {
-		schemaVersion: 5,
+		schemaVersion: 6,
 		language,
 		id: basename(dir),
 		title: requiredTitle(input.title),

@@ -4,8 +4,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { writeFlowHtml } from "../flow/html.js";
 import { listFlows, writeFlow } from "../flow/store.js";
-import { writeGoalHtml } from "../goal/html.js";
-import { listGoalArtifacts, writeGoalArtifact } from "../goal/store.js";
 import { formatError } from "./guards.js";
 import { currentSessionFile } from "./session.js";
 
@@ -23,7 +21,6 @@ function syncSessionName(ctx: ExtensionContext, sessionName: string | null) {
 	const sessionFile = currentSessionFile(ctx);
 	if (!sessionFile) return;
 	syncFlowSessionName(ctx.cwd, sessionFile, sessionName);
-	syncGoalSessionName(ctx.cwd, sessionFile, sessionName);
 }
 
 function syncFlowSessionName(
@@ -42,25 +39,6 @@ function syncFlowSessionName(
 		if (!changed) continue;
 		const flow = writeFlow(location.dir, { ...location.flow, goals });
 		writeFlowHtml(location.dir, flow);
-	}
-}
-
-function syncGoalSessionName(
-	cwd: string,
-	sessionFile: string,
-	sessionName: string | null,
-) {
-	for (const location of listGoalArtifacts(cwd)) {
-		if (
-			location.goal.sessionFile !== sessionFile ||
-			location.goal.sessionName === sessionName
-		)
-			continue;
-		const goal = writeGoalArtifact(location.dir, {
-			...location.goal,
-			sessionName,
-		});
-		writeGoalHtml(location.dir, goal);
 	}
 }
 

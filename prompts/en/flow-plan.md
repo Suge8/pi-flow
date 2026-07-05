@@ -3,12 +3,12 @@ You are generating a recoverable multi-session Pi Flow Goal queue. Only write `.
 Goal: from the current conversation, user input, or markdown file, create a draft Flow:
 
 ```text
-.flow/flows/<id>/
+.flow/<id>/
   flow.semantic.json
   flow.html  # rendered by the extension; do not write it
   G1-*.md
   G2-*.md
-  G<N>-final-acceptance.md
+  G<N>-final-acceptance.md  # multi-step Flow only
 ```
 
 Rules:
@@ -18,9 +18,10 @@ Rules:
 - Do not write or test `flow.html`; the extension renders it after validation with its built-in renderer. Do not copy HTML report templates or candidate structures into Flow goal files.
 - Output language must use current language: `{{language}}`. Use English for `en`; use Chinese for `zh`.
 - `title`, each Goal title, and the first sentence of each `Objective` are user-facing: plainly state what the user gets when done. Put technical details in `Steps` / `Verification`.
-- Flow directory names use the next max F number under `.flow/flows`, format `F1-xxx`; use `task` when no English/numeric slug exists.
-- Generate 2–11 Goals (at most 10 execution Goals plus the final acceptance Goal); prefer 3–7. More than 10 execution Goals is invalid; ask the user to split into multiple flows.
-- The last Goal must be final acceptance, filename uses the actual sequence plus `final-acceptance`, role `final_acceptance`, e.g. `G3-final-acceptance.md`.
+- Flow directory names use the next max F number under `.flow`, format `F1-xxx`; use `task` when no English/numeric slug exists.
+- Generate 1–11 Goals (at most 10 execution Goals plus the final acceptance Goal for multi-step Flow); prefer 1–7. More than 10 execution Goals is invalid; ask the user to split into multiple flows.
+- A single-step Flow generates exactly 1 `normal` Goal and no final acceptance Goal.
+- A multi-step Flow must close with final acceptance: the last Goal filename uses the actual sequence plus `final-acceptance`, role `final_acceptance`, e.g. `G3-final-acceptance.md`. 
 - Each Goal must be small enough to complete in its own Goal session.
 - Each Goal file must contain: `Objective / Scope / Steps / Success Criteria / Verification / Notes / Handoff`.
 - Each Goal's `Success Criteria` must be ordinary bullets, not checkboxes; write completion status and evidence in `Verification` / `Handoff`, not in `Success Criteria`.
@@ -35,10 +36,10 @@ Rules:
 - Chinese titles use `G<N>-goal.md`; English titles may slug, e.g. `G1-login-ui.md`.
 - `flow.semantic.json` must be a JSON object with only top-level `title` and `goals`; do not write `source`, `schemaVersion`, `status`, `currentGoal`, `parallelBatch`, `checks`, or other runtime fields.
 - The `goals` array order is the execution order. Each item only needs `title`, `role`, `file`, and optional `dependsOn` / `writeScope`. Do not write `index`; the extension recalculates 0-based indexes from order.
-- Non-final Goals use role `normal`; the last Goal uses role `final_acceptance`, and `final_acceptance` may appear only once; do not use `implementation`.
+- The only Goal in a single-step Flow and each non-final Goal in a multi-step Flow use role `normal`; the last Goal in a multi-step Flow uses role `final_acceptance`, and `final_acceptance` may appear only once; do not use `implementation`.
 - Each `file` must be a relative path inside the current Flow directory, and the referenced Goal markdown file must exist.
 - Do not copy the original request verbatim into each Goal; distill it into objective, scope, steps, and success criteria. The extension writes the real source into canonical `flow.json` from the current request.
-- The final acceptance Goal must read all Handoffs, review `criteriaChanged`, run global verification, check whether docs / AGENTS.md need updates, and close out. Its Steps cover all prior Goals' deliverables and differ from regular Goals.
+- Only multi-step Flow writes a final acceptance Goal. It must read all Handoffs, review `criteriaChanged`, run global verification, check whether docs / AGENTS.md need updates, and close out. Its Steps cover all prior Goals' deliverables and differ from regular Goals.
   Reference Steps structure (adjust to actual scope):
   - [ ] **Read all Handoffs**: confirm each Goal's deliverables and open issues one by one
   - [ ] **Global verification**: run global verification command, confirm end-to-end flow exits 0

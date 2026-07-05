@@ -93,7 +93,7 @@ function scanSource(path, file) {
 			}
 			// 裸 goal/session 禁止；命令名与文件名 token 豁免。
 			const stripped = text.replace(
-				/\/goal\b|\/flow\b|goal\.json|flow\.json|goal\.html|flow\.html|plan\.md/gu,
+				/\/flow\b|flow\.json|flow\.html|state\.json|plan\.md/gu,
 				"",
 			);
 			if (/\bgoal\b|\bsession\b/u.test(stripped))

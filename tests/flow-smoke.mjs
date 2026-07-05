@@ -71,6 +71,7 @@ try {
 	await runScenario(schemaScenario);
 	await runScenario(badJsonScenario);
 	await runScenario(flowIdSafetyScenario);
+	await runScenario(flowShortIdMessageScenario);
 	await runScenario(flowRootSymlinkScenario);
 	await runScenario(statusValidationScenario);
 	await runScenario(statusRewritesNonParallelHtmlScenario);
@@ -96,8 +97,6 @@ try {
 	await runScenario(flowSessionStartRebindsReportStatusScenario);
 	await runScenario(flowClarificationSendFailureClearsPendingScenario);
 	await runScenario(flowRepairSendFailureClearsPendingScenario);
-	await runScenario(goalRecommendationFlowCommandScenario);
-	await runScenario(failedGoalFlowHandoffRetainsGoalScenario);
 	await runScenario(pendingGenerationScenario);
 	await runScenario(englishFlowGeneratedSummaryUsesArtifactLanguageScenario);
 	await runScenario(flowGoalSendFailureRollsBackScenario);
@@ -178,7 +177,7 @@ async function flowGoalPromptChecklistSyncScenario() {
 		"flow prompt missing reread or blocked-skip rule",
 	);
 	assert(
-		prompt.includes(".flow/flows/F1-test/G1-plan.md"),
+		prompt.includes(".flow/F1-test/G1-plan.md"),
 		"flow prompt missing current plan path",
 	);
 	assert(
@@ -186,7 +185,7 @@ async function flowGoalPromptChecklistSyncScenario() {
 		"flow prompt should keep flow.json plugin-owned",
 	);
 	const flowTodoContext = {
-		planPath: ".flow/flows/F1-test/G1-plan.md",
+		planPath: ".flow/F1-test/G1-plan.md",
 		recordSection: "Handoff",
 		stateFile: "flow.json",
 	};
@@ -198,7 +197,7 @@ async function flowGoalPromptChecklistSyncScenario() {
 	];
 	for (const runtimePrompt of flowRuntimePrompts) {
 		assert(
-			runtimePrompt.includes(".flow/flows/F1-test/G1-plan.md"),
+			runtimePrompt.includes(".flow/F1-test/G1-plan.md"),
 			"flow runtime prompt missing current goal file",
 		);
 		assert(
@@ -263,7 +262,7 @@ async function flowGoalRuntimePromptContextScenario() {
 	);
 	const systemPrompt = result?.systemPrompt ?? "";
 	assert(
-		systemPrompt.includes(".flow/flows/F1-runtime-prompt/G1-plan.md"),
+		systemPrompt.includes(".flow/F1-runtime-prompt/G1-plan.md"),
 		"flow system prompt missing current goal file",
 	);
 	assert(
@@ -304,21 +303,21 @@ async function flowWorkerCommandScenario() {
 		"worker plan.md was not copied from the selected flow goal",
 	);
 	const artifact = readGoalArtifact(workerDir);
-	assert(artifact.status === "running", "worker goal artifact not running");
+	assert(artifact.status === "running", "worker state not running");
 	assert(
 		state.switches.at(-1) === sessionFile &&
 			artifact.sessionFile === sessionFile,
-		"worker goal artifact did not switch into worker session file",
+		"worker state did not switch into worker session file",
 	);
+	assert(artifact.checks?.acceptance, "worker state missing checks");
 	assert(
-		artifact.snapshot === copiedPlan && artifact.snapshotHash,
-		"worker goal artifact missing snapshot",
+		!existsSync(join(workerDir, "goal.html")),
+		"worker goal.html was generated",
 	);
-	assert(existsSync(join(workerDir, "goal.html")), "worker goal.html missing");
 	assert(
 		state.hiddenMessages
 			.at(-1)
-			.includes(".flow/flows/F1-worker-command/workers/G1/plan.md"),
+			.includes(".flow/F1-worker-command/workers/G1/plan.md"),
 		"worker prompt did not point at worker plan.md",
 	);
 	assert(
@@ -360,7 +359,7 @@ async function workerSpawnConfigScenario() {
 	const cwd = tempDir("worker-spawn-config");
 	const command = installFakeWorkerRunner(cwd);
 	const flowId = "F1-worker-spawn-config";
-	const flowDir = join(cwd, ".flow", "flows", flowId);
+	const flowDir = join(cwd, ".flow", flowId);
 	const userExtension = join(cwd, "user-extension.ts");
 	let handle;
 	let exited = false;
@@ -586,20 +585,22 @@ async function parallelStatusPreservesLiveReportScenario() {
 			"parallel watcher did not write worker live report",
 		);
 
-		await commands.get("flow").handler("status F1-parallel-status", ctx);
-		const statusMessage = state.notifications.at(-1) ?? "";
-		assert(statusMessage.includes("Flow: F1-parallel-status"), statusMessage);
-		assert(statusMessage.includes("当前: Goal 2"), statusMessage);
-		assert(
-			statusMessage.includes("🌐 网页报告: http://127.0.0.1:"),
-			statusMessage,
-		);
-		const after = readFileSync(htmlPath, "utf8");
-		assert(
-			after.includes("Worker live status survives."),
-			"parallel status overwrote worker live report",
-		);
-		assert(after === before, "parallel status rewrote flow.html");
+		for (const command of ["status F1", "status F1-parallel-status"]) {
+			await commands.get("flow").handler(command, ctx);
+			const statusMessage = state.notifications.at(-1) ?? "";
+			assert(statusMessage.includes("Flow: F1-parallel-status"), statusMessage);
+			assert(statusMessage.includes("当前: Goal 2"), statusMessage);
+			assert(
+				statusMessage.includes("🌐 网页报告: http://127.0.0.1:"),
+				statusMessage,
+			);
+			const after = readFileSync(htmlPath, "utf8");
+			assert(
+				after.includes("Worker live status survives."),
+				`parallel ${command} overwrote worker live report`,
+			);
+			assert(after === before, `parallel ${command} rewrote flow.html`);
+		}
 
 		writeFileSync(join(cwd, "release-workers"), "");
 		await start;
@@ -746,10 +747,16 @@ async function parallelBatchCancelScenario() {
 async function schemaScenario() {
 	const { validateFlowDir } = await importModule("flow/validator.js");
 	const cwd = tempDir("schema");
-	const dir = join(cwd, ".flow", "flows", "F1-schema");
+	const dir = join(cwd, ".flow", "F1-schema");
 	assert(!validateFlowDir(dir).ok, "missing flow.json passed");
-	createFlow(cwd, "F1-schema");
-	assert(validateFlowDir(dir).ok, "valid flow failed");
+	createFlow(cwd, "F1-schema", { planCount: 3 });
+	{
+		const validation = validateFlowDir(dir);
+		assert(
+			validation.ok,
+			`valid flow failed: ${validation.errors.join(" | ")}`,
+		);
+	}
 	const flowWithParallelFields = readFlow(dir);
 	flowWithParallelFields.parallelBatch = [0, 1];
 	flowWithParallelFields.goals[1].dependsOn = [0];
@@ -804,7 +811,7 @@ async function schemaScenario() {
 		JSON.stringify({ ...flow, schemaVersion: 1 }),
 	);
 	assert(
-		validateFlowDir(dir).errors.includes("schemaVersion 必须为 5"),
+		validateFlowDir(dir).errors.includes("schemaVersion 必须为 6"),
 		"bad schemaVersion not rejected",
 	);
 	const typedFlow = readFlow(dir);
@@ -858,24 +865,24 @@ async function schemaScenario() {
 	assert(validateFlowDir(maxDir).ok, "11 goals should pass");
 	createFlow(cwd, "F4-too-many", { planCount: 12 });
 	assert(
-		validateFlowDir(join(cwd, ".flow", "flows", "F4-too-many")).errors.some(
-			(error) => error.includes("超过 10"),
+		validateFlowDir(join(cwd, ".flow", "F4-too-many")).errors.some((error) =>
+			error.includes("超过 10"),
 		),
 		">10 execution goals not rejected",
 	);
-	const duplicateDir = createFlow(cwd, "F5-duplicate-final", { planCount: 2 });
+	const duplicateDir = createFlow(cwd, "F5-duplicate-final", { planCount: 4 });
 	const duplicateFlow = readFlow(duplicateDir);
-	duplicateFlow.goals[0].role = "final_acceptance";
+	duplicateFlow.goals[2].role = "final_acceptance";
 	writeFlow(duplicateDir, duplicateFlow);
 	const duplicateErrors = validateFlowDir(duplicateDir).errors;
 	assert(
 		duplicateErrors.includes(
-			"只能有 1 个最终验收步骤（role: final_acceptance）",
+			"多步 Flow 必须有 1 个最终验收步骤（role: final_acceptance）",
 		),
 		"duplicate final acceptance not rejected",
 	);
 	assert(
-		duplicateErrors.includes("goals[0] 非最终步骤必须是 normal"),
+		duplicateErrors.includes("goals[2] 非最终步骤必须是 normal"),
 		"non-last final acceptance not rejected",
 	);
 }
@@ -904,19 +911,14 @@ async function badJsonScenario() {
 			`bad json scan path not reported for ${command}`,
 		);
 	}
-	await commands.get("goal").handler("pause", ctx);
-	assert(
-		state.notifications.at(-1).includes("Flow 状态读取失败"),
-		"bad json did not fail closed for /goal mutation",
-	);
 }
 
 async function flowIdSafetyScenario() {
 	const cwd = tempDir("flow-id-safety");
-	mkdirSync(join(cwd, ".flow", "flows"), { recursive: true });
+	mkdirSync(join(cwd, ".flow"), { recursive: true });
 	const outside = tempDir("flow-id-outside");
 	const outsideFlow = createFlow(outside, "F1-target");
-	symlinkSync(outsideFlow, join(cwd, ".flow", "flows", "F1-link"));
+	symlinkSync(outsideFlow, join(cwd, ".flow", "F1-link"));
 	const state = newState(cwd);
 	const { commands } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
@@ -941,6 +943,46 @@ async function flowIdSafetyScenario() {
 		state.notifications.at(-1).includes("没有 Flow"),
 		"symlink flow directory was scanned as flow",
 	);
+}
+
+async function flowShortIdMessageScenario() {
+	const missingCwd = tempDir("flow-short-id-missing");
+	createFlow(missingCwd, "F2-demo");
+	const missingState = newState(missingCwd);
+	const { commands: missingCommands } = await loadExtension(missingState);
+	const missingCtx = commandContext(
+		missingState,
+		missingCwd,
+		join(missingCwd, "planning.jsonl"),
+	);
+	for (const command of ["status F1", "start F1"]) {
+		await missingCommands.get("flow").handler(command, missingCtx);
+		assert(
+			missingState.notifications.at(-1).includes("未找到 Flow：F1"),
+			`missing short id did not name requested id for ${command}`,
+		);
+	}
+
+	const ambiguousCwd = tempDir("flow-short-id-ambiguous");
+	createFlow(ambiguousCwd, "F1-alpha");
+	createFlow(ambiguousCwd, "F1-beta");
+	const ambiguousState = newState(ambiguousCwd);
+	const { commands: ambiguousCommands } = await loadExtension(ambiguousState);
+	const ambiguousCtx = commandContext(
+		ambiguousState,
+		ambiguousCwd,
+		join(ambiguousCwd, "planning.jsonl"),
+	);
+	for (const command of ["status F1", "start F1"]) {
+		await ambiguousCommands.get("flow").handler(command, ambiguousCtx);
+		const notification = ambiguousState.notifications.at(-1);
+		assert(
+			notification.includes("Flow 短 id 不唯一：F1") &&
+				notification.includes("F1-alpha") &&
+				notification.includes("F1-beta"),
+			`ambiguous short id was not explicit for ${command}`,
+		);
+	}
 }
 
 async function flowRootSymlinkScenario() {
@@ -1069,7 +1111,7 @@ async function malformedRepairScenario() {
 	await emit(handlers, "agent_end", { messages: [] }, generateCtx);
 	assert(
 		generateState.hiddenMessages.at(-1).includes("缺少章节"),
-		"generation repair prompt missing hidden semantic validation error",
+		`generation repair prompt missing hidden semantic validation error: ${generateState.hiddenMessages.at(-1)}`,
 	);
 	assert(
 		readFileSync(join(generateDir, "flow.html"), "utf8").includes("缺少章节"),
@@ -1121,7 +1163,7 @@ async function htmlScenario() {
 	const { writeFlowErrorHtml, writeFlowHtml } =
 		await importModule("flow/html.js");
 	const cwd = tempDir("html");
-	const dir = createFlow(cwd, "F1-html");
+	const dir = createFlow(cwd, "F1-html", { planCount: 2 });
 	const firstPlanPath = join(dir, "G1-plan.md");
 	writeFileSync(
 		firstPlanPath,
@@ -1130,8 +1172,33 @@ async function htmlScenario() {
 			"- [~] **准备环境**：安装依赖并初始化数据库\n- [!] **等待凭证**：缺少外部 token，记录阻塞",
 		),
 	);
-	const draftHtml = readFileSync(writeFlowHtml(dir, readFlow(dir)), "utf8");
-	assert(draftHtml.includes("多步骤计划"), "draft label missing");
+	const draftFlow = readFlow(dir);
+	draftFlow.source = {
+		...draftFlow.source,
+		type: "file",
+		path: join(cwd, "src", "app.ts"),
+	};
+	const draftHtml = readFileSync(writeFlowHtml(dir, draftFlow), "utf8");
+	assert(draftHtml.includes("Flow 计划"), "draft label missing");
+	assert(!draftHtml.includes("多步骤计划"), "draft label should be neutral");
+	assert(
+		draftHtml.includes("文件 · src/app.ts"),
+		"source path should be project-relative",
+	);
+	assert(
+		!draftHtml.includes("html/src/app.ts"),
+		"source path should not include project directory prefix",
+	);
+	const singleDraftDir = createFlow(cwd, "F2-single-draft");
+	const singleDraftHtml = readFileSync(
+		writeFlowHtml(singleDraftDir, readFlow(singleDraftDir)),
+		"utf8",
+	);
+	assert(
+		singleDraftHtml.includes("Flow 计划") &&
+			!singleDraftHtml.includes("多步骤计划"),
+		"single-step draft flow called itself multi-step",
+	);
 	assert(draftHtml.includes("待执行"), "pending label not localized");
 	assert(draftHtml.includes(">范围</p>"), "flow goal scope label missing");
 	assert(
@@ -1287,6 +1354,32 @@ async function htmlScenario() {
 			`flow html still has English UI label: ${label}`,
 		);
 	assert(!html.includes("application/json"), "html stores JSON state");
+	const singleDir = createFlow(cwd, "F2-single-report");
+	const singleFlow = readFlow(singleDir);
+	singleFlow.status = "complete";
+	singleFlow.goals[0].status = "complete";
+	singleFlow.goals[0].checks = passedChecks();
+	singleFlow.goals[0].result.criteriaChanged = true;
+	const singleHtml = readFileSync(writeFlowHtml(singleDir, singleFlow), "utf8");
+	assert(
+		singleHtml.includes("验收口径有调整，已在本步骤检查中记录") &&
+			singleHtml.includes("执行中有验收口径调整，已在步骤检查中记录"),
+		"single-step criteria deviation did not use step-level wording",
+	);
+	assert(
+		!singleHtml.includes("最终验收"),
+		"single-step criteria deviation mentioned final acceptance",
+	);
+	singleFlow.language = "en";
+	const singleEnglishHtml = readFileSync(
+		writeFlowHtml(singleDir, singleFlow),
+		"utf8",
+	);
+	assert(
+		singleEnglishHtml.includes("recorded in this step's checks") &&
+			!singleEnglishHtml.includes("final acceptance"),
+		"English single-step criteria deviation mentioned final acceptance",
+	);
 	const errorHtml = readFileSync(
 		writeFlowErrorHtml(dir, {
 			title: "Broken Flow",
@@ -1685,7 +1778,7 @@ async function flowAutoStartUsesCommandContextScenario() {
 	eventCtx.newSession = undefined;
 	await emit(handlers, "agent_end", { messages: [] }, eventCtx);
 	await flushScheduledGoalStart();
-	const flow = readFlow(join(cwd, ".flow", "flows", "F1-autostart"));
+	const flow = readFlow(join(cwd, ".flow", "F1-autostart"));
 	assert(flow.status === "running", "flow auto-start ignored command context");
 	assert(
 		state.newSessions.length === 1,
@@ -1954,7 +2047,7 @@ async function flowReportServerSurvivesSessionShutdownScenario() {
 		/http:\/\/127\.0\.0\.1:\d+\/\S+?(?=:(?:info|warning|error)$|\s|$)/u,
 	)?.[0];
 	assert(url, `missing report URL: ${state.notifications.join(" | ")}`);
-	const flowHtml = join(cwd, ".flow", "flows", "F1-live-report", "flow.html");
+	const flowHtml = join(cwd, ".flow", "F1-live-report", "flow.html");
 	assert(existsSync(flowHtml), `flow html missing: ${flowHtml}`);
 	const before = await fetch(url).then((response) => response.text());
 	assert(
@@ -2050,72 +2143,6 @@ async function flowClarificationSendFailureClearsPendingScenario() {
 	);
 }
 
-async function goalRecommendationFlowCommandScenario() {
-	const cwd = tempDir("goal-flow-command");
-	const state = newState(cwd);
-	const { commands, handlers } = await loadExtension(state);
-	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
-	await commands.get("goal").handler("large goal request", ctx);
-	await emit(
-		handlers,
-		"agent_end",
-		{
-			messages: [
-				{
-					role: "assistant",
-					content: "<!-- pi-flow:recommend-flow -->\n范围太大，请运行 /flow。",
-				},
-			],
-		},
-		ctx,
-	);
-	await commands.get("flow").handler("", ctx);
-	assert(
-		state.hiddenMessages.at(-1).includes("large goal request"),
-		"/flow did not consume pending goal request",
-	);
-	const handoffWidget = latestWidgetText(state);
-	assert(
-		handoffWidget.includes("🌊 Flow · 计划生成中") &&
-			!handoffWidget.includes("large goal request") &&
-			!handoffWidget.includes("总目标：large goal request") &&
-			!handoffWidget.includes("正在规划 .flow draft"),
-		"goal-to-flow handoff cleared or misrendered the Flow draft activity box",
-	);
-}
-
-async function failedGoalFlowHandoffRetainsGoalScenario() {
-	const cwd = tempDir("goal-flow-handoff-retain");
-	const state = newState(cwd);
-	const { commands, handlers } = await loadExtension(state);
-	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
-	await commands.get("flow").handler("existing flow draft", ctx);
-	await commands.get("goal").handler("large goal request", ctx);
-	await emit(
-		handlers,
-		"agent_end",
-		{
-			messages: [
-				{
-					role: "assistant",
-					content: "<!-- pi-flow:recommend-flow -->\n范围太大，推荐 /flow。",
-				},
-			],
-		},
-		ctx,
-	);
-	await commands.get("flow").handler("", ctx);
-	assert(
-		state.notifications.at(-1).includes("已有 Flow 计划在生成中"),
-		"failed /flow handoff did not report existing flow draft",
-	);
-	await commands.get("goal").handler("force", ctx);
-	assert(
-		state.hiddenMessages.at(-1).includes("large goal request"),
-		"failed /flow handoff cleared pending goal",
-	);
-}
-
 async function pendingGenerationScenario() {
 	const cwd = tempDir("pending-generation");
 	const state = newState(cwd);
@@ -2201,7 +2228,7 @@ async function flowGoalSendFailureRollsBackScenario() {
 async function completionWithEventCommandContextScenario() {
 	const { planSnapshotHash } = await importModule("plan/snapshot.js");
 	const cwd = tempDir("completion-event-command-context");
-	const dir = createFlow(cwd, "F1-event-context");
+	const dir = createFlow(cwd, "F1-event-context", { planCount: 3 });
 	const state = newState(cwd);
 	const { handlers } = await loadExtension(state);
 	const sessionFile = join(cwd, "goal-session.jsonl");
@@ -2243,9 +2270,7 @@ async function completionWithEventCommandContextScenario() {
 	);
 	assert(
 		!state.customMessages.some(
-			(item) =>
-				item.message.details?.title ===
-				"Flow 第 2 步 · Final acceptance 已就绪",
+			(item) => item.message.details?.title === "Flow 第 2 步 · Goal 2 已就绪",
 		),
 		"continue-required card shown despite event command context",
 	);
@@ -2254,7 +2279,7 @@ async function completionWithEventCommandContextScenario() {
 async function completionWithoutRememberedContextScenario() {
 	const { planSnapshotHash } = await importModule("plan/snapshot.js");
 	const cwd = tempDir("completion-no-remembered-context");
-	const dir = createFlow(cwd, "F1-no-context");
+	const dir = createFlow(cwd, "F1-no-context", { planCount: 3 });
 	const state = newState(cwd);
 	const { handlers } = await loadExtension(state);
 	const sessionFile = join(cwd, "goal-session.jsonl");
@@ -2285,8 +2310,7 @@ async function completionWithoutRememberedContextScenario() {
 	assert(
 		state.customMessages.some(
 			(item) =>
-				item.message.details?.title ===
-					"Flow 第 2 步 · Final acceptance 已就绪" &&
+				item.message.details?.title === "Flow 第 2 步 · Goal 2 已就绪" &&
 				item.message.content.includes("/flow continue"),
 		),
 		"missing continue-required card",
@@ -2350,7 +2374,7 @@ async function stuckRefactorBContinueScenario() {
 
 async function completionEventUsesRememberedCommandContextScenario() {
 	const cwd = tempDir("completion-remembered-command-context");
-	const dir = createFlow(cwd, "F1-remembered-context");
+	const dir = createFlow(cwd, "F1-remembered-context", { planCount: 3 });
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
 	const planCtx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
@@ -2384,7 +2408,7 @@ async function completionEmitUsesEmittedContextScenario() {
 	const { emitFlowGoalCompleted } =
 		await importCachedModule("flow/completion.js");
 	const cwd = tempDir("completion-emitted-context");
-	const dir = createFlow(cwd, "F1-emitted-context");
+	const dir = createFlow(cwd, "F1-emitted-context", { planCount: 3 });
 	const state = newState(cwd);
 	await loadExtension(state);
 	const sessionFile = join(cwd, "goal-session.jsonl");
@@ -2420,7 +2444,7 @@ async function completionCommandConsumesStoredFactScenario() {
 	for (const command of ["continue"]) {
 		const { planSnapshotHash } = await importModule("plan/snapshot.js");
 		const cwd = tempDir(`completion-command-${command}`);
-		const dir = createFlow(cwd, `F1-command-${command}`);
+		const dir = createFlow(cwd, `F1-command-${command}`, { planCount: 3 });
 		const state = newState(cwd);
 		const { commands } = await loadExtension(state);
 		const sessionFile = join(cwd, "goal-session.jsonl");
@@ -2647,7 +2671,7 @@ async function englishFlowCardsUseArtifactLanguageScenario() {
 	language.resetRuntimeLanguageForTests();
 	try {
 		const cwd = tempDir("flow-english-cards");
-		createFlow(cwd, "F1-english-cards", { language: "en" });
+		createFlow(cwd, "F1-english-cards", { language: "en", planCount: 3 });
 		const state = newState(cwd);
 		const { commands, handlers } = await loadExtension(state);
 		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
@@ -2668,8 +2692,21 @@ async function englishFlowCardsUseArtifactLanguageScenario() {
 		await flushScheduledGoalStart();
 		assertFlowCard(
 			state,
-			"Flow Step 2 · Final acceptance started",
+			"Flow Step 2 · Goal 2 started",
 			"next Flow start card used runtime language",
+		);
+		planCtx = state.activeCtx;
+		await emit(
+			handlers,
+			"agent_end",
+			{ messages: [{ role: "assistant", stopReason: "stop" }] },
+			planCtx,
+		);
+		await flushScheduledGoalStart();
+		assertFlowCard(
+			state,
+			"Flow Step 3 · Final acceptance started",
+			"final acceptance start card used runtime language",
 		);
 		planCtx = state.activeCtx;
 		await emit(
@@ -2685,7 +2722,10 @@ async function englishFlowCardsUseArtifactLanguageScenario() {
 		);
 
 		const readyCwd = tempDir("flow-english-ready-card");
-		const readyDir = createFlow(readyCwd, "F1-ready-en", { language: "en" });
+		const readyDir = createFlow(readyCwd, "F1-ready-en", {
+			language: "en",
+			planCount: 3,
+		});
 		const readyState = newState(readyCwd);
 		const { handlers: readyHandlers } = await loadExtension(readyState);
 		const sessionFile = join(readyCwd, "goal-session.jsonl");
@@ -2710,7 +2750,7 @@ async function englishFlowCardsUseArtifactLanguageScenario() {
 		await emit(readyHandlers, "agent_end", { messages: [] }, readyCtx);
 		assertFlowCard(
 			readyState,
-			"Flow Step 2 · Final acceptance ready",
+			"Flow Step 2 · Goal 2 ready",
 			"Flow ready card used runtime language",
 		);
 
@@ -2814,16 +2854,16 @@ async function startResumeCancelScenario() {
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 	await commands.get("flow").handler("start", ctx);
 	await flushScheduledGoalStart();
-	let flow = readFlow(join(cwd, ".flow", "flows", "F1-start"));
+	let flow = readFlow(join(cwd, ".flow", "F1-start"));
 	assert(flow.status === "running", "flow not running after start");
 	assert(flow.goals[0].sessionFile, "first Goal session missing");
 	assert(flow.goals[0].snapshotHash, "snapshot hash missing");
 	assert(
-		!existsSync(join(cwd, ".flow", "flows", "F1-start", "goal.json")),
+		!existsSync(join(cwd, ".flow", "F1-start", "goal.json")),
 		"Flow wrote child goal.json",
 	);
 	assert(
-		!existsSync(join(cwd, ".flow", "flows", "F1-start", "goal.html")),
+		!existsSync(join(cwd, ".flow", "F1-start", "goal.html")),
 		"Flow wrote child goal.html",
 	);
 	assert(state.sessionNames.at(-1).startsWith("F1-G1"), "session name missing");
@@ -2849,12 +2889,9 @@ async function startResumeCancelScenario() {
 		"continue did not switch session",
 	);
 	await commands.get("flow").handler("cancel", state.activeCtx);
-	flow = readFlow(join(cwd, ".flow", "flows", "F1-start"));
+	flow = readFlow(join(cwd, ".flow", "F1-start"));
 	assert(flow.status === "cancelled", "cancel did not mark cancelled");
-	assert(
-		existsSync(join(cwd, ".flow", "flows", "F1-start")),
-		"cancel deleted files",
-	);
+	assert(existsSync(join(cwd, ".flow", "F1-start")), "cancel deleted files");
 }
 
 async function sessionNameSyncScenario() {
@@ -2874,12 +2911,6 @@ async function sessionNameSyncScenario() {
 		sessionName: "old",
 	};
 	writeFlow(dir, flow);
-	const goalDir = createGoalArtifact(
-		cwd,
-		"G1-session-name",
-		sessionFile,
-		"old",
-	);
 	const ctx = commandContext(state, cwd, sessionFile);
 	await emit(handlers, "session_info_changed", { name: "Renamed" }, ctx);
 	flow = readFlow(dir);
@@ -2887,21 +2918,14 @@ async function sessionNameSyncScenario() {
 		flow.goals[0].sessionName === "Renamed",
 		"Flow sessionName did not sync",
 	);
-	let goalArtifact = readGoalArtifact(goalDir);
-	assert(
-		goalArtifact.sessionName === "Renamed",
-		"Goal sessionName did not sync",
-	);
 	await emit(handlers, "session_info_changed", { name: undefined }, ctx);
 	flow = readFlow(dir);
-	goalArtifact = readGoalArtifact(goalDir);
 	assert(flow.goals[0].sessionName === null, "Flow sessionName did not clear");
-	assert(goalArtifact.sessionName === null, "Goal sessionName did not clear");
 }
 
 async function snapshotMutationScenario() {
 	const cwd = tempDir("snapshot");
-	const dir = createFlow(cwd, "F1-snapshot");
+	const dir = createFlow(cwd, "F1-snapshot", { planCount: 3 });
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
@@ -2944,6 +2968,14 @@ async function snapshotMutationScenario() {
 	await flushScheduledGoalStart();
 	flow = readFlow(dir);
 	assert(flow.currentGoal === 1, "flow did not advance after snapshot repair");
+	const secondCtx = state.activeCtx;
+	await emit(
+		handlers,
+		"agent_end",
+		{ messages: [{ role: "assistant", stopReason: "stop" }] },
+		secondCtx,
+	);
+	await flushScheduledGoalStart();
 	const finalCtx = state.activeCtx;
 	await emit(
 		handlers,
@@ -3088,7 +3120,7 @@ async function flowParallelWatcherScenario() {
 		planMarkdown(2, false).replace("Do work.", "Worker live old."),
 	);
 	writeFileSync(
-		join(workerDir, "goal.json"),
+		join(workerDir, "state.json"),
 		`${JSON.stringify(workerGoalArtifact(flow, 1, emptyChecks()), null, 2)}\n`,
 	);
 	writeFlowHtml(dir, flow);
@@ -3115,13 +3147,13 @@ async function flowParallelWatcherScenario() {
 	const checksChanged = onceFileChanged(htmlPath);
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	writeFileSync(
-		join(workerDir, "goal.json"),
+		join(workerDir, "state.json"),
 		`${JSON.stringify(workerGoalArtifact(flow, 1, passed), null, 2)}\n`,
 	);
 	await checksChanged;
 	assert(
 		readFileSync(htmlPath, "utf8").includes("worker acceptance passed"),
-		"parallel watcher did not render worker goal.json changes",
+		"parallel watcher did not render worker state.json changes",
 	);
 	closeFlowGoalWatcher();
 }
@@ -3229,27 +3261,12 @@ async function ownershipScenario() {
 	const state = newState(cwd);
 	const { commands } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, sessionFile);
-	await commands.get("goal").handler("status", ctx);
-	assert(!state.notifications.at(-1).includes("被禁止"), "goal status blocked");
-	await commands.get("goal").handler("pause", ctx);
+	assert(!commands.has("goal"), "standalone goal command is still registered");
+	await commands.get("flow").handler("status F1-owned", ctx);
 	assert(
-		state.notifications.at(-1).includes("Flow F1-owned"),
-		"goal mutation not blocked",
-	);
-
-	const other = commandContext(
-		state,
-		tempDir("ownership-free"),
-		join(cwd, "free.jsonl"),
-	);
-	entriesFor(state, other.sessionManager.getSessionFile()).push({
-		type: "message",
-		message: { role: "user", content: "Ship normal goal" },
-	});
-	await commands.get("goal").handler("", other);
-	assert(
-		state.hiddenMessages.at(-1).includes("生成单 session 可执行计划"),
-		"normal goal draft broken",
+		state.notifications.at(-1).includes("F1-owned") &&
+			state.notifications.at(-1).includes("第 1 步"),
+		"flow status did not replace standalone ownership command",
 	);
 }
 
@@ -3288,7 +3305,7 @@ async function flowHandoffCriteriaDeviationScenario() {
 
 async function completionFactClearsGoalUiScenario() {
 	const cwd = tempDir("completion-clears-ui");
-	const dir = createFlow(cwd, "F1-complete-clears-ui");
+	const dir = createFlow(cwd, "F1-complete-clears-ui", { planCount: 3 });
 	const state = newState(cwd);
 	const { commands } = await loadExtension(state);
 	const { clearFlowActivities } = await importCachedModule(
@@ -3298,15 +3315,16 @@ async function completionFactClearsGoalUiScenario() {
 	const { planSnapshotHash } = await importCachedModule("flow/snapshot.js");
 	const sessionFile = join(cwd, "final.jsonl");
 	const flow = readFlow(dir);
-	const finalGoal = flow.goals[1];
+	const finalGoal = flow.goals[2];
 	const finalSnapshot = readFileSync(join(dir, finalGoal.file), "utf8");
 	writeFlow(dir, {
 		...flow,
 		status: "running",
 		startedAt: Date.now(),
-		currentGoal: 1,
+		currentGoal: 2,
 		goals: [
 			{ ...flow.goals[0], status: "complete", handoff: "done" },
+			{ ...flow.goals[1], status: "complete", handoff: "done" },
 			{
 				...finalGoal,
 				status: "running",
@@ -3352,7 +3370,7 @@ async function completionFactClearsGoalUiScenario() {
 
 async function completionScenario() {
 	const cwd = tempDir("completion");
-	createFlow(cwd, "F1-complete");
+	createFlow(cwd, "F1-complete", { planCount: 3 });
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
@@ -3367,10 +3385,10 @@ async function completionScenario() {
 		planCtx,
 	);
 	await flushScheduledGoalStart();
-	let flow = readFlow(join(cwd, ".flow", "flows", "F1-complete"));
+	let flow = readFlow(join(cwd, ".flow", "F1-complete"));
 	assert(flow.currentGoal === 1, "flow did not advance current Goal");
 	assert(flow.goals[0].status === "complete", "Goal not complete");
-	assert(flow.goals[1].status === "running", "final acceptance not started");
+	assert(flow.goals[1].status === "running", "second step not started");
 	assert(
 		state.newSessions.at(-1)?.from === planCtx.sessionManager.getSessionFile(),
 		"next plan started from wrong same-cwd session",
@@ -3379,6 +3397,17 @@ async function completionScenario() {
 		flow.goals[0].result.handoffGenerated,
 		"missing handoff not generated",
 	);
+	planCtx = state.activeCtx;
+	await emit(
+		handlers,
+		"agent_end",
+		{ messages: [{ role: "assistant", stopReason: "stop" }] },
+		planCtx,
+	);
+	await flushScheduledGoalStart();
+	flow = readFlow(join(cwd, ".flow", "F1-complete"));
+	assert(flow.currentGoal === 2, "flow did not advance to final acceptance");
+	assert(flow.goals[2].status === "running", "final acceptance not started");
 	assert(
 		state.hiddenMessages.at(-1).includes("前序 Handoff"),
 		"final acceptance prompt missing handoffs",
@@ -3391,7 +3420,7 @@ async function completionScenario() {
 		{ messages: [{ role: "assistant", stopReason: "stop" }] },
 		planCtx,
 	);
-	flow = readFlow(join(cwd, ".flow", "flows", "F1-complete"));
+	flow = readFlow(join(cwd, ".flow", "F1-complete"));
 	assert(flow.status === "complete", "final acceptance did not complete flow");
 	assert(
 		flow.goals[0].completionCursor === null,
@@ -3405,7 +3434,7 @@ async function completionScenario() {
 	);
 	assert(
 		readFileSync(
-			join(cwd, ".flow", "flows", "F1-complete", "flow.html"),
+			join(cwd, ".flow", "F1-complete", "flow.html"),
 			"utf8",
 		).includes("全部完成"),
 		"complete html missing",
@@ -3430,13 +3459,13 @@ async function completionScenario() {
 }
 
 function createFlow(cwd, id, options = {}) {
-	const dir = join(cwd, ".flow", "flows", id);
+	const dir = join(cwd, ".flow", id);
 	mkdirSync(dir, { recursive: true });
-	const planCount = options.planCount ?? 2;
+	const planCount = options.planCount ?? 1;
 	const goals = [];
 	for (let offset = 0; offset < planCount; offset += 1) {
 		const number = offset + 1;
-		const final = number === planCount;
+		const final = planCount > 1 && number === planCount;
 		const file = final
 			? `G${number}-final-acceptance.md`
 			: `G${number}-plan.md`;
@@ -3446,7 +3475,7 @@ function createFlow(cwd, id, options = {}) {
 		writeFileSync(join(dir, file), planMarkdown(number, final));
 	}
 	writeFlow(dir, {
-		schemaVersion: 5,
+		schemaVersion: 6,
 		language: options.language ?? "zh",
 		id,
 		title: "Test Flow",
@@ -3555,13 +3584,13 @@ function installFakePi(cwd) {
 }
 
 function writeFlowSemanticDraft(cwd, id, options = {}) {
-	const dir = join(cwd, ".flow", "flows", id);
+	const dir = join(cwd, ".flow", id);
 	mkdirSync(dir, { recursive: true });
-	const planCount = options.planCount ?? 2;
+	const planCount = options.planCount ?? 3;
 	const goals = [];
 	for (let offset = 0; offset < planCount; offset += 1) {
 		const number = offset + 1;
-		const final = number === planCount;
+		const final = planCount > 1 && number === planCount;
 		const file = final
 			? `G${number}-final-acceptance.md`
 			: `G${number}-plan.md`;
@@ -3601,40 +3630,6 @@ function writeFlowSemantic(dir, title, options = {}) {
 	);
 }
 
-function createGoalArtifact(cwd, id, sessionFile, sessionName) {
-	const dir = join(cwd, ".flow", "goals", id);
-	mkdirSync(dir, { recursive: true });
-	writeFileSync(join(dir, "plan.md"), goalPlanMarkdown());
-	writeFileSync(
-		join(dir, "goal.json"),
-		`${JSON.stringify(
-			{
-				schemaVersion: 5,
-				language: "zh",
-				id,
-				title: "Standalone Goal",
-				status: "running",
-				completionCursor: null,
-				source: { type: "prompt", path: null, originalRequest: "original" },
-				createdAt: Date.now(),
-				updatedAt: Date.now(),
-				repairAttempts: 0,
-				errors: [],
-				sessionFile,
-				sessionName,
-				snapshot: null,
-				snapshotHash: null,
-				runtimeGoalId: "runtime-goal",
-				result: { summary: null, outcome: null },
-				checks: emptyChecks(),
-			},
-			null,
-			2,
-		)}\n`,
-	);
-	return dir;
-}
-
 function goal(index, title, file, final = false) {
 	return {
 		index,
@@ -3669,32 +3664,22 @@ function writeWorkerGoalArtifact(dir, flow, goalIndex, checks) {
 	const workerDir = join(dir, "workers", `G${goalIndex}`);
 	mkdirSync(workerDir, { recursive: true });
 	writeFileSync(
-		join(workerDir, "goal.json"),
+		join(workerDir, "state.json"),
 		`${JSON.stringify(workerGoalArtifact(flow, goalIndex, checks), null, 2)}\n`,
 	);
 }
 
 function workerGoalArtifact(flow, goalIndex, checks) {
-	const goal = flow.goals[goalIndex];
+	void flow;
 	return {
-		schemaVersion: 5,
-		language: flow.language,
-		id: `G${goalIndex}`,
-		title: goal.title,
 		status: "running",
 		completionCursor: null,
-		source: flow.source,
-		createdAt: Date.now(),
-		updatedAt: Date.now(),
-		repairAttempts: 0,
-		errors: [],
+		runtimeGoalId: `worker-${goalIndex}`,
 		sessionFile: null,
 		sessionName: null,
-		snapshot: null,
-		snapshotHash: null,
-		runtimeGoalId: `worker-${goalIndex}`,
 		result: { summary: null, outcome: null },
 		checks,
+		updatedAt: Date.now(),
 	};
 }
 
@@ -3756,30 +3741,6 @@ Only this Goal.
 ## Notes
 
 ## Handoff
-`;
-}
-
-function goalPlanMarkdown() {
-	return `# Standalone Goal
-
-## Objective
-Do standalone goal.
-
-## Scope
-Only this Goal.
-
-## Steps
-- [ ] Do work.
-
-## Success Criteria
-- Done.
-
-## Verification
-- [ ] \`npm test\`
-
-## Notes
-
-## Outcome
 `;
 }
 
@@ -4108,7 +4069,7 @@ function readFlow(dir) {
 }
 
 function readGoalArtifact(dir) {
-	return JSON.parse(readFileSync(join(dir, "goal.json"), "utf8"));
+	return JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
 }
 
 function writeFlow(dir, flow) {

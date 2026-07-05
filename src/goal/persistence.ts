@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -7,16 +13,19 @@ import { formatError, isRecord } from "../shared/guards.js";
 import { settledChecks } from "../shared/report-review.js";
 import type { ReviewerProgress } from "../shared/reviewer-pool.js";
 import { notifyUser } from "../shared/ui-language.js";
-import { writeGoalHtml } from "./html.js";
 import type {
 	ActiveGoal,
 	ReviewHistoryEntry,
 	StatusContext,
 } from "./runtime.js";
-import { goalPlanPath, readGoalArtifact, writeGoalArtifact } from "./store.js";
-import type { CheckModelSnapshot, CheckRound, GoalChecks } from "./types.js";
+import type {
+	CheckModelSnapshot,
+	CheckRound,
+	CompletionCursor,
+	GoalArtifactStatus,
+	GoalChecks,
+} from "./types.js";
 import { outcomeFromPlan } from "./validator.js";
-import { refreshGoalPlanHtml } from "./watcher.js";
 
 export const GOAL_STATE_ENTRY_TYPE = "goal-state";
 const STATE_FILE = join(
@@ -88,6 +97,17 @@ interface GoalCheckLive {
 	rounds?: ReviewHistoryEntry[];
 }
 
+export interface StepRuntimeState {
+	status: GoalArtifactStatus;
+	completionCursor: CompletionCursor;
+	runtimeGoalId: string | null;
+	sessionFile: string | null;
+	sessionName: string | null;
+	result: { summary: string | null; outcome: string | null };
+	checks: GoalChecks;
+	updatedAt: number;
+}
+
 export function saveActiveGoal(input: {
 	ctx: StatusContext;
 	goal: ActiveGoal | undefined;
@@ -97,7 +117,6 @@ export function saveActiveGoal(input: {
 	if (!input.goal) return;
 	syncStandaloneGoalArtifact(input.ctx, input.goal, input.live);
 	persistGoal(input.goal, input.ctx, input.pi);
-	refreshGoalPlanHtml(input.goal.artifactDir);
 }
 
 export function syncStandaloneGoalArtifact(
@@ -108,25 +127,24 @@ export function syncStandaloneGoalArtifact(
 ): void {
 	if (!goal.artifactDir) return;
 	try {
-		const artifact = readGoalArtifact(goal.artifactDir);
-		const markdown = readFileSync(goalPlanPath(goal.artifactDir), "utf8");
+		const state = readStepRuntimeState(goal.artifactDir);
+		const markdown = readFileSync(stepPlanPath(goal.artifactDir), "utf8");
 		const outcome = outcomeFromPlan(markdown);
-		const saved = writeGoalArtifact(goal.artifactDir, {
-			...artifact,
+		writeStepRuntimeState(goal.artifactDir, {
+			...state,
 			status: artifactStatus(goal.status),
 			runtimeGoalId: goal.id,
 			result: {
-				summary: acceptance || artifact.result.summary,
-				outcome: outcome || artifact.result.outcome,
+				summary: acceptance || state.result.summary,
+				outcome: outcome || state.result.outcome,
 			},
 			checks: artifactChecks(
 				goal.stateReviewHistory,
 				goal.qualityReviewHistory,
-				artifact.checks,
+				state.checks,
 				live,
 			),
 		});
-		writeGoalHtml(goal.artifactDir, saved);
 	} catch (error) {
 		notifyUser(
 			ctx,
@@ -145,13 +163,12 @@ export function cancelStandaloneGoalArtifact(
 ): void {
 	if (!goal.artifactDir) return;
 	try {
-		const artifact = readGoalArtifact(goal.artifactDir);
-		const saved = writeGoalArtifact(goal.artifactDir, {
-			...artifact,
+		const state = readStepRuntimeState(goal.artifactDir);
+		writeStepRuntimeState(goal.artifactDir, {
+			...state,
 			status: "cancelled",
-			checks: settledChecks(artifact.checks),
+			checks: settledChecks(state.checks),
 		});
-		writeGoalHtml(goal.artifactDir, saved);
 	} catch (error) {
 		notifyUser(
 			ctx,
@@ -189,6 +206,31 @@ export function artifactChecks(
 			active: live?.phase === "quality" ? modelSnapshots(live.progress) : null,
 		},
 	};
+}
+
+export function readStepRuntimeState(dir: string): StepRuntimeState {
+	const parsed = JSON.parse(
+		readFileSync(stepStatePath(dir), "utf8"),
+	) as unknown;
+	if (!isRecord(parsed)) throw new Error("state.json 必须是对象");
+	return parsed as unknown as StepRuntimeState;
+}
+
+export function writeStepRuntimeState(dir: string, state: StepRuntimeState) {
+	mkdirSync(dir, { recursive: true });
+	const next = { ...state, updatedAt: Date.now() };
+	const tmp = join(dir, "state.json.tmp");
+	writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
+	renameSync(tmp, stepStatePath(dir));
+	return next;
+}
+
+export function stepStatePath(dir: string) {
+	return join(dir, "state.json");
+}
+
+function stepPlanPath(dir: string) {
+	return join(dir, "plan.md");
 }
 
 function artifactStatus(

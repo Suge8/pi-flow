@@ -1,8 +1,4 @@
-import type { FlowSource } from "../flow/types.js";
-import type { Language } from "../shared/config.js";
-
 export type GoalArtifactStatus =
-	| "draft"
 	| "running"
 	| "paused"
 	| "budget_limited"
@@ -41,37 +37,4 @@ export interface CheckPhase {
 export interface GoalChecks {
 	acceptance: CheckPhase;
 	quality: CheckPhase;
-}
-
-export interface GoalArtifactResult {
-	summary: string | null;
-	outcome: string | null;
-}
-
-export interface GoalArtifactState {
-	schemaVersion: 5;
-	language: Language;
-	id: string;
-	title: string;
-	status: GoalArtifactStatus;
-	completionCursor: CompletionCursor;
-	source: FlowSource;
-	createdAt: number;
-	updatedAt: number;
-	repairAttempts: number;
-	errors: string[];
-	sessionFile: string | null;
-	sessionName: string | null;
-	snapshot: string | null;
-	snapshotHash: string | null;
-	runtimeGoalId: string | null;
-	result: GoalArtifactResult;
-	checks: GoalChecks;
-}
-
-export interface GoalArtifactLocation {
-	id: string;
-	dir: string;
-	jsonPath: string;
-	goal: GoalArtifactState;
 }

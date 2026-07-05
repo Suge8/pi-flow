@@ -2,9 +2,10 @@ import { createArtifactStore } from "../shared/artifact-store.js";
 import type { FlowLocation, FlowState } from "./types.js";
 
 const FLOW_ID_PATTERN = /^F[1-9]\d*-[a-z0-9-]+$/u;
+const FLOW_SHORT_ID_PATTERN = /^F[1-9]\d*$/u;
 
 const flowStore = createArtifactStore<FlowState, "flow">({
-	rootDir: ".flow/flows",
+	rootDir: ".flow",
 	jsonName: "flow.json",
 	idPattern: FLOW_ID_PATTERN,
 	idLabel: "flow id",
@@ -49,7 +50,8 @@ export function listFlows(cwd: string): FlowLocation[] {
 }
 
 export function findFlow(cwd: string, id: string) {
-	return flowStore.find(cwd, id);
+	const resolvedId = resolveFlowId(cwd, id);
+	return resolvedId ? flowStore.find(cwd, resolvedId) : undefined;
 }
 
 export function latestFlow(
@@ -61,6 +63,14 @@ export function latestFlow(
 
 export function runningFlow(cwd: string) {
 	return listFlows(cwd).find((item) => item.flow.status === "running");
+}
+
+function resolveFlowId(cwd: string, id: string) {
+	if (!FLOW_SHORT_ID_PATTERN.test(id)) return id;
+	const matches = listFlowIds(cwd).filter((item) => item.startsWith(`${id}-`));
+	if (matches.length === 1) return matches[0];
+	if (matches.length === 0) return undefined;
+	throw new Error(`Flow 短 id 不唯一：${id}（${matches.join(", ")}）`);
 }
 
 export function flowOwningSession(

@@ -116,6 +116,12 @@ export function verifyCurrentSnapshot(
 	return saved;
 }
 
+export function flowNotFoundMessage(flowId: string, language: Language) {
+	return language === "en"
+		? `Flow not found: ${flowId}`
+		: `未找到 Flow：${flowId}`;
+}
+
 export function flowStatusLabel(status: string, language: Language = "zh") {
 	if (status === "draft") return language === "en" ? "draft" : "计划";
 	if (status === "running") return language === "en" ? "running" : "执行中";

@@ -72,7 +72,7 @@ export function validateFlowDir(dir: string, language?: Language) {
 }
 
 export function validateFlowShape(flow: FlowState, errors: string[]) {
-	if (flow.schemaVersion !== 5) errors.push("schemaVersion 必须为 5");
+	if (flow.schemaVersion !== 6) errors.push("schemaVersion 必须为 6");
 	validateLanguage(flow.language, errors);
 	if (!FLOW_ID_PATTERN.test(String(flow.id ?? "")))
 		errors.push("id 必须匹配 F1-xxx");
@@ -98,15 +98,12 @@ export function validateFlowShape(flow: FlowState, errors: string[]) {
 		return;
 	}
 	const executionGoals = executionGoalCount(flow.goals);
-	if (executionGoals < 1)
-		errors.push(
-			"至少需要 1 个执行步骤 + 1 个最终验收步骤（role: final_acceptance）",
-		);
+	if (executionGoals < 1) errors.push("至少需要 1 个执行步骤");
 	if (executionGoals > MAX_EXECUTION_GOALS)
 		errors.push(
 			"执行步骤数量超过 10；final acceptance 不占执行步骤名额，必须拆成多个 flow",
 		);
-	validateFinalAcceptancePlacement(flow.goals, errors);
+	validateFinalAcceptancePlacement(flow.goals, executionGoals, errors);
 	if (flow.currentGoal < 0 || flow.currentGoal >= flow.goals.length)
 		errors.push("currentGoal 必须指向 goals 下标");
 	for (const [offset, goal] of flow.goals.entries())
@@ -131,12 +128,20 @@ function isNormalGoal(goal: unknown) {
 	return isRecord(goal) && goal.role === "normal";
 }
 
-function validateFinalAcceptancePlacement(goals: unknown[], errors: string[]) {
+function validateFinalAcceptancePlacement(
+	goals: unknown[],
+	executionGoals: number,
+	errors: string[],
+) {
 	const finalIndexes = goals.flatMap((goal, index) =>
 		isFinalAcceptance(goal) ? [index] : [],
 	);
+	if (executionGoals === 1) {
+		if (finalIndexes.length > 0) errors.push("单步 Flow 不使用最终验收步骤");
+		return;
+	}
 	if (finalIndexes.length !== 1)
-		errors.push("只能有 1 个最终验收步骤（role: final_acceptance）");
+		errors.push("多步 Flow 必须有 1 个最终验收步骤（role: final_acceptance）");
 	if (!isFinalAcceptance(goals.at(-1)))
 		errors.push("最后一个步骤必须是最终验收（role: final_acceptance）");
 	for (const index of finalIndexes) {

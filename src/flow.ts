@@ -34,10 +34,6 @@ import {
 import { showStatus } from "./flow/status-command.js";
 import { tokenize } from "./flow/util.js";
 import { closeFlowGoalWatcher } from "./flow/watcher.js";
-import {
-	commitGoalFlowRequest,
-	pendingGoalFlowRequest,
-} from "./goal/generation.js";
 import { cancelGoalRecoveryAfterUserAction } from "./goal/runtime.js";
 import { setGoalActivityBox } from "./shared/activity-frame.js";
 import { generationStartOptions } from "./shared/generation-alignment.js";
@@ -60,8 +56,8 @@ export default function flowExtension(pi: ExtensionAPI) {
 	});
 	pi.registerCommand("flow", {
 		description:
-			localizeUserText("把大任务拆成多个步骤依次执行：/flow [需求|path.md]") ??
-			"把大任务拆成多个步骤依次执行：/flow [需求|path.md]",
+			localizeUserText("生成并执行单步或多步任务：/flow [需求|path.md]") ??
+			"生成并执行单步或多步任务：/flow [需求|path.md]",
 		handler: (args, ctx) =>
 			Promise.resolve(handleFlowCommand(pi, args, ctx)).then(() => undefined),
 	});
@@ -119,16 +115,7 @@ async function handleFlowCommand(
 	if (!command) {
 		const options = await generationStartOptions(ctx);
 		if (!options) return;
-		const goalRequest = pendingGoalFlowRequest(ctx);
-		const started = await startGeneration(
-			pi,
-			ctx,
-			goalRequest ?? "",
-			goalRequest ? "prompt" : "conversation",
-			undefined,
-			options,
-		);
-		if (started && goalRequest) commitGoalFlowRequest(ctx);
+		await startGeneration(pi, ctx, "", "conversation", undefined, options);
 		return;
 	}
 	if (command === "start") {

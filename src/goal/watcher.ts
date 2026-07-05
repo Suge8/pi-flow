@@ -1,20 +1,9 @@
 import { createPlanFileWatcher } from "../shared/plan-file-watcher.js";
-import { writeGoalHtml } from "./html.js";
-import { goalPlanPath, readGoalArtifact } from "./store.js";
 
 const goalPlanWatcher = createPlanFileWatcher();
 
-export function watchGoalPlan(dir: string) {
-	goalPlanWatcher.watchFile(goalPlanPath(dir), () => {
-		writeGoalHtml(dir, readGoalArtifact(dir));
-	});
-}
-
-export function refreshGoalPlanHtml(dir: string | undefined) {
-	if (!dir) return;
-	goalPlanWatcher.refresh(() => {
-		writeGoalHtml(dir, readGoalArtifact(dir));
-	});
+export function watchGoalPlan(_dir: string) {
+	// Flow owns live report rendering; worker plan changes are watched by flow/watcher.
 }
 
 export function closeGoalPlanWatcher() {

@@ -46,9 +46,9 @@ try {
 		`file://${join(srcOut, "shared/report-server.js")}?t=${Date.now()}`
 	);
 	const cwd = join(out, "workspace");
-	const dir = join(cwd, ".flow", "goals", "G1-live");
+	const dir = join(cwd, ".flow", "F1-live");
 	mkdirSync(dir, { recursive: true });
-	const htmlPath = join(dir, "goal.html");
+	const htmlPath = join(dir, "flow.html");
 	writeFileSync(htmlPath, "<!doctype html><p>live</p>");
 	const state = { execs: [], statuses: [] };
 	const pi = {
@@ -76,7 +76,7 @@ try {
 		"status missing short live URL",
 	);
 	assert(
-		!state.statuses.at(-1).value.includes("/.flow/goals/G1-live/goal.html"),
+		!state.statuses.at(-1).value.includes("/.flow/F1-live/flow.html"),
 		"status should not include report path",
 	);
 	await openLiveHtmlOnce(pi, ctx, htmlPath, "en");
@@ -92,7 +92,7 @@ try {
 	assert(rootBody.includes("live"), "root did not redirect to latest report");
 
 	const otherCwd = join(out, "workspace-other");
-	const otherDir = join(otherCwd, ".flow", "flows", "F2-other");
+	const otherDir = join(otherCwd, ".flow", "F2-other");
 	mkdirSync(otherDir, { recursive: true });
 	const otherHtmlPath = join(otherDir, "flow.html");
 	writeFileSync(otherHtmlPath, "<!doctype html><p>other-root</p>");
@@ -111,7 +111,7 @@ try {
 	notifyReportChanged(htmlPath);
 	const event = await reload.event;
 	assert(event.includes("event: reload"), event);
-	assert(event.includes("/.flow/goals/G1-live/goal.html"), event);
+	assert(event.includes("/.flow/F1-live/flow.html"), event);
 
 	closeReportServer();
 	assert(state.statuses.at(-1).value === undefined, "status not cleared");
@@ -121,12 +121,12 @@ try {
 	await ensureReportServerForFile(watcherHtmlPath);
 	await openLiveHtmlOnce(pi, ctx, watcherHtmlPath);
 	const watcherUrl = state.execs.at(-1).args[0];
-	assert(watcherUrl.includes("/.flow/goals/G1-live/flow.html"), watcherUrl);
+	assert(watcherUrl.includes("/.flow/F1-live/flow.html"), watcherUrl);
 	const watcherReload = listenForReload(new URL("/events", watcherUrl).href);
 	await watcherReload.ready;
 	notifyReportChanged(watcherHtmlPath);
 	const watcherEvent = await watcherReload.event;
-	assert(watcherEvent.includes("/.flow/goals/G1-live/flow.html"), watcherEvent);
+	assert(watcherEvent.includes("/.flow/F1-live/flow.html"), watcherEvent);
 	closeReportServer();
 
 	console.log("report server smoke ok");

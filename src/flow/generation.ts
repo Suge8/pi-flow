@@ -131,14 +131,14 @@ export async function startGeneration(
 			: generationPrompt({ originalRequest, sourceType, sourcePath, language });
 	if (options.mode === "align") sendAlignmentStartCard(pi, ctx, "flow");
 	const sent = await sendOrchestrationPrompt(pi, ctx, prompt, {
-		errorPrefix: "多步骤计划提示发送失败",
+		errorPrefix: "Flow 计划提示发送失败",
 	});
 	if (!sent) {
 		finishGeneration(pending, ctx);
 		return false;
 	}
 	if (options.mode === "align") return true;
-	ctx.ui.notify("多步骤计划已开始生成；完成后会自动校验。", "info");
+	ctx.ui.notify("Flow 计划已开始生成；完成后会自动校验。", "info");
 	return true;
 }
 

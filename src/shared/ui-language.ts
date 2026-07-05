@@ -24,22 +24,14 @@ const originalSetStatus = new WeakMap<
 
 const EN_REPLACEMENTS: [string, string][] = [
 	[
-		"生成并执行单会话目标：/goal [需求|path.md] → /goal start [id]",
-		"Generate and run a single-session Goal: /goal [request|path.md] → /goal start [id]",
-	],
-	[
-		"把大任务拆成多个步骤依次执行：/flow [需求|path.md]",
-		"Split a large task into ordered steps: /flow [request|path.md]",
+		"生成并执行单步或多步任务：/flow [需求|path.md]",
+		"Plan and run a single- or multi-step task: /flow [request|path.md]",
 	],
 	["运行质量检查", "Run quality checks"],
 	["已有运行中的 Flow：", "A Flow is already running: "],
 	["Flow 步骤会话启动失败：", "Flow step session start failed: "],
 	["已有活动目标：", "Active Goal already exists: "],
 	["目标计划已生成并启动", "Goal plan generated and started"],
-	[
-		"目标计划已生成，但自动启动失败。运行 /goal start",
-		"Goal plan generated, but auto-start failed. Run /goal start",
-	],
 	["会话名同步失败", "Session name sync failed"],
 	["；已按 ask 处理。", "; handled as ask."],
 	[
@@ -76,10 +68,6 @@ const EN_REPLACEMENTS: [string, string][] = [
 	[
 		"对齐阶段不接受 Flow 计划；请继续对齐后再生成。",
 		"Alignment does not accept a Flow plan; continue alignment before generating.",
-	],
-	[
-		"AI 未生成有效目标计划。请重试 /goal。",
-		"AI did not generate a valid Goal plan. Retry /goal.",
 	],
 	[
 		"AI 未生成有效 Flow 计划。请重试 /flow。",
@@ -123,8 +111,8 @@ const EN_REPLACEMENTS: [string, string][] = [
 		"Plan generation started; it will be validated automatically when done.",
 	],
 	[
-		"多步骤计划已开始生成；完成后会自动校验。",
-		"Multi-step plan generation started; it will be validated automatically when done.",
+		"Flow 计划已开始生成；完成后会自动校验。",
+		"Flow plan generation started; it will be validated automatically when done.",
 	],
 	["目标计划生成已取消。", "Goal plan generation cancelled."],
 	["Flow 计划生成已取消。", "Flow plan generation cancelled."],
@@ -172,10 +160,6 @@ const EN_REPLACEMENTS: [string, string][] = [
 	],
 	["AI 正在运行，稍后再试。", "AI is running; try again later."],
 	["目标已继续执行。", "Goal continued."],
-	[
-		"当前目标不能用 /goal continue 继续。",
-		"The current Goal cannot be continued with /goal continue.",
-	],
 	["当前目录没有运行中的 Flow。", "No running Flow in the current directory."],
 	["Flow 没有进行中的步骤。", "Flow has no active step."],
 	["Flow 已继续执行。", "Flow continued."],

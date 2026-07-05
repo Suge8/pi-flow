@@ -12,13 +12,13 @@ Rules:
 - Each Goal must be small enough to complete in its own Goal session.
 - `flow.semantic.json` must be a JSON object with only `title` and `goals`; do not write `source`, `schemaVersion`, `status`, `currentGoal`, `checks`, or other runtime fields.
 - The `goals` array order is the execution order. Each item only needs `title`, `role`, and `file`. Do not write `index`; the extension recalculates 0-based indexes from order.
-- Non-final Goals use role `normal`; the last Goal uses role `final_acceptance`.
+- A single-step Flow has exactly 1 `normal` Goal and no final acceptance; in a multi-step Flow, non-final Goals use role `normal` and the last Goal uses role `final_acceptance`.
 - Each Goal file must contain Objective / Scope / Steps / Success Criteria / Verification / Notes / Handoff.
 - Each Goal's Success Criteria must be ordinary bullets, not checkboxes; write completion status and evidence in Verification / Handoff, not in Success Criteria.
 - Each Goal's Steps and Verification must use checkboxes, initially only `[ ]`; Verification needs a command or explicit manual verification step.
 - Steps are runtime todo items, not coarse phases. Prefer 3–12 small items per Goal; smaller tasks may use fewer. Each item must be independently actionable and updatable.
 - Write each Step as `- [ ] **Short title**: technical detail`; short title <= 20 Chinese chars or concise English, user-readable; detail can be technical.
-- The last Goal must be final acceptance, reading all Handoffs, reviewing `criteriaChanged`, running global verification, and closing out.
+- Only multi-step Flow must have a final acceptance Goal, reading all Handoffs, reviewing `criteriaChanged`, running global verification, and closing out; single-step Flow must not write final acceptance.
 - Do not generate or test `flow.html`; the extension renders HTML after validation.
 - After fixing `flow.semantic.json` and Goal markdown, stop. The extension will reassemble and run structural validation (`{{validateCommand}} {{flowPath}}`). Do not manually simulate validation results.
 - If an error mentions canonical `flow.json` or runtime state fields, do not fill those fields manually; fix the semantic draft and Goal markdown so the extension can process them again.

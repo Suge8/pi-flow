@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,14 +24,8 @@ try {
 	const config = await import(
 		`file://${join(srcOut, "shared/config.js")}?t=${Date.now()}`
 	);
-	const goalPrompt = await import(
-		`file://${join(srcOut, "goal/prompt.js")}?t=${Date.now()}`
-	);
 	const flowPrompt = await import(
 		`file://${join(srcOut, "flow/prompt.js")}?t=${Date.now()}`
-	);
-	const goalValidator = await import(
-		`file://${join(srcOut, "goal/validator.js")}?t=${Date.now()}`
 	);
 	const flowValidator = await import(
 		`file://${join(srcOut, "flow/validator.js")}?t=${Date.now()}`
@@ -92,7 +86,6 @@ try {
 		["等待 AI 提问。", "Waiting for AI to ask."],
 		["已有运行中的 Flow：F1-test", "A Flow is already running: F1-test"],
 		["Flow 步骤会话启动失败：boom", "Flow step session start failed: boom"],
-		["已有活动目标：Ship feature", "Active Goal already exists: Ship feature"],
 	];
 	for (const [source, expected] of englishUiCopy) {
 		assert(
@@ -101,8 +94,6 @@ try {
 		);
 	}
 	const englishTerminalSamples = [
-		"目标计划已生成并启动：G1-test",
-		"目标计划已生成，但自动启动失败。运行 /goal start G1-test。",
 		"会话名同步失败：boom",
 		"config.json 字段 generation.align 必须是 ask、yes 或 no；已按 ask 处理。",
 		"质量检查失败：boom",
@@ -110,21 +101,13 @@ try {
 		"目标完成事实写入失败：boom",
 		"目标状态保存失败：boom",
 		"目标取消保存失败：boom",
-		"目标校验失败：\nlanguage must be zh or en",
 		"完成验收启动失败：boom",
 		"子进程启动失败：boom",
 		"子进程失败，退出码 1。err",
-		"目标状态为 paused；只有活动目标可以暂停。",
-		"目标状态为 paused；只有已暂停或预算受限的目标可以恢复。",
-		"目标令牌预算仍已达到：10",
-		"用法：/goal | /goal start [id]\n当前没有目标。",
-		"目标提示发送失败：boom",
 		"当前步骤状态：running。",
 		"Flow 已更新；运行 /flow continue 继续下一步。",
 		"Flow 继续结果：weird。",
 		".flow 目录不可用：boom",
-		"对齐阶段不接受目标计划；请继续对齐后再生成。",
-		"AI 未生成有效目标计划。请重试 /goal。",
 		"AI 未生成有效 Flow 计划。请重试 /flow。",
 	];
 	for (const source of englishTerminalSamples) {
@@ -150,11 +133,11 @@ try {
 		"跳过对齐，直接根据上下文生成计划",
 	]);
 	const localizedValidationNotice = uiLanguage.localizeUserText(
-		"Flow 校验失败：\nschemaVersion 必须为 5\nlanguage 必须是 zh 或 en",
+		"Flow 校验失败：\nschemaVersion 必须为 6\nlanguage 必须是 zh 或 en",
 	);
 	assert(
 		localizedValidationNotice.includes("Flow validation failed") &&
-			localizedValidationNotice.includes("schemaVersion must be 5") &&
+			localizedValidationNotice.includes("schemaVersion must be 6") &&
 			localizedValidationNotice.includes("language must be zh or en") &&
 			!localizedValidationNotice.includes("必须"),
 		"English validation notice leaked Chinese",
@@ -202,31 +185,6 @@ try {
 		generationAlignment.isDraftConfirmation("Y", "en"),
 		"Y draft confirmation compatibility was broken",
 	);
-	const prompt = goalPrompt.generationPrompt({
-		originalRequest: "Ship feature",
-		sourceType: "prompt",
-		language: "en",
-	});
-	assert(
-		prompt.includes("goal.semantic.json"),
-		"English goal prompt missed semantic artifact",
-	);
-	assert(
-		prompt.includes('"source": {}'),
-		"English goal prompt missed semantic source skeleton",
-	);
-	assert(
-		!prompt.includes('"schemaVersion": 5'),
-		"English goal prompt still asks the model to write runtime schema",
-	);
-	assert(
-		prompt.includes("Output language must use current language"),
-		"English goal prompt missed language rule",
-	);
-	assert(
-		!prompt.includes("输出语言跟用户原始需求一致"),
-		"old request-language rule leaked into English prompt",
-	);
 	const flowGenerationPrompt = flowPrompt.generationPrompt({
 		originalRequest: "Ship flow",
 		sourceType: "prompt",
@@ -244,33 +202,6 @@ try {
 		flowGenerationPrompt.includes("Output language must use current language"),
 		"English flow prompt missed language rule",
 	);
-	const badGoalDir = join(out, "G1-bad-goal");
-	mkdirSync(badGoalDir, { recursive: true });
-	writeFileSync(
-		join(badGoalDir, "goal.json"),
-		`${JSON.stringify({ ...sampleGoal(), language: undefined })}\n`,
-	);
-	const badGoal = goalValidator.validateGoalDir(badGoalDir, "en");
-	assert(
-		badGoal.errors.includes("language must be zh or en") &&
-			!badGoal.errors.some((error) => error.includes("必须")),
-		"English Goal validator error leaked Chinese",
-	);
-	const scriptResult = spawnSync(
-		process.execPath,
-		[join(root, "scripts/validate-draft.mjs"), badGoalDir],
-		{
-			cwd: root,
-			env: { ...process.env, PI_FLOW_LANGUAGE: "en" },
-			encoding: "utf8",
-		},
-	);
-	assert(scriptResult.status === 1, "bad draft script should fail");
-	assert(
-		scriptResult.stderr.includes("language must be zh or en") &&
-			!scriptResult.stderr.includes("必须"),
-		"English validate-draft output leaked Chinese",
-	);
 	const badFlowDir = join(out, "F1-bad-flow");
 	mkdirSync(badFlowDir, { recursive: true });
 	writeFileSync(
@@ -279,7 +210,7 @@ try {
 	);
 	const badFlow = flowValidator.validateFlowDir(badFlowDir);
 	assert(
-		badFlow.errors.includes("schemaVersion must be 5") &&
+		badFlow.errors.includes("schemaVersion must be 6") &&
 			!badFlow.errors.some((error) => error.includes("必须")),
 		"English Flow validator error leaked Chinese",
 	);
@@ -330,7 +261,7 @@ try {
 	const badFinalRoleResult = flowValidator.validateFlowDir(badFinalRoleDir);
 	assert(
 		badFinalRoleResult.errors.includes(
-			"Exactly 1 final acceptance step is required (role: final_acceptance)",
+			"Multi-step Flow must have exactly 1 final acceptance step (role: final_acceptance)",
 		) &&
 			badFinalRoleResult.errors.includes(
 				"goals[0] non-final step must be normal",
@@ -347,7 +278,11 @@ try {
 	const flow = sampleFlow();
 	const html = flowHtml.renderFlowHtml(flowDir, flow);
 	assert(html.includes('<html lang="en">'), "English Flow HTML lang missing");
-	assert(html.includes("Multi-step plan"), "English Flow HTML chrome missing");
+	assert(html.includes("Flow plan"), "English Flow HTML chrome missing");
+	assert(
+		!html.includes("Multi-step plan"),
+		"English Flow HTML should be neutral",
+	);
 	assert(html.includes("Completion acceptance"), "English check label missing");
 	assert(!html.includes("多步骤计划"), "Chinese Flow HTML chrome leaked");
 	const status = flowStatus.statusText(flow);
@@ -412,35 +347,9 @@ function assertAlignmentCopy(generationAlignment) {
 	);
 }
 
-function sampleGoal() {
-	return {
-		schemaVersion: 5,
-		language: "en",
-		id: "G1-bad-goal",
-		title: "Bad goal",
-		status: "draft",
-		completionCursor: null,
-		source: { type: "prompt", path: null, originalRequest: "Bad goal" },
-		createdAt: 0,
-		updatedAt: 0,
-		repairAttempts: 0,
-		errors: [],
-		sessionFile: null,
-		sessionName: null,
-		snapshot: null,
-		snapshotHash: null,
-		runtimeGoalId: null,
-		result: { summary: null, outcome: null },
-		checks: {
-			acceptance: { enabled: true, rounds: [], active: null },
-			quality: { enabled: true, rounds: [], active: null },
-		},
-	};
-}
-
 function sampleFlow() {
 	return {
-		schemaVersion: 5,
+		schemaVersion: 6,
 		language: "en",
 		id: "F1-ship",
 		title: "Ship feature",

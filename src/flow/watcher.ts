@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GoalArtifactState } from "../goal/types.js";
+import type { StepRuntimeState } from "../goal/persistence.js";
 import { createPlanFileWatcher } from "../shared/plan-file-watcher.js";
 import { writeFlowHtml } from "./html.js";
 import { readFlow } from "./store.js";
@@ -102,13 +102,13 @@ function readWorkerArtifact(dir: string, goalIndex: number) {
 	try {
 		return JSON.parse(
 			readFileSync(workerGoalPath(dir, goalIndex), "utf8"),
-		) as GoalArtifactState;
+		) as StepRuntimeState;
 	} catch {
 		return undefined;
 	}
 }
 
-function flowGoalStatus(status: GoalArtifactState["status"]): FlowGoalStatus {
+function flowGoalStatus(status: StepRuntimeState["status"]): FlowGoalStatus {
 	return status === "complete" ? "complete" : "running";
 }
 
@@ -117,7 +117,7 @@ function workerPlanPath(dir: string, goalIndex: number) {
 }
 
 function workerGoalPath(dir: string, goalIndex: number) {
-	return join(workerDir(dir, goalIndex), "goal.json");
+	return join(workerDir(dir, goalIndex), "state.json");
 }
 
 function workerPlanFile(goalIndex: number) {

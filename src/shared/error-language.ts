@@ -4,13 +4,12 @@ const LANGUAGES = new Set(["zh", "en"]);
 
 const EXACT_EN = new Map<string, string>([
 	[
-		"用法：node scripts/validate-draft.mjs <.flow/flows/F1-id|.flow/goals/G1-id>",
-		"Usage: node scripts/validate-draft.mjs <.flow/flows/F1-id|.flow/goals/G1-id>",
+		"用法：node scripts/validate-draft.mjs <.flow/F1-id>",
+		"Usage: node scripts/validate-draft.mjs <.flow/F1-id>",
 	],
-	["缺少 goal.json 或 flow.json", "Missing goal.json or flow.json"],
-	["schemaVersion 必须为 5", "schemaVersion must be 5"],
+	["缺少 flow.json", "Missing flow.json"],
+	["schemaVersion 必须为 6", "schemaVersion must be 6"],
 	["language 必须是 zh 或 en", "language must be zh or en"],
-	["id 必须匹配 G1-xxx", "id must match G1-xxx"],
 	["id 必须匹配 F1-xxx", "id must match F1-xxx"],
 	["title 必须是非空字符串", "title must be a non-empty string"],
 	["createdAt 必须是时间戳", "createdAt must be a timestamp"],
@@ -40,17 +39,18 @@ const EXACT_EN = new Map<string, string>([
 	["errors 必须是数组", "errors must be an array"],
 	["errors 必须是字符串数组", "errors must be a string array"],
 	["goals 必须是数组", "goals must be an array"],
-	[
-		"至少需要 1 个执行步骤 + 1 个最终验收步骤（role: final_acceptance）",
-		"At least 1 execution step plus 1 final acceptance step is required (role: final_acceptance)",
-	],
+	["至少需要 1 个执行步骤", "At least 1 execution step is required"],
 	[
 		"执行步骤数量超过 10；final acceptance 不占执行步骤名额，必须拆成多个 flow",
 		"Execution step count exceeds 10; final acceptance does not count toward the execution-step limit; split it into multiple flows",
 	],
 	[
-		"只能有 1 个最终验收步骤（role: final_acceptance）",
-		"Exactly 1 final acceptance step is required (role: final_acceptance)",
+		"单步 Flow 不使用最终验收步骤",
+		"Single-step Flow must not use a final acceptance step",
+	],
+	[
+		"多步 Flow 必须有 1 个最终验收步骤（role: final_acceptance）",
+		"Multi-step Flow must have exactly 1 final acceptance step (role: final_acceptance)",
 	],
 	[
 		"最后一个步骤必须是最终验收（role: final_acceptance）",

@@ -7,11 +7,10 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { auditGoalCompletion, type GoalAuditResult } from "../auditor.js";
 import { writeFlowHtml } from "../flow/html.js";
-import { currentSessionFile, flowOwnerForSession } from "../flow/ownership.js";
+import { flowOwnerForSession } from "../flow/ownership.js";
 import { rememberFlowContext } from "../flow/runtime.js";
 import { currentGoal, writeFlow } from "../flow/store.js";
-import { clip, requireFlowStartedAt } from "../flow/util.js";
-import { planSnapshotHash } from "../plan/snapshot.js";
+import { requireFlowStartedAt } from "../flow/util.js";
 import {
 	isGoalScopedReviewActive,
 	isReviewLoopActive,
@@ -37,10 +36,7 @@ import {
 } from "../shared/activity-frame.js";
 import { type Language, readFlowConfig } from "../shared/config.js";
 import { escapeRegExp, formatError } from "../shared/guards.js";
-import {
-	appendVisibleUserInput,
-	sendOrchestrationPrompt,
-} from "../shared/internal-prompt.js";
+import { sendOrchestrationPrompt } from "../shared/internal-prompt.js";
 import { runtimeLanguage } from "../shared/language.js";
 import { switchToRoleModel } from "../shared/model-roles.js";
 import type { PlanEvidence } from "../shared/plan-evidence.js";
@@ -52,7 +48,6 @@ import {
 	roundLabel,
 	roundTitle,
 } from "../shared/progress-labels.js";
-import { liveReportUrl } from "../shared/report-server.js";
 import {
 	registerResultCardRenderer,
 	sendResultCard,
@@ -68,41 +63,22 @@ import {
 	clearStatus,
 	type ElapsedStatus,
 	elapsedSeconds,
-	formatDuration,
 	setStatusSafe,
 	startElapsedStatus,
 } from "../shared/status.js";
+import { notifyUser, setStatusText } from "../shared/ui-language.js";
 import {
-	installLocalizedUi,
-	localizeUserText,
-	notifyUser,
-	setStatusText,
-} from "../shared/ui-language.js";
-import { handleGoalCommand } from "./command.js";
-import {
-	clearGoalGeneration,
-	consumeGoalClarificationInput,
-	handleGoalGenerationEnd,
-	showGoalGenerationStatus,
-} from "./generation.js";
-import {
-	goalArtifactStatusLabel,
-	writeGoalErrorHtml,
-	writeGoalHtml,
-} from "./html.js";
-import {
-	artifactChecks,
-	cancelStandaloneGoalArtifact as cancelStandaloneGoalArtifactEntry,
 	clearPersistedGoal as clearPersistedGoalEntry,
 	GOAL_STATE_ENTRY_TYPE,
 	type GoalStateEntryData,
 	persistGoal as persistGoalEntry,
+	readStepRuntimeState,
 	saveActiveGoal as saveActiveGoalEntry,
 	syncStandaloneGoalArtifact as syncStandaloneGoalArtifactEntry,
+	writeStepRuntimeState,
 } from "./persistence.js";
 import {
 	buildContinuePrompt,
-	buildGoalPrompt,
 	buildGoalSystemPrompt,
 	buildResumePrompt,
 	type GoalTodoPromptContext,
@@ -119,16 +95,9 @@ import {
 	trackCompletionAuditStatus as trackCompletionAuditStatusState,
 	yieldForGoalReviewCard,
 } from "./review-orchestration.js";
-import {
-	findGoalArtifact,
-	goalPlanPath,
-	latestGoalArtifact,
-	readGoalArtifact,
-	writeGoalArtifact,
-} from "./store.js";
 import type { CompletionCursor } from "./types.js";
 
-import { objectiveFromPlan, validateGoalDir } from "./validator.js";
+import { objectiveFromPlan } from "./validator.js";
 import { closeGoalPlanWatcher, watchGoalPlan } from "./watcher.js";
 
 export type GoalStatus = "active" | "paused" | "budget_limited" | "complete";
@@ -286,24 +255,6 @@ export default function goal(pi: ExtensionAPI) {
 	resetGoalRuntimeState(pi);
 	registerResultCardRenderer(pi);
 
-	pi.registerCommand("goal", {
-		description:
-			localizeUserText(
-				"生成并执行单会话目标：/goal [需求|path.md] → /goal start [id]",
-			) ?? "生成并执行单会话目标：/goal [需求|path.md] → /goal start [id]",
-		handler: async (args, ctx) => {
-			installLocalizedUi(ctx);
-			cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
-			return handleGoalCommand(pi, args, ctx, {
-				show: showGoal,
-				pause: pauseGoal,
-				continue: continueGoal,
-				cancel: cancelGoal,
-				startFromDraft: startGoalFromDraft,
-			});
-		},
-	});
-
 	pi.on("session_start", (_event, ctx) => {
 		installFlowActivityFrame(ctx);
 		clearContinuationTracking();
@@ -340,23 +291,9 @@ export default function goal(pi: ExtensionAPI) {
 		clearFlowActivities();
 	});
 
-	pi.on("input", async (event, ctx) => {
+	pi.on("input", (event) => {
 		if (event.source !== "extension") {
 			cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
-			const action = consumeGoalClarificationInput(event.text, ctx);
-			if (action?.kind === "prompt") {
-				setGoalActivityBox(ctx, action.activityBox);
-				if (action.showUserInput)
-					appendVisibleUserInput(pi, event.text, {
-						streamingBehavior: event.streamingBehavior,
-					});
-				const sent = await sendOrchestrationPrompt(pi, ctx, action.prompt, {
-					followUp: true,
-					errorPrefix: "计划澄清提示发送失败",
-				});
-				if (!sent) clearGoalGeneration(ctx);
-				return { action: "handled" as const };
-			}
 			return;
 		}
 		if (consumeCancelledContinuationPrompt(event.text))
@@ -395,23 +332,6 @@ export default function goal(pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
-		const generated = await handleGoalGenerationEnd(pi, ctx, event);
-		if (generated?.autoStart) {
-			const started = await startGoalFromDraft(generated.id, pi, ctx);
-			notifyUser(
-				ctx,
-				generated.language === "en"
-					? started
-						? `Goal plan generated and started: ${generated.id}`
-						: `Goal plan generated, but auto-start failed. Run /goal start ${generated.id}.`
-					: started
-						? `目标计划已生成并启动：${generated.id}`
-						: `目标计划已生成，但自动启动失败。运行 /goal start ${generated.id}。`,
-				started ? "info" : "warning",
-				generated.language,
-			);
-			return;
-		}
 		goalRuntimeState.activeGoal = goalRuntimeState.activeGoal
 			? sanitizeLoadedGoal(ctx, goalRuntimeState.activeGoal)
 			: loadGoalFromSession(ctx);
@@ -721,404 +641,6 @@ export function isGoalActiveInSession(ctx: StatusContext) {
 	return getGoalState(ctx)?.status === "active";
 }
 
-async function startGoalFromDraft(
-	id: string | undefined,
-	pi: ExtensionAPI,
-	ctx: StatusContext,
-) {
-	let location: ReturnType<typeof latestGoalArtifact>;
-	try {
-		location = id
-			? findGoalArtifact(ctx.cwd, id)
-			: latestGoalArtifact(ctx.cwd, (goal) => goal.status === "draft");
-	} catch (error) {
-		const language = runtimeLanguage();
-		notifyUser(
-			ctx,
-			language === "en"
-				? `goal.json read failed: ${notifyError(error)}`
-				: `goal.json 读取失败：${notifyError(error)}`,
-			"error",
-			language,
-		);
-		return false;
-	}
-	if (!location) {
-		const language = runtimeLanguage();
-		notifyUser(ctx, noDraftGoalMessage(language), "warning", language);
-		return false;
-	}
-	const validation = validateGoalDir(
-		location.dir,
-		location.goal?.language ?? runtimeLanguage(),
-	);
-	if (!validation.ok || !validation.goal) {
-		if (location.goal)
-			writeGoalArtifact(location.dir, {
-				...location.goal,
-				errors: validation.errors,
-			});
-		writeGoalErrorHtml(location.dir, {
-			title: location.goal?.title || location.id,
-			errors: validation.errors,
-			originalRequest: location.goal?.source?.originalRequest,
-			language: location.goal?.language ?? runtimeLanguage(),
-		});
-		const language = location.goal?.language ?? runtimeLanguage();
-		notifyUser(
-			ctx,
-			language === "en"
-				? `Goal validation failed:\n${validation.errors.join("\n")}`
-				: `目标校验失败：\n${validation.errors.join("\n")}`,
-			"error",
-			language,
-		);
-		return false;
-	}
-	if (validation.goal.status !== "draft") {
-		notifyUser(
-			ctx,
-			goalCannotStartMessage(validation.goal),
-			"warning",
-			validation.goal.language,
-		);
-		return false;
-	}
-	const existingGoal =
-		goalRuntimeState.activeGoal?.status !== "complete"
-			? goalRuntimeState.activeGoal
-			: undefined;
-	if (existingGoal) {
-		notifyUser(
-			ctx,
-			activeGoalExistsMessage(existingGoal),
-			"warning",
-			existingGoal.language,
-		);
-		return false;
-	}
-	const markdown = readFileSync(goalPlanPath(location.dir), "utf8");
-	const objective = objectiveFromPlan(markdown);
-	if (!objective) {
-		notifyUser(
-			ctx,
-			missingObjectiveMessage(validation.goal.language),
-			"warning",
-			validation.goal.language,
-		);
-		return false;
-	}
-	if (!(await switchToRoleModel(pi, ctx, "executor", validation.goal.language)))
-		return false;
-	cancelContinuationPending();
-	cancelCompletionAudit();
-	goalRuntimeState.activeGoal = createGoal(
-		objective,
-		undefined,
-		currentTokenTotal(ctx),
-		{
-			artifactDir: location.dir,
-			artifactId: validation.goal.id,
-		},
-		validation.goal.language,
-	);
-	const sessionName = `${goalIdPrefix(validation.goal.id)} ${clip(validation.goal.title, 18)}`;
-	pi.setSessionName?.(sessionName);
-	const saved = writeGoalArtifact(location.dir, {
-		...validation.goal,
-		status: "running",
-		sessionFile: currentSessionFile(ctx) ?? null,
-		sessionName,
-		snapshot: markdown,
-		snapshotHash: planSnapshotHash(markdown),
-		runtimeGoalId: goalRuntimeState.activeGoal.id,
-		errors: [],
-		checks: artifactChecks([], [], validation.goal.checks),
-	});
-	writeGoalHtml(location.dir, saved);
-	watchGoalPlan(location.dir);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
-	const sent = await sendGoalPrompt(pi, ctx, goalRuntimeState.activeGoal);
-	if (!sent) {
-		const reverted = writeGoalArtifact(location.dir, validation.goal);
-		writeGoalHtml(location.dir, reverted);
-		closeGoalPlanWatcher();
-		clearActiveGoal(ctx);
-		return false;
-	}
-	return true;
-}
-
-function noDraftGoalMessage(language: Language) {
-	return language === "en"
-		? "No draft Goal to start. Run /goal <request> first."
-		: "没有待启动的目标计划。先运行 /goal <需求> 生成。";
-}
-
-function goalCannotStartMessage(goal: {
-	id: string;
-	status: string;
-	language: Language;
-}) {
-	const status = goalArtifactStatusLabel(goal.status, goal.language);
-	return goal.language === "en"
-		? `${goal.id} status: ${status}; cannot start.`
-		: `${goal.id} 当前状态：${status}，不能启动。`;
-}
-
-function activeGoalExistsMessage(goal: ActiveGoal) {
-	return goal.language === "en"
-		? `Active Goal already exists: ${goal.text}`
-		: `已有活动目标：${goal.text}`;
-}
-
-function missingObjectiveMessage(language: Language) {
-	return language === "en"
-		? "plan.md Objective cannot be empty."
-		: "plan.md 的 Objective（目标）不能为空。";
-}
-
-function goalIdPrefix(id: string) {
-	return /^G[0-9]+/u.exec(id)?.[0] ?? id;
-}
-
-function pauseGoal(ctx: StatusContext) {
-	if (!goalRuntimeState.activeGoal)
-		return notifyUser(
-			ctx,
-			noActiveGoalMessage(runtimeLanguage()),
-			"info",
-			runtimeLanguage(),
-		);
-	if (goalRuntimeState.activeGoal.status !== "active") {
-		const goal = goalRuntimeState.activeGoal;
-		return notifyUser(
-			ctx,
-			goalCannotPauseMessage(goal),
-			"warning",
-			goal.language,
-		);
-	}
-	cancelContinuationPending();
-	cancelCompletionAudit();
-	goalRuntimeState.activeGoal = transitionGoal(
-		goalRuntimeState.activeGoal,
-		"paused",
-	);
-	syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
-	closeGoalPlanWatcher();
-	notifyUser(
-		ctx,
-		goalPausedMessage(goalRuntimeState.activeGoal),
-		"info",
-		goalRuntimeState.activeGoal.language,
-	);
-}
-
-async function resumeGoal(pi: ExtensionAPI, ctx: StatusContext) {
-	if (!goalRuntimeState.activeGoal)
-		return notifyUser(
-			ctx,
-			noActiveGoalMessage(runtimeLanguage()),
-			"info",
-			runtimeLanguage(),
-		);
-	if (
-		goalRuntimeState.activeGoal.status !== "paused" &&
-		goalRuntimeState.activeGoal.status !== "budget_limited"
-	) {
-		const goal = goalRuntimeState.activeGoal;
-		return notifyUser(
-			ctx,
-			goalCannotResumeMessage(goal),
-			"warning",
-			goal.language,
-		);
-	}
-	if (!validateCompletionArtifact(ctx, goalRuntimeState.activeGoal)) return;
-	goalRuntimeState.activeGoal = transitionGoal(
-		goalRuntimeState.activeGoal,
-		"active",
-	);
-	syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
-	if (
-		goalRuntimeState.activeGoal.status === "active" &&
-		goalRuntimeState.activeGoal.artifactDir
-	)
-		watchGoalPlan(goalRuntimeState.activeGoal.artifactDir);
-	if (goalRuntimeState.activeGoal.status !== "active") {
-		const goal = goalRuntimeState.activeGoal;
-		return notifyUser(
-			ctx,
-			goal.language === "en"
-				? `Goal token budget is still reached: ${formatBudget(goal)}`
-				: `目标令牌预算仍已达到：${formatBudget(goal)}`,
-			"warning",
-			goal.language,
-		);
-	}
-	const resumedGoal = goalRuntimeState.activeGoal;
-	const routed = await continueFromCompletionCursor(ctx, resumedGoal);
-	if (routed) {
-		notifyUser(
-			ctx,
-			goalContinueResultMessage(routed, resumedGoal.language),
-			routed === "not_resumable" ? "warning" : "info",
-			resumedGoal.language,
-		);
-		return;
-	}
-	const sent = await sendResumePrompt(pi, ctx, resumedGoal);
-	if (!sent) {
-		goalRuntimeState.activeGoal = transitionGoal(resumedGoal, "paused");
-		syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-		persistGoal(goalRuntimeState.activeGoal, ctx);
-		updateStatus(ctx, goalRuntimeState.activeGoal);
-		return;
-	}
-	notifyUser(
-		ctx,
-		goalResumedMessage(goalRuntimeState.activeGoal),
-		"info",
-		goalRuntimeState.activeGoal.language,
-	);
-}
-
-async function continueGoal(pi: ExtensionAPI, ctx: StatusContext) {
-	const goal = goalRuntimeState.activeGoal ?? loadGoalFromSession(ctx);
-	if (goal?.status === "paused" || goal?.status === "budget_limited")
-		return resumeGoal(pi, ctx);
-	const result = await continueActiveGoalIfIdle(ctx);
-	const language = goal?.language ?? runtimeLanguage();
-	return notifyUser(
-		ctx,
-		goalContinueResultMessage(result, language),
-		result === "not_resumable" ? "warning" : "info",
-		language,
-	);
-}
-
-function cancelGoal(ctx: StatusContext) {
-	if (clearGoalGeneration(ctx)) {
-		ctx.ui.notify("目标计划生成已取消。", "warning");
-		return;
-	}
-	if (!goalRuntimeState.activeGoal) {
-		notifyUser(
-			ctx,
-			noActiveGoalMessage(runtimeLanguage()),
-			"info",
-			runtimeLanguage(),
-		);
-		cancelContinuationPending();
-		clearPersistedGoal(ctx.cwd, ctx);
-		clearGoalUi(ctx);
-		return;
-	}
-	const stoppedGoal = goalRuntimeState.activeGoal.text;
-	const language = goalRuntimeState.activeGoal.language;
-	cancelStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-	clearActiveGoal(ctx);
-	notifyUser(
-		ctx,
-		goalCancelledMessage(stoppedGoal, language),
-		"warning",
-		language,
-	);
-}
-
-async function showGoal(ctx: StatusContext, id: string | undefined) {
-	if (id) return showGoalArtifact(ctx, id);
-	if (showGoalGenerationStatus(ctx)) return;
-	if (!goalRuntimeState.activeGoal) {
-		const latest = latestGoalArtifact(
-			ctx.cwd,
-			(goal) => goal.status !== "cancelled",
-		);
-		if (latest) return showGoalArtifact(ctx, latest.id);
-		ctx.ui.notify("用法：/goal | /goal start [id]\n当前没有目标。", "info");
-		clearGoalUi(ctx);
-		return;
-	}
-	updateGoalUsage(goalRuntimeState.activeGoal, ctx);
-	if (goalRuntimeState.activeGoal.artifactDir)
-		syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	if (!isGoalScopedReviewActive())
-		updateStatus(ctx, goalRuntimeState.activeGoal);
-	const report = await goalReportUrl(
-		ctx,
-		goalRuntimeState.activeGoal.artifactDir,
-		goalRuntimeState.activeGoal.language,
-	);
-	notifyUser(
-		ctx,
-		goalSummary(goalRuntimeState.activeGoal, report),
-		"info",
-		goalRuntimeState.activeGoal.language,
-	);
-}
-
-async function showGoalArtifact(ctx: StatusContext, id: string) {
-	let location: ReturnType<typeof findGoalArtifact>;
-	try {
-		location = findGoalArtifact(ctx.cwd, id);
-	} catch (error) {
-		const language = runtimeLanguage();
-		return notifyUser(
-			ctx,
-			language === "en"
-				? `goal.json read failed: ${notifyError(error)}`
-				: `goal.json 读取失败：${notifyError(error)}`,
-			"error",
-			language,
-		);
-	}
-	if (!location) {
-		const language = runtimeLanguage();
-		return notifyUser(
-			ctx,
-			language === "en"
-				? "No Goal in the current directory."
-				: "当前目录没有目标。",
-			"info",
-			language,
-		);
-	}
-	const validation = validateGoalDir(
-		location.dir,
-		location.goal?.language ?? runtimeLanguage(),
-	);
-	if (!validation.ok || !validation.goal) {
-		const language = location.goal?.language ?? runtimeLanguage();
-		return notifyUser(
-			ctx,
-			language === "en"
-				? `Goal validation failed:\n${validation.errors.join("\n")}`
-				: `目标校验失败：\n${validation.errors.join("\n")}`,
-			"error",
-			language,
-		);
-	}
-	const htmlPath = writeGoalHtml(location.dir, validation.goal);
-	const report = await liveReportUrl(
-		ctx,
-		htmlPath,
-		validation.goal.language,
-	).catch(() => undefined);
-	notifyUser(
-		ctx,
-		goalArtifactSummary(validation.goal, report),
-		"info",
-		validation.goal.language,
-	);
-}
-
 function scheduleGoalStateReview(ctx: ExtensionContext, goal: ActiveGoal) {
 	const goalId = goal.id;
 	goalRuntimeState.scheduledGoalStateReview = new Promise((resolve) => {
@@ -1245,7 +767,7 @@ async function continueAfterGoalStateReviewPassed(
 				statusKey: STATUS_KEY,
 				totalStartedAt: topStartedAt(ctx, goal),
 				showTotalElapsed: shouldShowTotalElapsed(ctx, stateReviewRound),
-				resumeCommand: flow ? "/flow continue" : "/goal continue",
+				resumeCommand: "/flow continue",
 				activity: flow
 					? {
 							object: "Flow",
@@ -1407,7 +929,7 @@ function sendGoalQualityReviewBlockedCard(
 	message: string,
 ) {
 	const flow = flowContext(ctx);
-	const next = flow ? "/flow continue" : "/goal continue";
+	const next = "/flow continue";
 	const title = flow
 		? goal.language === "en"
 			? `Flow ${flow.label} incomplete`
@@ -1437,7 +959,7 @@ function sendGoalCompletionFactErrorCard(
 	goal: ActiveGoal,
 ) {
 	const flow = flowContext(ctx);
-	const next = flow ? "/flow continue" : "/goal continue";
+	const next = "/flow continue";
 	const title = flow
 		? goal.language === "en"
 			? `Flow ${flow.label} completion fact write failed`
@@ -1473,7 +995,7 @@ function sendGoalReviewErrorCard(
 	round: number,
 	audit: GoalAuditResult,
 ) {
-	const next = flowContext(ctx) ? "/flow continue" : "/goal continue";
+	const next = "/flow continue";
 	const title = roundTitle(
 		round,
 		acceptanceTitle("error", goal.language),
@@ -2075,11 +1597,13 @@ function qualityStopMessage(
 }
 
 function goalResumeCommand(ctx: StatusContext) {
-	return flowContext(ctx) ? "/flow continue" : "/goal continue";
+	void ctx;
+	return "/flow continue";
 }
 
 function goalClearCommand(ctx: StatusContext) {
-	return flowContext(ctx) ? "/flow cancel" : "/goal cancel";
+	void ctx;
+	return "/flow cancel";
 }
 
 function stopForBudget(ctx: StatusContext, goal: ActiveGoal) {
@@ -2326,14 +1850,8 @@ function readCompletionCursor(
 	goal: ActiveGoal,
 ): CompletionCursor | undefined {
 	try {
-		if (goal.artifactDir) {
-			const validation = validateGoalDir(goal.artifactDir, goal.language);
-			if (!validation.ok || !validation.goal) {
-				notifyGoalValidationFailed(ctx, goal, validation.errors);
-				return undefined;
-			}
-			return validation.goal.completionCursor;
-		}
+		if (goal.artifactDir)
+			return readStepRuntimeState(goal.artifactDir).completionCursor;
 		const flow = flowContext(ctx);
 		if (flow) return flow.plan.completionCursor;
 		throw new Error(
@@ -2354,29 +1872,6 @@ function readCompletionCursor(
 	}
 }
 
-function validateCompletionArtifact(ctx: StatusContext, goal: ActiveGoal) {
-	if (!goal.artifactDir) return true;
-	const validation = validateGoalDir(goal.artifactDir, goal.language);
-	if (validation.ok && validation.goal) return true;
-	notifyGoalValidationFailed(ctx, goal, validation.errors);
-	return false;
-}
-
-function notifyGoalValidationFailed(
-	ctx: StatusContext,
-	goal: ActiveGoal,
-	errors: string[],
-) {
-	notifyUser(
-		ctx,
-		goal.language === "en"
-			? `Goal validation failed:\n${errors.join("\n")}`
-			: `目标校验失败：\n${errors.join("\n")}`,
-		"error",
-		goal.language,
-	);
-}
-
 function setCompletionCursor(
 	ctx: StatusContext,
 	goal: ActiveGoal,
@@ -2384,12 +1879,11 @@ function setCompletionCursor(
 ) {
 	try {
 		if (goal.artifactDir) {
-			const artifact = readGoalArtifact(goal.artifactDir);
-			const saved = writeGoalArtifact(goal.artifactDir, {
-				...artifact,
+			const state = readStepRuntimeState(goal.artifactDir);
+			writeStepRuntimeState(goal.artifactDir, {
+				...state,
 				completionCursor: cursor,
 			});
-			writeGoalHtml(goal.artifactDir, saved);
 			return;
 		}
 		const owner = flowOwnerForSession(ctx);
@@ -2429,10 +1923,6 @@ function publishGoalReviewLive(
 	syncGoalReviewSurfaces(goalRuntimeState, ctx, goal);
 }
 
-function cancelStandaloneGoalArtifact(ctx: StatusContext, goal: ActiveGoal) {
-	cancelStandaloneGoalArtifactEntry(ctx, goal);
-}
-
 function clearGoalUi(ctx: StatusContext) {
 	setFlowActivity("goal", false);
 	setGoalActivityBox(ctx, undefined);
@@ -2447,23 +1937,10 @@ function goalTodoPromptContext(
 	const flow = flowContext(ctx);
 	if (!flow) return {};
 	return {
-		planPath: `.flow/flows/${flow.flow.id}/${flow.plan.file}`,
+		planPath: `.flow/${flow.flow.id}/${flow.plan.file}`,
 		recordSection: "Handoff",
 		stateFile: "flow.json",
 	};
-}
-
-async function sendGoalPrompt(
-	pi: ExtensionAPI,
-	ctx: StatusContext,
-	goal: ActiveGoal,
-) {
-	return sendRuntimePrompt(
-		pi,
-		ctx,
-		buildGoalPrompt(goal, goalTodoPromptContext(ctx, goal)),
-		{ language: goal.language },
-	);
 }
 
 async function sendResumePrompt(
@@ -2727,7 +2204,7 @@ function goalPlanEvidence(
 ): PlanEvidence | undefined {
 	if (goal.artifactDir)
 		return readPlanEvidence(
-			goalPlanPath(goal.artifactDir),
+			join(goal.artifactDir, "plan.md"),
 			`${goal.artifactDir}/plan.md`,
 		);
 	const flow = flowContext(ctx);
@@ -2736,7 +2213,7 @@ function goalPlanEvidence(
 		readPlanText(join(flow.dir, flow.plan.file)) ?? flow.plan.snapshot ?? "";
 	if (!text.trim()) return undefined;
 	return {
-		path: `.flow/flows/${flow.flow.id}/${flow.plan.file}`,
+		path: `.flow/${flow.flow.id}/${flow.plan.file}`,
 		text,
 	};
 }
@@ -2771,132 +2248,6 @@ function shouldShowGoalTotalElapsed(ctx: StatusContext, goal: ActiveGoal) {
 
 function formatBudget(goal: ActiveGoal) {
 	return `${formatTokenCount(goal.tokensUsed)}/${formatTokenCount(goal.tokenBudget ?? 0)}`;
-}
-
-function goalSummary(goal: ActiveGoal, report: string | undefined) {
-	if (goal.language === "en")
-		return [
-			`Goal: ${goal.text}`,
-			`Status: ${formatGoalStatus(goal.status, goal.language)}`,
-			`Worked: ${formatDuration(goal.timeUsedSeconds)}`,
-			`Tokens: ${goal.tokenBudget === undefined ? formatTokenCount(goal.tokensUsed) : formatBudget(goal)}`,
-			...(report ? [`🌐 Web report: ${report}`] : []),
-			`Commands: ${goalCommandHint(goal.status)}`,
-		].join("\n");
-	return [
-		`目标：${goal.text}`,
-		`状态：${formatGoalStatus(goal.status, goal.language)}`,
-		`已工作：${formatDuration(goal.timeUsedSeconds)}`,
-		`令牌：${goal.tokenBudget === undefined ? formatTokenCount(goal.tokensUsed) : formatBudget(goal)}`,
-		...(report ? [`🌐 网页报告: ${report}`] : []),
-		`命令：${goalCommandHint(goal.status)}`,
-	].join("\n");
-}
-
-function goalArtifactSummary(
-	goal: {
-		id: string;
-		title: string;
-		status: string;
-		language: Language;
-	},
-	report: string | undefined,
-) {
-	const nextCommand =
-		goal.status === "draft" ? `/goal start ${goal.id}` : "/goal status";
-	if (goal.language === "en")
-		return [
-			`Goal: ${goal.id}`,
-			`Title: ${goal.title}`,
-			`Status: ${goalArtifactStatusLabel(goal.status, goal.language)}`,
-			...(report ? [`🌐 Web report: ${report}`] : []),
-			`Next: ${nextCommand}`,
-		].join("\n");
-	return [
-		`目标: ${goal.id}`,
-		`标题: ${goal.title}`,
-		`状态: ${goalArtifactStatusLabel(goal.status, goal.language)}`,
-		...(report ? [`🌐 网页报告: ${report}`] : []),
-		`下一步: ${nextCommand}`,
-	].join("\n");
-}
-
-async function goalReportUrl(
-	ctx: StatusContext,
-	dir: string | undefined,
-	language?: Language,
-) {
-	return dir
-		? liveReportUrl(ctx, join(dir, "goal.html"), language).catch(
-				() => undefined,
-			)
-		: undefined;
-}
-
-function goalCommandHint(status: GoalStatus) {
-	if (status === "active") return "/goal continue, /goal pause, /goal cancel";
-	if (status === "paused") return "/goal continue, /goal cancel";
-	return "/goal cancel";
-}
-
-function formatGoalStatus(status: GoalStatus, language: Language = "zh") {
-	if (status === "active") return language === "en" ? "active" : "活动";
-	if (status === "paused") return language === "en" ? "paused" : "已暂停";
-	if (status === "budget_limited")
-		return language === "en" ? "budget limited" : "预算受限";
-	return language === "en" ? "complete" : "已完成";
-}
-
-function noActiveGoalMessage(language: Language) {
-	return language === "en" ? "No active Goal." : "没有活动目标。";
-}
-
-function goalCannotPauseMessage(goal: ActiveGoal) {
-	const status = formatGoalStatus(goal.status, goal.language);
-	return goal.language === "en"
-		? `Goal status is ${status}; only an active Goal can be paused.`
-		: `目标状态为 ${status}；只有活动目标可以暂停。`;
-}
-
-function goalCannotResumeMessage(goal: ActiveGoal) {
-	const status = formatGoalStatus(goal.status, goal.language);
-	return goal.language === "en"
-		? `Goal status is ${status}; only a paused or budget-limited Goal can be resumed.`
-		: `目标状态为 ${status}；只有已暂停或预算受限的目标可以恢复。`;
-}
-
-function goalPausedMessage(goal: ActiveGoal) {
-	return goal.language === "en"
-		? `Goal paused: ${goal.text}`
-		: `目标已暂停：${goal.text}`;
-}
-
-function goalResumedMessage(goal: ActiveGoal) {
-	return goal.language === "en"
-		? `Goal resumed: ${goal.text}`
-		: `目标已恢复：${goal.text}`;
-}
-
-function goalCancelledMessage(goalText: string, language: Language) {
-	return language === "en"
-		? `Goal cancelled: ${goalText}`
-		: `目标已取消：${goalText}`;
-}
-
-function goalContinueResultMessage(
-	result: FlowGoalContinueResult,
-	language: Language,
-) {
-	if (result === "continued")
-		return language === "en" ? "Goal continued." : "目标已继续执行。";
-	if (result === "busy")
-		return language === "en"
-			? "AI is running; try again later."
-			: "AI 正在运行，稍后再试。";
-	if (result === "no_goal") return noActiveGoalMessage(language);
-	return language === "en"
-		? "The current Goal cannot be continued with /goal continue."
-		: "当前目标不能用 /goal continue 继续。";
 }
 
 function formatTokenCount(value: number) {

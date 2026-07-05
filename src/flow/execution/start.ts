@@ -34,6 +34,7 @@ import { validateFlowDir } from "../validator.js";
 import { closeFlowGoalWatcher, watchCurrentFlowGoal } from "../watcher.js";
 import { askRepair } from "./repair.js";
 import {
+	flowNotFoundMessage,
 	flowStatusLabel,
 	runningFlowOrNotify,
 	verifyCurrentSnapshot,
@@ -65,9 +66,11 @@ export async function startFlow(
 		const language = runtimeLanguage();
 		notifyUser(
 			ctx,
-			language === "en"
-				? "No draft Flow to start. Run /flow <request> first."
-				: "没有待启动的 Flow 计划。先运行 /flow <需求> 生成。",
+			id
+				? flowNotFoundMessage(id, language)
+				: language === "en"
+					? "No draft Flow to start. Run /flow <request> first."
+					: "没有待启动的 Flow 计划。先运行 /flow <需求> 生成。",
 			"warning",
 			language,
 		);

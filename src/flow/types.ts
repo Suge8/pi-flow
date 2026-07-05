@@ -38,7 +38,7 @@ export interface FlowGoal {
 }
 
 export interface FlowState {
-	schemaVersion: 5;
+	schemaVersion: 6;
 	language: Language;
 	id: string;
 	title: string;

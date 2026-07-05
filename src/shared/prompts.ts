@@ -6,14 +6,7 @@ import type { Language } from "./config.js";
 const EXTENSION_DIR = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 export function readPrompt(
-	name:
-		| "goal-audit"
-		| "review"
-		| "grilling"
-		| "flow-plan"
-		| "flow-repair"
-		| "goal-plan"
-		| "goal-repair",
+	name: "goal-audit" | "review" | "grilling" | "flow-plan" | "flow-repair",
 	language: Language = "zh",
 ) {
 	const dir = language === "en" ? "en" : "zh";

@@ -25,7 +25,7 @@ export interface AlignmentTurn {
 }
 
 export interface AlignmentPromptInput {
-	kind: "goal" | "flow";
+	kind: "flow";
 	language: Language;
 	originalRequest: string;
 	source: string;
@@ -79,8 +79,8 @@ export function buildAlignmentPrompt(input: AlignmentPromptInput) {
 	const originalRequest =
 		input.originalRequest.trim() || defaultOriginalRequest(input.language);
 	if (input.language === "en")
-		return `${readPrompt("grilling", input.language)}\n\n---\n\nYou are aligning before draft generation.\n\nTarget: ${input.kind === "goal" ? "single Goal plan" : "multi-step Flow"}\nSource: ${input.source}\nCurrent language: ${input.language}\n\nOriginal request:\n${originalRequest}${turns}${aligned}${latest}\n\nRules:\n- This is the alignment phase. Do not write .flow files and do not modify product code.\n- Output language must use current language: ${input.language}. Use Chinese for zh and English for en.\n- Continue the questioning protocol above: ask exactly one question at a time and include your recommended answer.\n- If a question can be answered by reading the codebase, docs, or existing .flow files, inspect them yourself instead of asking the user.\n- If there is enough information, output a user-visible alignment summary and then include the marker <!-- pi-flow:ready-to-draft --> on its own.\n- Put the summary inside <aligned-request>...</aligned-request>; it is a review anchor, not the full source of truth.\n- Do not write a confirmation instruction after the summary; the plugin UI will show how to start generation.`;
-	return `${readPrompt("grilling", input.language)}\n\n---\n\n你正在做生成前对齐。\n\n对象：${input.kind === "goal" ? "单目标计划" : "多步骤 Flow"}\n来源：${input.source}\n当前 language：${input.language}\n\n原始需求：\n${originalRequest}${turns}${aligned}${latest}\n\n规则：\n- 这是对齐阶段，禁止写 .flow，禁止修改业务代码。\n- 输出语言必须使用当前 language：${input.language}。zh 用中文；en 用英文。\n- 继续按上面的拷问规则一次只问一个问题，并给出你的推荐答案。\n- 如果问题能通过阅读代码库、文档或现有 .flow 文件回答，就自己查，不要问用户。\n- 如果信息已经足够，请输出对用户可见的对齐摘要，然后单独包含标记 <!-- pi-flow:ready-to-draft -->。\n- 摘要必须放在 <aligned-request>...</aligned-request> 中；它是核对锚点，不是完整事实源。\n- 摘要后不要写确认操作；插件 UI 会显示如何开始生成。`;
+		return `${readPrompt("grilling", input.language)}\n\n---\n\nYou are aligning before draft generation.\n\nTarget: Flow plan\nSource: ${input.source}\nCurrent language: ${input.language}\n\nOriginal request:\n${originalRequest}${turns}${aligned}${latest}\n\nRules:\n- This is the alignment phase. Do not write .flow files and do not modify product code.\n- Output language must use current language: ${input.language}. Use Chinese for zh and English for en.\n- Continue the questioning protocol above: ask exactly one question at a time and include your recommended answer.\n- If a question can be answered by reading the codebase, docs, or existing .flow files, inspect them yourself instead of asking the user.\n- If there is enough information, output a user-visible alignment summary and then include the marker <!-- pi-flow:ready-to-draft --> on its own.\n- Put the summary inside <aligned-request>...</aligned-request>; it is a review anchor, not the full source of truth.\n- Do not write a confirmation instruction after the summary; the plugin UI will show how to start generation.`;
+	return `${readPrompt("grilling", input.language)}\n\n---\n\n你正在做生成前对齐。\n\n对象：Flow 计划\n来源：${input.source}\n当前 language：${input.language}\n\n原始需求：\n${originalRequest}${turns}${aligned}${latest}\n\n规则：\n- 这是对齐阶段，禁止写 .flow，禁止修改业务代码。\n- 输出语言必须使用当前 language：${input.language}。zh 用中文；en 用英文。\n- 继续按上面的拷问规则一次只问一个问题，并给出你的推荐答案。\n- 如果问题能通过阅读代码库、文档或现有 .flow 文件回答，就自己查，不要问用户。\n- 如果信息已经足够，请输出对用户可见的对齐摘要，然后单独包含标记 <!-- pi-flow:ready-to-draft -->。\n- 摘要必须放在 <aligned-request>...</aligned-request> 中；它是核对锚点，不是完整事实源。\n- 摘要后不要写确认操作；插件 UI 会显示如何开始生成。`;
 }
 
 function defaultOriginalRequest(language: Language) {

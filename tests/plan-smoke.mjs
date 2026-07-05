@@ -27,7 +27,6 @@ try {
 	await validatorScenario();
 	await validateDraftCliScenario();
 	await validateDraftConsistencyScenario();
-	await goalBuilderScenario();
 	await flowBuilderScenario();
 	await directoryIdMismatchScenario();
 	await snapshotScenario();
@@ -106,130 +105,39 @@ async function validatorScenario() {
 }
 
 function validateDraftCliScenario() {
-	const dir = join(out, "G1-cli");
-	writeGoalDraft(dir, baseGoal("G1-cli"));
+	const dir = join(out, "F1-cli");
+	writeFlowDraft(dir, baseFlow("F1-cli", [baseFlowGoal(0, "step-1.md")]));
 	execFileSync("node", [join(root, "scripts", "validate-draft.mjs"), dir]);
 }
 
 async function validateDraftConsistencyScenario() {
-	const { validateGoalDir } = await importModule("goal/validator.js");
 	const { validateFlowDir } = await importModule("flow/validator.js");
 	const cases = [
 		{
-			name: "goal accepts persisted check error round",
-			kind: "goal",
-			write: (dir) =>
-				writeGoalDraft(
-					dir,
-					baseGoal("G1-check-error", {
-						checks: validChecks("error"),
-					}),
-				),
-		},
-		{
-			name: "goal accepts indented plan section headings",
-			kind: "goal",
-			write: (dir) =>
-				writeGoalDraft(
-					dir,
-					baseGoal("G2-indented-headings"),
-					indentedMarkdown().replace("## Handoff", "## Outcome"),
-				),
-		},
-		{
-			name: "goal accepts todo progress states",
-			kind: "goal",
-			write: (dir) =>
-				writeGoalDraft(
-					dir,
-					baseGoal("G3-todo-states"),
-					markdown()
-						.replace("- [ ] Implement.", "- [~] Implement.")
-						.replace("- [ ] npm test", "- [!] npm test")
-						.replace("## Handoff", "## Outcome"),
-				),
-		},
-		{
-			name: "goal rejects success criteria checkbox",
-			kind: "goal",
-			write: (dir) =>
-				writeGoalDraft(
-					dir,
-					baseGoal("G3-criteria-checkbox"),
-					markdown()
-						.replace("- Done.", "* [ ] Done.")
-						.replace("## Handoff", "## Outcome"),
-				),
-		},
-		{
-			name: "goal rejects invalid checks shape",
-			kind: "goal",
-			write: (dir) =>
-				writeGoalDraft(dir, baseGoal("G3-invalid-checks", { checks: {} })),
-		},
-		{
-			name: "goal rejects invalid completion cursor",
-			kind: "goal",
-			write: (dir) =>
-				writeGoalDraft(
-					dir,
-					baseGoal("G3-invalid-cursor", { completionCursor: "done" }),
-				),
-		},
-		{
-			name: "goal rejects non object json",
-			kind: "goal",
-			write: (dir) => {
-				mkdirSync(dir, { recursive: true });
-				writeJson(join(dir, "goal.json"), []);
-			},
-		},
-		{
-			name: "goal shape error short circuits plan validation",
-			kind: "goal",
-			write: (dir) => {
-				mkdirSync(dir, { recursive: true });
-				writeJson(
-					join(dir, "goal.json"),
-					baseGoal("G3-short-circuit", { checks: {} }),
-				);
-			},
-		},
-		{
 			name: "flow accepts persisted check error round",
-			kind: "flow",
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
 					baseFlow("F1-check-error", [
 						baseFlowGoal(0, "step-1.md", { checks: validChecks("error") }),
-						baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
 					]),
 				),
 		},
 		{
 			name: "flow accepts indented plan section headings",
-			kind: "flow",
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
-					baseFlow("F2-indented-headings", [
-						baseFlowGoal(0, "step-1.md"),
-						baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
-					]),
+					baseFlow("F2-indented-headings", [baseFlowGoal(0, "step-1.md")]),
 					indentedMarkdown(),
 				),
 		},
 		{
 			name: "flow accepts todo progress states",
-			kind: "flow",
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
-					baseFlow("F3-todo-states", [
-						baseFlowGoal(0, "step-1.md"),
-						baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
-					]),
+					baseFlow("F3-todo-states", [baseFlowGoal(0, "step-1.md")]),
 					markdown()
 						.replace("- [ ] Implement.", "- [~] Implement.")
 						.replace("- [ ] npm test", "- [!] npm test"),
@@ -237,82 +145,59 @@ async function validateDraftConsistencyScenario() {
 		},
 		{
 			name: "flow rejects success criteria checkbox",
-			kind: "flow",
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
-					baseFlow("F3-criteria-checkbox", [
-						baseFlowGoal(0, "step-1.md"),
-						baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
-					]),
+					baseFlow("F3-criteria-checkbox", [baseFlowGoal(0, "step-1.md")]),
 					markdown().replace("- Done.", "+ [ ] Done."),
 				),
 		},
 		{
 			name: "flow accepts eleven goals",
-			kind: "flow",
 			write: (dir) =>
 				writeFlowDraft(dir, baseFlow("F3-eleven-goals", baseFlowGoals(11))),
 		},
 		{
 			name: "flow rejects twelve goals",
-			kind: "flow",
 			write: (dir) =>
 				writeFlowDraft(dir, baseFlow("F3-twelve-goals", baseFlowGoals(12))),
 		},
 		{
 			name: "flow rejects invalid current goal",
-			kind: "flow",
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
-					baseFlow(
-						"F3-invalid-current",
-						[
-							baseFlowGoal(0, "step-1.md"),
-							baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
-						],
-						{ currentGoal: 9 },
-					),
+					baseFlow("F3-invalid-current", [baseFlowGoal(0, "step-1.md")], {
+						currentGoal: 9,
+					}),
 				),
 		},
 		{
 			name: "flow rejects invalid completion cursor",
-			kind: "flow",
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
 					baseFlow("F3-invalid-cursor", [
 						baseFlowGoal(0, "step-1.md", { completionCursor: "done" }),
-						baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
 					]),
 				),
 		},
 		{
 			name: "flow rejects missing step file",
-			kind: "flow",
 			write: (dir) => {
 				mkdirSync(dir, { recursive: true });
 				writeJson(
 					join(dir, "flow.json"),
-					baseFlow("F3-missing-step", [
-						baseFlowGoal(0, "missing.md"),
-						baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
-					]),
+					baseFlow("F3-missing-step", [baseFlowGoal(0, "missing.md")]),
 				);
-				writeFileSync(join(dir, "step-final.md"), markdown());
 			},
 		},
 		{
 			name: "flow rejects step directory",
-			kind: "flow",
 			write: (dir) => {
 				writeFlowDraft(
 					dir,
-					baseFlow("F4-step-directory", [
-						baseFlowGoal(0, "step-1.md"),
-						baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
-					]),
+					baseFlow("F4-step-directory", [baseFlowGoal(0, "step-1.md")]),
 				);
 				rmSync(join(dir, "step-1.md"));
 				mkdirSync(join(dir, "step-1.md"));
@@ -320,25 +205,18 @@ async function validateDraftConsistencyScenario() {
 		},
 		{
 			name: "flow shape error short circuits step files",
-			kind: "flow",
 			write: (dir) => {
 				mkdirSync(dir, { recursive: true });
 				writeJson(
 					join(dir, "flow.json"),
-					baseFlow(
-						"F5-short-circuit",
-						[
-							baseFlowGoal(0, "missing.md"),
-							baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
-						],
-						{ currentGoal: 9 },
-					),
+					baseFlow("F5-short-circuit", [baseFlowGoal(0, "missing.md")], {
+						currentGoal: 9,
+					}),
 				);
 			},
 		},
 		{
 			name: "flow rejects non object json",
-			kind: "flow",
 			write: (dir) => {
 				mkdirSync(dir, { recursive: true });
 				writeJson(join(dir, "flow.json"), []);
@@ -349,8 +227,7 @@ async function validateDraftConsistencyScenario() {
 		const stagingDir = join(out, testCase.name.replaceAll(/\W+/gu, "-"));
 		testCase.write(stagingDir);
 		const dir = artifactDirFromStaging(stagingDir);
-		const source =
-			testCase.kind === "goal" ? validateGoalDir(dir) : validateFlowDir(dir);
+		const source = validateFlowDir(dir);
 		const cli = runValidateDraft(dir);
 		const sourceOutput = source.errors.join("\n");
 		assert(
@@ -383,62 +260,21 @@ function assertDuplicateFinalRejected(validateFlowDir) {
 	writeFlowDraft(
 		dir,
 		baseFlow("F7-duplicate-final", [
-			baseFlowGoal(0, "step-1.md", { role: "final_acceptance" }),
-			baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
+			baseFlowGoal(0, "step-1.md"),
+			baseFlowGoal(1, "step-2.md"),
+			baseFlowGoal(2, "step-final-a.md", { role: "final_acceptance" }),
+			baseFlowGoal(3, "step-final-b.md", { role: "final_acceptance" }),
 		]),
 	);
 	assertValidationError(
 		validateFlowDir(dir),
-		"只能有 1 个最终验收步骤（role: final_acceptance）",
+		"多步 Flow 必须有 1 个最终验收步骤（role: final_acceptance）",
 		"duplicate final acceptance",
 	);
 	const cli = runValidateDraft(dir);
 	assert(
-		!cli.ok && cli.output.includes("只能有 1 个最终验收步骤"),
+		!cli.ok && cli.output.includes("多步 Flow 必须有 1 个最终验收步骤"),
 		`duplicate final acceptance CLI accepted: ${cli.output}`,
-	);
-}
-
-async function goalBuilderScenario() {
-	const { buildGoalArtifact } = await importModule("goal/builder.js");
-	const { validateGoalDir } = await importModule("goal/validator.js");
-	const dir = join(out, "G4-semantic-builder");
-	mkdirSync(dir, { recursive: true });
-	writeJson(join(dir, "goal.semantic.json"), { title: "Semantic Goal" });
-	writeFileSync(join(dir, "plan.md"), standaloneMarkdown());
-	const semantic = readJson(join(dir, "goal.semantic.json"));
-	const goal = buildGoalArtifact(dir, semantic, "zh", root);
-	for (const field of [
-		"schemaVersion",
-		"language",
-		"id",
-		"title",
-		"status",
-		"completionCursor",
-		"source",
-		"createdAt",
-		"updatedAt",
-		"repairAttempts",
-		"errors",
-		"sessionFile",
-		"sessionName",
-		"snapshot",
-		"snapshotHash",
-		"runtimeGoalId",
-		"result",
-		"checks",
-	])
-		assert(field in goal, `goal builder missing ${field}`);
-	const persisted = readJson(join(dir, "goal.json"));
-	assert(
-		persisted.id === "G4-semantic-builder" &&
-			persisted.title === "Semantic Goal",
-		"goal builder did not persist semantic title/id",
-	);
-	const validation = validateGoalDir(dir);
-	assert(
-		validation.ok,
-		`goal builder output invalid: ${validation.errors.join("\n")}`,
 	);
 }
 
@@ -542,29 +378,9 @@ async function flowBuilderScenario() {
 }
 
 async function directoryIdMismatchScenario() {
-	const { validateGoalDir } = await importModule("goal/validator.js");
 	const { validateFlowDir } = await importModule("flow/validator.js");
-	const goalDir = join(out, "G9-dir");
-	writeGoalDraft(goalDir, baseGoal("G9-json"));
-	assertValidationError(
-		validateGoalDir(goalDir),
-		"目标目录名必须等于 id：G9-json",
-		"goal directory id mismatch",
-	);
-	const goalCli = runValidateDraft(goalDir);
-	assert(
-		!goalCli.ok && goalCli.output.includes("目标目录名必须等于 id：G9-json"),
-		`goal CLI mismatch accepted: ${goalCli.output}`,
-	);
-
 	const flowDir = join(out, "F9-dir");
-	writeFlowDraft(
-		flowDir,
-		baseFlow("F9-json", [
-			baseFlowGoal(0, "step-1.md"),
-			baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
-		]),
-	);
+	writeFlowDraft(flowDir, baseFlow("F9-json", [baseFlowGoal(0, "step-1.md")]));
 	assertValidationError(
 		validateFlowDir(flowDir),
 		"flow 目录名必须等于 id：F9-json",
@@ -586,13 +402,11 @@ function artifactDirFromStaging(dir) {
 }
 
 function artifactId(dir) {
-	for (const name of ["goal.json", "flow.json"]) {
-		try {
-			const parsed = JSON.parse(readFileSync(join(dir, name), "utf8"));
-			if (parsed && typeof parsed === "object" && typeof parsed.id === "string")
-				return parsed.id;
-		} catch {}
-	}
+	try {
+		const parsed = JSON.parse(readFileSync(join(dir, "flow.json"), "utf8"));
+		if (parsed && typeof parsed === "object" && typeof parsed.id === "string")
+			return parsed.id;
+	} catch {}
 	return undefined;
 }
 
@@ -641,16 +455,6 @@ async function viewScenario() {
 	);
 }
 
-function writeGoalDraft(
-	dir,
-	goal,
-	planMarkdown = markdown().replace("## Handoff", "## Outcome"),
-) {
-	mkdirSync(dir, { recursive: true });
-	writeJson(join(dir, "goal.json"), goal);
-	writeFileSync(join(dir, "plan.md"), planMarkdown);
-}
-
 function writeFlowDraft(dir, flow, goalMarkdown = markdown()) {
 	mkdirSync(dir, { recursive: true });
 	writeJson(join(dir, "flow.json"), flow);
@@ -678,33 +482,9 @@ function runValidateDraft(dir) {
 	};
 }
 
-function baseGoal(id, overrides = {}) {
-	return {
-		schemaVersion: 5,
-		language: "zh",
-		id,
-		title: "CLI",
-		status: "draft",
-		completionCursor: null,
-		source: { type: "prompt", path: null, originalRequest: "CLI" },
-		createdAt: Date.now(),
-		updatedAt: Date.now(),
-		repairAttempts: 0,
-		errors: [],
-		sessionFile: null,
-		sessionName: null,
-		snapshot: null,
-		snapshotHash: null,
-		runtimeGoalId: null,
-		result: { summary: null, outcome: null },
-		checks: emptyChecks(),
-		...overrides,
-	};
-}
-
 function baseFlow(id, goals, overrides = {}) {
 	return {
-		schemaVersion: 5,
+		schemaVersion: 6,
 		language: "zh",
 		id,
 		title: "Flow CLI",
@@ -776,10 +556,6 @@ function validChecks(result) {
 
 function indentedMarkdown() {
 	return markdown().replace(/^##/gmu, "  ##");
-}
-
-function standaloneMarkdown() {
-	return markdown().replace("## Handoff", "## Outcome");
 }
 
 function markdown() {
