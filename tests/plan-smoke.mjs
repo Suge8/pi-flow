@@ -83,6 +83,20 @@ async function validatorScenario() {
 	);
 	assert(
 		validatePlanMarkdown(
+			markdown().replace("- Done.", "* [ ] Done."),
+			FLOW_GOAL_SECTIONS,
+		).some((error) => error.includes("Success Criteria")),
+		"success criteria star checkbox not rejected",
+	);
+	assert(
+		validatePlanMarkdown(
+			markdown().replace("- Done.", "+ [x] Done."),
+			FLOW_GOAL_SECTIONS,
+		).some((error) => error.includes("Success Criteria")),
+		"success criteria plus checkbox not rejected",
+	);
+	assert(
+		validatePlanMarkdown(
 			markdown().replace("- [ ] Implement.", "- [!] Implement."),
 			FLOW_GOAL_SECTIONS,
 		).length === 0,
@@ -131,6 +145,18 @@ async function validateDraftConsistencyScenario() {
 					markdown()
 						.replace("- [ ] Implement.", "- [~] Implement.")
 						.replace("- [ ] npm test", "- [!] npm test")
+						.replace("## Handoff", "## Outcome"),
+				),
+		},
+		{
+			name: "goal rejects success criteria checkbox",
+			kind: "goal",
+			write: (dir) =>
+				writeGoalDraft(
+					dir,
+					baseGoal("G3-criteria-checkbox"),
+					markdown()
+						.replace("- Done.", "* [ ] Done.")
 						.replace("## Handoff", "## Outcome"),
 				),
 		},
@@ -206,6 +232,19 @@ async function validateDraftConsistencyScenario() {
 					markdown()
 						.replace("- [ ] Implement.", "- [~] Implement.")
 						.replace("- [ ] npm test", "- [!] npm test"),
+				),
+		},
+		{
+			name: "flow rejects success criteria checkbox",
+			kind: "flow",
+			write: (dir) =>
+				writeFlowDraft(
+					dir,
+					baseFlow("F3-criteria-checkbox", [
+						baseFlowGoal(0, "step-1.md"),
+						baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
+					]),
+					markdown().replace("- Done.", "+ [ ] Done."),
 				),
 		},
 		{
@@ -500,6 +539,12 @@ async function snapshotScenario() {
 	assert(
 		planSnapshotHash(base) !== planSnapshotHash(protectedChange),
 		"protected section did not change hash",
+	);
+	const uncheckedCriteria = base.replace("- Done.", "- [ ] Done.");
+	const checkedCriteria = base.replace("- Done.", "- [x] Done.");
+	assert(
+		planSnapshotHash(uncheckedCriteria) !== planSnapshotHash(checkedCriteria),
+		"success criteria checkbox state did not change hash",
 	);
 }
 

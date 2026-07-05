@@ -23,6 +23,7 @@ Rules:
 - The last Goal must be final acceptance, filename uses the actual sequence plus `final-acceptance`, role `final_acceptance`, e.g. `G3-final-acceptance.md`.
 - Each Goal must be small enough to complete in its own Goal session.
 - Each Goal file must contain: `Objective / Scope / Steps / Success Criteria / Verification / Notes / Handoff`.
+- Each Goal's `Success Criteria` must be ordinary bullets, not checkboxes; write completion status and evidence in `Verification` / `Handoff`, not in `Success Criteria`.
 - Each Goal's `Steps` and `Verification` must use checkboxes, initially only `[ ]`; `Verification` needs an objectively verifiable command or explicit manual verification step.
   (e.g. `- [ ] \`npm test -- --testPathPattern=auth\` exit 0`; avoid `- [ ] check that the feature works` which cannot be objectively judged)
 - `Steps` are runtime todo items, not coarse phases. Prefer 3–12 small items per Goal; smaller tasks may use fewer. Each item must be independently actionable and updatable.

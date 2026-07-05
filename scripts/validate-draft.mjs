@@ -21,6 +21,8 @@ const COMPLETION_CURSORS = new Set([
 	"finalize_retry",
 ]);
 const LANGUAGES = new Set(["zh", "en"]);
+const CONTRACT_SECTIONS = ["Objective", "Scope", "Success Criteria"];
+const TASK_LIST_ITEM = /^\s*[-*+]\s*\[[ xX~!]\]/mu;
 
 const dir = process.argv[2];
 if (!dir)
@@ -266,6 +268,12 @@ function validateMarkdown(markdown, sections) {
 		if (!hasSection(markdown, section)) errors.push(`缺少章节：${section}`);
 	if (!sectionBody(markdown, "Objective").trim())
 		errors.push("Objective 不能为空");
+	for (const section of CONTRACT_SECTIONS) {
+		if (TASK_LIST_ITEM.test(sectionBody(markdown, section)))
+			errors.push(
+				`${section} 禁止使用 checkbox；该区是验收合同，完成证据请写入 Verification/Outcome/Handoff`,
+			);
+	}
 	if (!/^\s*-\s*\[[ xX~!]\]/mu.test(sectionBody(markdown, "Steps")))
 		errors.push("Steps 至少需要 1 项 checkbox");
 	if (!/^\s*-\s*\[[ xX~!]\]/mu.test(sectionBody(markdown, "Verification")))

@@ -12,6 +12,7 @@
 - Goal 必须能在单个 session 内完成；如果明显太大，在 Notes 中标记建议改用 `/flow`，仍保持 draft 可组装校验。
 - `goal.semantic.json` 必须是 JSON 对象，字段只需要 `title` 和 `source`；`title` 是非空字符串，`source` 保留为对象（可写 `{}`），真实来源由插件按当前请求覆盖。
 - plan.md 必须有 Objective / Scope / Steps / Success Criteria / Verification / Notes / Outcome。
+- Success Criteria 必须是普通 bullet，禁止 checkbox；完成状态和证据写入 Verification / Outcome，不要写入 Success Criteria。
 - Steps 和 Verification 都必须使用 checkbox，初始只允许 `[ ]`；Verification 必须有验证命令或明确人工验证步骤。
 - Steps 是运行时 Todo，不是粗略阶段；推荐 3–12 个小步骤，小任务可少于 3 个，超过 12 个优先改用 `/flow` 或合并过细步骤。每项必须可单独完成、可立刻更新状态，避免“实现功能 / 完成开发 / 最终检查”这种只能最后才完成的大步骤。
 - Steps 每项写成 `- [ ] **短标题**：技术细节`：短标题 ≤20 字、用户视角人话；技术细节给执行 AI，可精确技术化。

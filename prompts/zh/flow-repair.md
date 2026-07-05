@@ -14,6 +14,7 @@
 - `goals` 数组顺序就是执行顺序；每项只写 `title`、`role`、`file`。不要写 `index`，插件会按顺序重算 0-based index。
 - 每个非最终 Goal 的 `role` 必须是 `normal`；最后一个 Goal 的 `role` 必须是 `final_acceptance`。
 - 每个 Goal 文件必须有 Objective / Scope / Steps / Success Criteria / Verification / Notes / Handoff。
+- 每个 Goal 的 Success Criteria 必须是普通 bullet，禁止 checkbox；完成状态和证据写入 Verification / Handoff，不要写入 Success Criteria。
 - 每个 Goal 的 Steps 和 Verification 都必须使用 checkbox，初始只允许 `[ ]`；Verification 必须有命令或明确人工验证步骤。
 - Steps 是运行时 Todo，不是粗略阶段；每个 Goal 推荐 3–12 个小步骤，小任务可少于 3 个，超过 12 个优先拆 Goal 或合并过细步骤。每项必须可单独完成、可立刻更新状态。
 - Steps 每项写成 `- [ ] **短标题**：技术细节`：短标题 ≤20 字、用户视角人话；技术细节给执行 AI，可精确技术化。

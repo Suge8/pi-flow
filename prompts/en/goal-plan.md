@@ -21,6 +21,7 @@ Rules:
 - `goal.semantic.json` must be a JSON object with only `title` and `source`; `title` is a non-empty string, and `source` remains an object (use `{}` if unsure). The extension overwrites the real source from the current request.
 - Do not copy the original request verbatim into `plan.md`; distill it into objective, scope, steps, and success criteria.
 - `plan.md` must contain: `Objective / Scope / Steps / Success Criteria / Verification / Notes / Outcome`.
+- `Success Criteria` must be ordinary bullets, not checkboxes; write completion status and evidence in `Verification` / `Outcome`, not in `Success Criteria`.
 - `Steps` and `Verification` must use checkboxes, initially only `[ ]`; `Verification` needs an objectively verifiable command or explicit manual verification step.
   (e.g. `- [ ] \`npm test -- --testPathPattern=auth\` exit 0`; avoid `- [ ] check that the feature works` which cannot be objectively judged)
 - `Steps` are runtime todo items, not coarse phases. Prefer 3–12 small items; smaller tasks may use fewer. Each item must be independently actionable and updatable; avoid items like "implement feature" or "final check" that can only complete at the end.

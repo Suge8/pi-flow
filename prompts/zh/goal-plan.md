@@ -21,6 +21,7 @@
 - `goal.semantic.json` 必须是 JSON 对象，字段只需要 `title` 和 `source`；`title` 是非空字符串，`source` 保留为对象（可写 `{}`），真实来源由插件按当前请求覆盖。
 - 不要把原始需求逐字复制进 `plan.md`；按目标、范围、步骤和验收标准提炼。
 - `plan.md` 必须包含：`Objective / Scope / Steps / Success Criteria / Verification / Notes / Outcome`。
+- `Success Criteria` 必须是普通 bullet，禁止 checkbox；完成状态和证据写入 `Verification` / `Outcome`，不要写入 `Success Criteria`。
 - `Steps` 和 `Verification` 都必须使用 checkbox，初始只允许 `[ ]`；`Verification` 必须有可客观判断的验证命令或明确人工验证步骤。
   （例：`- [ ] \`npm test -- --testPathPattern=auth\` exit 0`；避免 `- [ ] 检查功能是否正常` 这种无法客观判断的步骤）
 - `Steps` 是运行时 Todo，不是粗略阶段；推荐 3–12 个小步骤，小任务可少于 3 个，超过 12 个优先改用 `/flow` 或合并过细步骤。每项必须可单独完成、可立刻更新状态，避免“实现功能 / 完成开发 / 最终检查”这种只能最后才完成的大步骤。

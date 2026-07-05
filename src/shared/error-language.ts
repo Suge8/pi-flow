@@ -58,6 +58,10 @@ const EXACT_EN = new Map<string, string>([
 		"Verification 至少需要 1 项 checkbox",
 		"Verification needs at least 1 checkbox item",
 	],
+	[
+		"Success Criteria 禁止使用 checkbox；该区是验收合同，完成证据请写入 Verification/Outcome/Handoff",
+		"Success Criteria cannot use checkboxes; this section is the acceptance contract; write completion evidence in Verification/Outcome/Handoff",
+	],
 	["config.json 必须是对象", "config.json must be an object"],
 	[
 		"config.json 字段 language 必须是 auto、zh 或 en",
@@ -200,6 +204,12 @@ function validationErrorLine(text: string) {
 	if (match) return `${match[1]} cannot be empty`;
 	match = /^(.+) 至少需要 1 项 checkbox$/u.exec(text);
 	if (match) return `${match[1]} needs at least 1 checkbox item`;
+	match =
+		/^(.+) 禁止使用 checkbox；该区是验收合同，完成证据请写入 Verification\/Outcome\/Handoff$/u.exec(
+			text,
+		);
+	if (match)
+		return `${match[1]} cannot use checkboxes; this section is the acceptance contract; write completion evidence in Verification/Outcome/Handoff`;
 	return undefined;
 }
 

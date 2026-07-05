@@ -22,12 +22,14 @@
 [x] 完成
 ```
 
+- `Objective` / `Scope` / `Success Criteria` 是启动合同区，禁止 checkbox；`Success Criteria` 使用普通 bullet 表达验收标准。
 - `Steps` 和 `Verification` 必须是 checkbox 列表。
 - 执行或继续前必须先读计划 Markdown。
 - 开始一项前改为 `[~]`；完成真实工作并有证据后改为 `[x]`；阻塞时改为 `[!]`。
 - 阻塞原因、已尝试动作、跳过原因、恢复路径写入 `Outcome` / `Handoff`。
 - 禁止最后集中补 checkbox。
-- 执行中只允许维护 `Steps`；不得改 `Objective` / `Scope` / `Success Criteria`。
+- 完成证据写入 `Verification` / `Outcome` / `Handoff`；不得把 `Success Criteria` 勾成完成。
+- 执行中不得修改 `Objective` / `Scope` / `Success Criteria`。
 
 ## 角色模型
 

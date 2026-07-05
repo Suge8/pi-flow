@@ -1,6 +1,7 @@
 import {
 	hasCheckedOrUncheckedItem,
 	hasSection,
+	hasTaskListItem,
 	planSection,
 	stepsText,
 	verificationText,
@@ -28,6 +29,8 @@ export const STANDALONE_GOAL_SECTIONS = [
 	"Outcome",
 ] as const;
 
+const CONTRACT_SECTIONS = ["Objective", "Scope", "Success Criteria"] as const;
+
 export function validatePlanMarkdown(
 	markdown: string,
 	sections: readonly string[],
@@ -38,6 +41,12 @@ export function validatePlanMarkdown(
 	}
 	if (!planSection(markdown, "Objective").trim())
 		errors.push("Objective 不能为空");
+	for (const section of CONTRACT_SECTIONS) {
+		if (hasTaskListItem(planSection(markdown, section)))
+			errors.push(
+				`${section} 禁止使用 checkbox；该区是验收合同，完成证据请写入 Verification/Outcome/Handoff`,
+			);
+	}
 	if (!hasCheckedOrUncheckedItem(stepsText(markdown)))
 		errors.push("Steps 至少需要 1 项 checkbox");
 	if (!hasCheckedOrUncheckedItem(verificationText(markdown)))

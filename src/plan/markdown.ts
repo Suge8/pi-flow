@@ -52,6 +52,13 @@ export function hasCriteriaDeviation(text: string | null | undefined) {
 	);
 }
 
+export const TASK_LIST_ITEM = /^\s*[-*+]\s*\[[ xX~!]\]/mu;
+export const TASK_LIST_LINE = /^(\s*[-*+]\s*)\[([ xX~!])\](.*)$/u;
+
+export function hasTaskListItem(text: string) {
+	return TASK_LIST_ITEM.test(text);
+}
+
 export function hasCheckedOrUncheckedItem(text: string) {
 	return /^\s*-\s*\[[ xX~!]\]/mu.test(text);
 }

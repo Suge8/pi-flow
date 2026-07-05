@@ -23,6 +23,7 @@
 - 最后一个 Goal 必须是 final acceptance，文件名用实际序号 + `final-acceptance`，`role` 为 `final_acceptance`，如 `G3-final-acceptance.md`。
 - 每个 Goal 必须足够细，能在单独 Goal session 中完成。
 - 每个 Goal 文件必须包含：`Objective / Scope / Steps / Success Criteria / Verification / Notes / Handoff`。
+- 每个 Goal 的 `Success Criteria` 必须是普通 bullet，禁止 checkbox；完成状态和证据写入 `Verification` / `Handoff`，不要写入 `Success Criteria`。
 - 每个 Goal 的 `Steps` 和 `Verification` 都必须使用 checkbox，初始只允许 `[ ]`；`Verification` 必须有可客观判断的验证命令或明确人工验证步骤。
   （例：`- [ ] \`npm test -- --testPathPattern=auth\` exit 0`；避免 `- [ ] 检查功能是否正常` 这种无法客观判断的步骤）
 - `Steps` 是运行时 Todo，不是粗略阶段；每个 Goal 推荐 3–12 个小步骤，小任务可少于 3 个，超过 12 个优先拆 Goal 或合并过细步骤。每项必须可单独完成、可立刻更新状态，避免“实现功能 / 完成开发 / 最终检查”这种只能最后才完成的大步骤。
