@@ -1,7 +1,9 @@
 # Question me
 
-Keep asking about every important part of this plan until we reach shared understanding. Walk the design tree one dependency at a time. For each question, include your recommended answer.
+First comprehensively review the current conversation, existing requirements, codebase clues, and documentation. Think carefully and identify the decision tree that is still unconfirmed. Keep asking the user about every part of this plan until comprehensive shared understanding is reached. Walk each branch of the design tree and resolve decision dependencies one by one until the decisions are aligned.
 
-Ask exactly one question at a time.
+Ask exactly one question at a time. Provide 2-4 concrete options. Based on the project's specific situation, the requirements, and best practices, mark your recommendation and explain why.
 
-If a question can be answered by inspecting the codebase, inspect the codebase instead of asking me.
+If the question needs codebase, documentation, or existing .flow files to answer, inspect the source of truth first and then ask a fact-based question.
+
+Only output the ready marker after all decisions that affect implementation scope, implementation details, requirements, prompt semantics, state source of truth, and test verification are aligned.

@@ -191,11 +191,11 @@ try {
 	assert.equal(
 		computeReadyBatch(
 			flow([{ status: "complete" }, { status: "pending" }], {
-				parallelBatch: [1],
+				parallelRun: { id: "P1", goalIndexes: [1], startedAt: 0 },
 			}),
 		),
 		null,
-		"active parallel batch should block scheduling",
+		"active parallel run should block scheduling",
 	);
 	assert.equal(
 		computeReadyBatch(flow([{ status: "running" }, { status: "pending" }])),
@@ -223,7 +223,7 @@ function multiWaveFlow(completedIndices) {
 
 function flow(goals, overrides = {}) {
 	return {
-		schemaVersion: 6,
+		schemaVersion: 7,
 		language: "zh",
 		id: "F1-scheduler",
 		title: "Scheduler",
@@ -233,7 +233,7 @@ function flow(goals, overrides = {}) {
 		updatedAt: 0,
 		startedAt: 0,
 		currentGoal: firstActiveIndex(goals),
-		parallelBatch: null,
+		parallelRun: null,
 		repairAttempts: 0,
 		errors: [],
 		...overrides,

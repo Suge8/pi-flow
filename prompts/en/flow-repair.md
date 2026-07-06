@@ -10,13 +10,13 @@ Rules:
 - Do not ask the user; infer missing content from the original request and existing draft into the smallest executable plan.
 - Output language must use current language: `{{language}}`. Use English for `en`; use Chinese for `zh`.
 - Each Goal must be small enough to complete in its own Goal session.
-- `flow.semantic.json` must be a JSON object with only `title` and `goals`; do not write `source`, `schemaVersion`, `status`, `currentGoal`, `checks`, or other runtime fields.
+- `flow.semantic.json` must be a JSON object with only `title` and `goals`; do not write `source`, `schemaVersion`, `status`, `currentGoal`, `parallelRun`, `checks`, or other runtime fields.
 - The `goals` array order is the execution order. Each item only needs `title`, `role`, and `file`. Do not write `index`; the extension recalculates 0-based indexes from order.
 - A single-step Flow has exactly 1 `normal` Goal and no final acceptance; in a multi-step Flow, non-final Goals use role `normal` and the last Goal uses role `final_acceptance`.
 - Each Goal file must contain Objective / Scope / Steps / Success Criteria / Verification / Notes / Handoff.
 - Each Goal's Success Criteria must be ordinary bullets, not checkboxes; write completion status and evidence in Verification / Handoff, not in Success Criteria.
 - Each Goal's Steps and Verification must use checkboxes, initially only `[ ]`; Verification needs a command or explicit manual verification step.
-- Steps are runtime todo items, not coarse phases. Prefer 3–12 small items per Goal; smaller tasks may use fewer. Each item must be independently actionable and updatable.
+- Steps are runtime todo items, not a mechanical list of tiny tasks or vague phases. Prefer 2–10 user-understandable milestones per Goal; smaller tasks may use fewer. Each item must be independently actionable, updatable when complete, and able to provide completion evidence.
 - Write each Step as `- [ ] **Short title**: technical detail`; short title <= 20 Chinese chars or concise English, user-readable; detail can be technical.
 - Only multi-step Flow must have a final acceptance Goal, reading all Handoffs, reviewing `criteriaChanged`, running global verification, and closing out; single-step Flow must not write final acceptance.
 - Do not generate or test `flow.html`; the extension renders HTML after validation.

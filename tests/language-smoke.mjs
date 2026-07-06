@@ -33,6 +33,9 @@ try {
 	const generationAlignment = await import(
 		`file://${join(srcOut, "shared/generation-alignment.js")}?t=${Date.now()}`
 	);
+	const generationState = await import(
+		`file://${join(srcOut, "shared/generation-state.js")}?t=${Date.now()}`
+	);
 	const flowHtml = await import(
 		`file://${join(srcOut, "flow/html.js")}?t=${Date.now()}`
 	);
@@ -105,7 +108,7 @@ try {
 		"子进程启动失败：boom",
 		"子进程失败，退出码 1。err",
 		"当前步骤状态：running。",
-		"Flow 已更新；运行 /flow continue 继续下一步。",
+		"Flow 已更新；运行 /flow continue F1 继续下一步。",
 		"Flow 继续结果：weird。",
 		".flow 目录不可用：boom",
 		"AI 未生成有效 Flow 计划。请重试 /flow。",
@@ -133,11 +136,11 @@ try {
 		"跳过对齐，直接根据上下文生成计划",
 	]);
 	const localizedValidationNotice = uiLanguage.localizeUserText(
-		"Flow 校验失败：\nschemaVersion 必须为 6\nlanguage 必须是 zh 或 en",
+		"Flow 校验失败：\nschemaVersion 必须为 7\nlanguage 必须是 zh 或 en",
 	);
 	assert(
 		localizedValidationNotice.includes("Flow validation failed") &&
-			localizedValidationNotice.includes("schemaVersion must be 6") &&
+			localizedValidationNotice.includes("schemaVersion must be 7") &&
 			localizedValidationNotice.includes("language must be zh or en") &&
 			!localizedValidationNotice.includes("必须"),
 		"English validation notice leaked Chinese",
@@ -154,7 +157,7 @@ try {
 		selected === "跳过对齐，直接根据上下文生成计划",
 		"localized select result was not mapped back to the original option",
 	);
-	assertAlignmentCopy(generationAlignment);
+	assertAlignmentCopy(generationAlignment, generationState);
 	assert(
 		generationAlignment.isStartGenerationConfirmation("Start generation", "en"),
 		"English Start generation confirmation was not accepted",
@@ -202,6 +205,24 @@ try {
 		flowGenerationPrompt.includes("Output language must use current language"),
 		"English flow prompt missed language rule",
 	);
+	assert(
+		flowGenerationPrompt.includes("2–10 user-understandable milestones") &&
+			flowGenerationPrompt.includes("provide completion evidence") &&
+			!flowGenerationPrompt.includes("3–12 small items"),
+		"English flow prompt missing milestone step rules",
+	);
+	const flowRepairPrompt = flowPrompt.repairPrompt({
+		errors: ["bad draft"],
+		originalRequest: "Ship flow",
+		flowPath: "/tmp/F1-ship",
+		language: "en",
+	});
+	assert(
+		flowRepairPrompt.includes("2–10 user-understandable milestones") &&
+			flowRepairPrompt.includes("provide completion evidence") &&
+			!flowRepairPrompt.includes("3–12 small items"),
+		"English repair prompt missing milestone step rules",
+	);
 	const badFlowDir = join(out, "F1-bad-flow");
 	mkdirSync(badFlowDir, { recursive: true });
 	writeFileSync(
@@ -210,7 +231,7 @@ try {
 	);
 	const badFlow = flowValidator.validateFlowDir(badFlowDir);
 	assert(
-		badFlow.errors.includes("schemaVersion must be 6") &&
+		badFlow.errors.includes("schemaVersion must be 7") &&
 			!badFlow.errors.some((error) => error.includes("必须")),
 		"English Flow validator error leaked Chinese",
 	);
@@ -218,7 +239,7 @@ try {
 	mkdirSync(badParallelFlowDir, { recursive: true });
 	const badParallelFlow = sampleFlow();
 	badParallelFlow.id = "F1-bad-parallel";
-	badParallelFlow.parallelBatch = "bad";
+	badParallelFlow.parallelRun = "bad";
 	badParallelFlow.goals.push({
 		...badParallelFlow.goals[0],
 		index: 1,
@@ -235,7 +256,7 @@ try {
 		flowValidator.validateFlowDir(badParallelFlowDir);
 	assert(
 		badParallelFlowResult.errors.includes(
-			"parallelBatch must be an array or null",
+			"parallelRun must be an object or null",
 		) &&
 			badParallelFlowResult.errors.includes(
 				"goals[1].dependsOn[0] must point to an earlier goals index",
@@ -278,7 +299,14 @@ try {
 	const flow = sampleFlow();
 	const html = flowHtml.renderFlowHtml(flowDir, flow);
 	assert(html.includes('<html lang="en">'), "English Flow HTML lang missing");
-	assert(html.includes("Flow plan"), "English Flow HTML chrome missing");
+	assert(
+		html.includes("1 steps, waiting to start"),
+		"English Flow HTML chrome missing",
+	);
+	assert(
+		html.includes("/flow start F1") && !html.includes("/flow start F1-ship"),
+		"English Flow HTML command did not use short id",
+	);
 	assert(
 		!html.includes("Multi-step plan"),
 		"English Flow HTML should be neutral",
@@ -293,6 +321,11 @@ try {
 	assert(
 		status.includes("Step 1 · Build"),
 		"English Flow status step label missing",
+	);
+	assert(
+		status.includes("Next: /flow start F1") &&
+			!status.includes("/flow start F1-ship"),
+		"English Flow status next command did not use short id",
 	);
 
 	process.env = originalEnv;
@@ -313,7 +346,126 @@ function hasChinese(text) {
 	return /[\u4e00-\u9fff]/u.test(text);
 }
 
-function assertAlignmentCopy(generationAlignment) {
+function assertAlignmentCopy(generationAlignment, generationState) {
+	const zhPrompt = generationAlignment.buildAlignmentPrompt({
+		kind: "flow",
+		language: "zh",
+		originalRequest: "修登录",
+		source: "prompt",
+	});
+	assert(
+		zhPrompt.includes("先全面审视当前会话、已有需求、代码库线索和文档") &&
+			zhPrompt.includes("直到达成全面共同理解") &&
+			zhPrompt.includes("一次只问一个问题") &&
+			zhPrompt.includes("2-4 个具体选项") &&
+			zhPrompt.includes("基于项目具体情况，需求以及最佳实践") &&
+			zhPrompt.includes("先探索事实源后再提出基于事实的问题") &&
+			zhPrompt.includes(
+				"所有会影响实现范围、实现细节、需求、提示词语义、状态事实源、测试验证",
+			) &&
+			!zhPrompt.includes("<aligned-request>") &&
+			!zhPrompt.includes("最高杠杆") &&
+			!zhPrompt.includes("阻塞哪个未确认决策") &&
+			!zhPrompt.includes("每轮先列出未确认决策树"),
+		"Chinese alignment prompt missing concise decision contract",
+	);
+	const enPrompt = generationAlignment.buildAlignmentPrompt({
+		kind: "flow",
+		language: "en",
+		originalRequest: "Ship login",
+		source: "prompt",
+	});
+	assert(
+		enPrompt.includes(
+			"First comprehensively review the current conversation",
+		) &&
+			enPrompt.includes("comprehensive shared understanding") &&
+			enPrompt.includes("Ask exactly one question at a time") &&
+			enPrompt.includes("2-4 concrete options") &&
+			enPrompt.includes("the project's specific situation") &&
+			enPrompt.includes(
+				"inspect the source of truth first and then ask a fact-based question",
+			) &&
+			enPrompt.includes(
+				"all decisions that affect implementation scope, implementation details, requirements, prompt semantics, state source of truth, and test verification",
+			) &&
+			!enPrompt.includes("<aligned-request>") &&
+			!enPrompt.includes("highest-leverage") &&
+			!enPrompt.includes("which unconfirmed decision it blocks") &&
+			!enPrompt.includes("list the unconfirmed decision tree") &&
+			!hasChinese(enPrompt),
+		"English alignment prompt missing concise decision contract",
+	);
+	const zhFollowUp = generationAlignment.buildAlignmentFollowUpPrompt({
+		language: "zh",
+	});
+	assert(
+		zhFollowUp.includes("继续 Flow 生成前对齐") &&
+			zhFollowUp.includes("先探索事实源") &&
+			zhFollowUp.includes("一次只问一个简洁问题") &&
+			!zhFollowUp.includes("# 拷问我") &&
+			!zhFollowUp.includes("原始需求") &&
+			!zhFollowUp.includes("已对齐问答") &&
+			!zhFollowUp.includes("用户刚才回答") &&
+			!zhFollowUp.includes("<aligned-request>"),
+		"Chinese follow-up alignment prompt should stay lightweight",
+	);
+	const enFollowUp = generationAlignment.buildAlignmentFollowUpPrompt({
+		language: "en",
+	});
+	assert(
+		enFollowUp.includes("Continue Flow alignment") &&
+			enFollowUp.includes(
+				"inspect the codebase, docs, or existing .flow files",
+			) &&
+			enFollowUp.includes("Ask exactly one concise question") &&
+			!enFollowUp.includes("# Question me") &&
+			!enFollowUp.includes("Original request") &&
+			!enFollowUp.includes("Aligned Q&A") &&
+			!enFollowUp.includes("Latest user answer") &&
+			!enFollowUp.includes("<aligned-request>"),
+		"English follow-up alignment prompt should stay lightweight",
+	);
+	const pendingAlignment = {
+		language: "zh",
+	};
+	generationState.rememberAlignmentQuestion(
+		pendingAlignment,
+		"问题 1：是否限定 UI？\n<!-- pi-flow:ready-to-draft -->",
+	);
+	generationState.appendAlignmentAnswer(pendingAlignment, "继续限定 UI");
+	assert(
+		pendingAlignment.alignmentTurns?.at(-1)?.question ===
+			"问题 1：是否限定 UI？" &&
+			pendingAlignment.alignmentTurns?.at(-1)?.answer === "继续限定 UI",
+		"ready marker alignment reply should preserve the real question in memory",
+	);
+	const longQuestion = `问题：${"很长".repeat(500)}`;
+	const pendingLongQuestion = { language: "zh" };
+	generationState.rememberAlignmentQuestion(
+		pendingLongQuestion,
+		`${longQuestion}\n<!-- pi-flow:ready-to-draft -->`,
+	);
+	generationState.appendAlignmentAnswer(pendingLongQuestion, "答案");
+	assert(
+		pendingLongQuestion.alignmentTurns?.at(-1)?.question === longQuestion,
+		"alignment Q&A memory should keep long questions untrimmed",
+	);
+	const pendingManyTurns = { language: "zh" };
+	for (let index = 0; index < 10; index += 1) {
+		generationState.rememberAlignmentQuestion(
+			pendingManyTurns,
+			`问题 ${index + 1}：选项？`,
+		);
+		generationState.appendAlignmentAnswer(
+			pendingManyTurns,
+			`答案 ${index + 1}`,
+		);
+	}
+	assert(
+		pendingManyTurns.alignmentTurns?.length === 10,
+		"alignment Q&A memory should not trim to the old 8-turn limit",
+	);
 	const waiting = generationAlignment.generationAlignmentActivityCopy(
 		"awaiting_alignment_input",
 		"en",
@@ -349,7 +501,7 @@ function assertAlignmentCopy(generationAlignment) {
 
 function sampleFlow() {
 	return {
-		schemaVersion: 6,
+		schemaVersion: 7,
 		language: "en",
 		id: "F1-ship",
 		title: "Ship feature",
@@ -359,6 +511,7 @@ function sampleFlow() {
 		updatedAt: 0,
 		startedAt: null,
 		currentGoal: 0,
+		parallelRun: null,
 		repairAttempts: 0,
 		errors: [],
 		goals: [

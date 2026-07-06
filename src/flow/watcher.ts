@@ -6,13 +6,16 @@ import { writeFlowHtml } from "./html.js";
 import { readFlow } from "./store.js";
 import type { FlowGoal, FlowGoalStatus, FlowState } from "./types.js";
 
-const flowGoalWatcher = createPlanFileWatcher();
+const flowGoalWatchers = new Map<
+	string,
+	ReturnType<typeof createPlanFileWatcher>
+>();
 
 export function watchCurrentFlowGoal(dir: string, flow: FlowState) {
 	const goal = flow.goals[flow.currentGoal];
-	if (!goal) return closeFlowGoalWatcher();
+	if (!goal) return closeFlowGoalWatcher(dir);
 	const file = join(dir, goal.file);
-	flowGoalWatcher.watchFile(
+	watcherForFlow(dir).watchFile(
 		file,
 		() => {
 			writeFlowHtml(dir, readFlow(dir));
@@ -26,21 +29,36 @@ export function watchParallelBatch(
 	flow: FlowState,
 	batchIndices: number[],
 ) {
-	closeFlowGoalWatcher();
+	closeFlowGoalWatcher(dir);
+	const watcher = watcherForFlow(dir);
 	const refresh = () => {
 		writeFlowHtml(dir, parallelReportFlow(dir, flow, batchIndices));
 	};
 	for (const file of parallelWatchFiles(dir, flow, batchIndices)) {
-		flowGoalWatcher.watchFile(file, refresh, {
+		watcher.watchFile(file, refresh, {
 			keepExisting: true,
 			skipIfSame: true,
 		});
 	}
-	flowGoalWatcher.refresh(refresh);
+	watcher.refresh(refresh);
 }
 
-export function closeFlowGoalWatcher() {
-	flowGoalWatcher.close();
+export function closeFlowGoalWatcher(dir?: string) {
+	if (dir) {
+		flowGoalWatchers.get(dir)?.close();
+		flowGoalWatchers.delete(dir);
+		return;
+	}
+	for (const watcher of flowGoalWatchers.values()) watcher.close();
+	flowGoalWatchers.clear();
+}
+
+function watcherForFlow(dir: string) {
+	const watcher = flowGoalWatchers.get(dir);
+	if (watcher) return watcher;
+	const next = createPlanFileWatcher();
+	flowGoalWatchers.set(dir, next);
+	return next;
 }
 
 function parallelWatchFiles(
@@ -68,7 +86,6 @@ function parallelReportFlow(
 		...flow,
 		status: "running",
 		currentGoal: Math.min(...batchIndices),
-		parallelBatch: batchIndices,
 		goals: flow.goals.map((goal, index) =>
 			batch.has(index) ? parallelGoal(dir, goal, index) : goal,
 		),

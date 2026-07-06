@@ -32,8 +32,10 @@ try {
 	await runScenario(checksValidationScenario);
 	await runScenario(flowAcceptancePromptIncludesPlanScenario);
 	await runScenario(flowLiveReviewsSyncScenario);
+	await runScenario(flowLiveReviewLockBusyNotifiesScenario);
 	await runScenario(flowGoalCompleteWithQualityReviewScenario);
 	await runScenario(flowQualityReviewFailureUsesFlowContinueScenario);
+	await runScenario(flowRuntimeWritesRespectFlowLockScenario);
 	console.log("goal review smoke ok");
 } finally {
 	rmSync(out, { recursive: true, force: true });
@@ -160,6 +162,59 @@ async function flowAcceptancePromptIncludesPlanScenario() {
 		flow.goals[0].checks.acceptance.rounds[0].summary === "验收 OK",
 		JSON.stringify(flow.goals[0].checks),
 	);
+	const acceptanceStartCard = state.messages.find(
+		(item) => item.message.details?.title === "完成验收中",
+	);
+	assert(acceptanceStartCard, "acceptance start card missing");
+	assert(
+		acceptanceStartCard.message.details.lines.includes("Flow：Login") &&
+			!acceptanceStartCard.message.details.lines.join("\n").includes("第 1 步"),
+		acceptanceStartCard.message.details.lines.join(" | "),
+	);
+	const acceptanceCard = state.messages.find(
+		(item) => item.message.details?.title === "完成验收通过",
+	);
+	assert(acceptanceCard, "acceptance pass card missing");
+	assertFooterLayout(acceptanceCard.message.details.lines, "⏱ 用时：");
+}
+
+async function flowRuntimeWritesRespectFlowLockScenario() {
+	writeConfig({
+		acceptance: false,
+		quality: true,
+		command: sequenceScript(["FAIL\n质量问题\n"]),
+	});
+	const { acquireFlowLock } = await import(
+		`file://${join(srcOut, "flow/lock.js")}?t=${Date.now()}`
+	);
+	const cwd = join(out, "flow-runtime-lock");
+	const sessionFile = join(cwd, "goal-session.jsonl");
+	writeFlow(cwd, sessionFile);
+	const state = createState();
+	const { handlers, module } = await loadGoalExtension(state);
+	const ctx = mockContext(state, cwd, sessionFile);
+	await module.startGoalFromFlow("Flow objective", ctx);
+	const flowDir = join(cwd, ".flow", "F1-login");
+	const lock = acquireFlowLock(flowDir, "active scheduling transaction");
+	assert(lock.ok, "runtime write lock was not acquired");
+	try {
+		await handlers.get("agent_end")(
+			{ messages: [{ role: "assistant", stopReason: "stop" }] },
+			ctx,
+		);
+		const flow = readFlow(cwd);
+		assert(
+			flow.goals[0].completionCursor === null,
+			"completion cursor wrote through flow lock",
+		);
+		assert(
+			flow.goals[0].checks.quality.rounds.length === 0,
+			"review checks wrote through flow lock",
+		);
+		assert(flow.status === "running", "runtime lock changed flow status");
+	} finally {
+		lock.release();
+	}
 }
 
 async function flowLiveReviewsSyncScenario() {
@@ -207,6 +262,46 @@ async function flowLiveReviewsSyncScenario() {
 	);
 }
 
+async function flowLiveReviewLockBusyNotifiesScenario() {
+	writeConfig({
+		acceptance: true,
+		quality: false,
+		command: shellScript("sleep 2"),
+	});
+	const { acquireFlowLock } = await import(
+		`file://${join(srcOut, "flow/lock.js")}?t=${Date.now()}`
+	);
+	const cwd = join(out, "flow-live-checks-lock-busy");
+	const sessionFile = join(cwd, "goal-session.jsonl");
+	writeFlow(cwd, sessionFile);
+	const state = createState();
+	const { handlers, module } = await loadGoalExtension(state);
+	const ctx = mockContext(state, cwd, sessionFile);
+	await module.startGoalFromFlow("Flow live objective", ctx);
+	const flowDir = join(cwd, ".flow", "F1-login");
+	const lock = acquireFlowLock(flowDir, "active scheduling transaction");
+	assert(lock.ok, "live review sync lock was not acquired");
+	try {
+		const pendingReview = handlers.get("agent_end")(
+			{ messages: [{ role: "assistant", stopReason: "stop" }] },
+			ctx,
+		);
+		await waitFor(
+			() => state.notifications.find((item) => item.includes("Flow 正在处理")),
+			"busy live review sync did not notify user",
+		);
+		const flow = readFlow(cwd);
+		assert(
+			flow.goals[0].checks.acceptance.active === null,
+			"live review sync wrote through flow lock",
+		);
+		handlers.get("session_shutdown")({}, ctx);
+		await pendingReview;
+	} finally {
+		lock.release();
+	}
+}
+
 async function flowGoalCompleteWithQualityReviewScenario() {
 	const command = captureCommand("PASS\n质量 OK\n");
 	writeConfig({ acceptance: false, quality: true, command });
@@ -224,15 +319,42 @@ async function flowGoalCompleteWithQualityReviewScenario() {
 	const titles = state.messages.map((item) => item.message.details?.title);
 	assert(titles.includes("质量检查中"), titles.join(" | "));
 	assert(titles.includes("质量检查通过"), titles.join(" | "));
+	const qualityStartCard = state.messages.find(
+		(item) => item.message.details?.title === "质量检查中",
+	);
+	assert(qualityStartCard, "quality start card missing");
+	assert(
+		qualityStartCard.message.details.lines.includes("Flow：Login") &&
+			!qualityStartCard.message.details.lines.join("\n").includes("第 1 步"),
+		qualityStartCard.message.details.lines.join(" | "),
+	);
+	const qualityWidget = widgetTexts(state).find((text) =>
+		text.includes("💯 Flow · 质量检查中"),
+	);
+	assert(qualityWidget, widgetTexts(state).join("\n---\n"));
+	assert(
+		qualityWidget.includes("Login") && !qualityWidget.includes("第 1 步"),
+		qualityWidget,
+	);
 	const card = state.messages.at(-1);
 	assert(
-		card.message.details.title === "Flow 第 1 步 · Login 已完成",
+		card.message.details.title === "Flow Login 已完成",
 		card.message.details.title,
 	);
 	assert(
 		card.message.content.includes("质量检查：✅ 质量 OK"),
 		card.message.content,
 	);
+	const qualityCard = state.messages.find(
+		(item) => item.message.details?.title === "质量检查通过",
+	);
+	assert(qualityCard, "quality pass card missing");
+	assertFooterLayout(qualityCard.message.details.lines, "⏱ 用时：");
+	assert(
+		card.message.details.lines.slice(1, 4).join("|") === "|---|",
+		`completion sections missing after goal line: ${card.message.details.lines.join("|")}`,
+	);
+	assertFooterLayout(card.message.details.lines, "⏱ 总用时：");
 	const flow = readFlow(cwd);
 	assert(
 		flow.goals[0].checks.quality.rounds[0].result === "passed" &&
@@ -438,7 +560,7 @@ function writeFlow(cwd, sessionFile) {
 		join(dir, "flow.json"),
 		`${JSON.stringify(
 			{
-				schemaVersion: 6,
+				schemaVersion: 7,
 				language: "zh",
 				id: "F1-login",
 				title: "Login",
@@ -448,6 +570,7 @@ function writeFlow(cwd, sessionFile) {
 				updatedAt: Date.now(),
 				startedAt: Date.now(),
 				currentGoal: 0,
+				parallelRun: null,
 				repairAttempts: 0,
 				errors: [],
 				goals: [
@@ -502,6 +625,35 @@ async function waitFor(read, message, timeoutMs = 3000) {
 		if (Date.now() - startedAt > timeoutMs) throw new Error(message);
 		await new Promise((resolve) => setTimeout(resolve, 25));
 	}
+}
+
+function widgetTexts(state) {
+	return state.widgets
+		.map(({ content }) => renderWidgetContent(content))
+		.filter(Boolean);
+}
+
+function renderWidgetContent(content) {
+	if (!content) return "";
+	const widget =
+		typeof content === "function"
+			? content(
+					{ requestRender() {} },
+					{ fg: (_color, value) => value, bold: (value) => value },
+				)
+			: content;
+	return widget?.render ? widget.render(100).join("\n") : String(widget);
+}
+
+function assertFooterLayout(lines, footerPrefix) {
+	const index = lines.findIndex((line) => line.startsWith(footerPrefix));
+	assert(index >= 3, `footer missing: ${lines.join("|")}`);
+	assert(
+		lines[index - 3] === "" &&
+			lines[index - 2] === "---" &&
+			lines[index - 1] === "",
+		`footer separator missing: ${lines.join("|")}`,
+	);
 }
 
 function assert(condition, message) {

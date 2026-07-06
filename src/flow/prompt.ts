@@ -1,6 +1,5 @@
 import type { Language } from "../shared/config.js";
 import { localizeErrors } from "../shared/error-language.js";
-import { appendAlignedRequest } from "../shared/generation-alignment.js";
 import { readPrompt } from "../shared/prompts.js";
 import { validateDraftCommand } from "../shared/validate-command.js";
 import type { FlowGoal, FlowSourceType, FlowState } from "./types.js";
@@ -9,26 +8,21 @@ export function generationPrompt(input: {
 	originalRequest: string;
 	sourceType: FlowSourceType;
 	sourcePath?: string;
-	alignedRequest?: string;
 	language: Language;
 }) {
-	return appendAlignedRequest(
-		readPrompt("flow-plan", input.language)
-			.replace(
-				"{{originalRequest}}",
-				input.originalRequest || defaultOriginalRequest(input.language),
-			)
-			.replace(
-				"{{source}}",
-				input.sourcePath
-					? `${input.sourceType}: ${input.sourcePath}`
-					: input.sourceType,
-			)
-			.replaceAll("{{validateCommand}}", validateDraftCommand())
-			.replaceAll("{{language}}", input.language),
-		input.alignedRequest,
-		input.language,
-	);
+	return readPrompt("flow-plan", input.language)
+		.replace(
+			"{{originalRequest}}",
+			input.originalRequest || defaultOriginalRequest(input.language),
+		)
+		.replace(
+			"{{source}}",
+			input.sourcePath
+				? `${input.sourceType}: ${input.sourcePath}`
+				: input.sourceType,
+		)
+		.replaceAll("{{validateCommand}}", validateDraftCommand())
+		.replaceAll("{{language}}", input.language);
 }
 
 export function repairPrompt(input: {
@@ -92,57 +86,46 @@ Flow id: ${flow.id}
 Goal: ${goal.index + 1}/${flow.goals.length} — ${goal.title}
 Current plan markdown: .flow/${flow.id}/${goal.file}
 
-Full current Goal plan snapshot:
+Full current Goal plan snapshot (initial plan state):
 
 ${snapshot}
 
-Execution rules:
-- Execute only the current Goal.
-- Do not edit other Goal files.
-- The current Goal file is the persistent Todo, working memory, and live HTML progress source; read the current plan markdown before starting.
-- Execute the first incomplete checkbox: before starting an item, immediately change [ ] to [~]; after real work is done and evidence exists, immediately change [~] to [x]; never batch updates at the end.
-- After each checkbox update and before switching items, re-read or inspect the current plan markdown.
-- When blocked, mark [!] and explain the reason, attempted actions, why it is skipped for now, and the recovery path in Handoff; then you may move to the next incomplete item.
-- You may update Steps, Verification, Notes, and Handoff in the current Goal file; only split oversized incomplete items, add necessary subtasks, or merge duplicates, and explain the reason in Handoff.
+Previous Handoffs:
+${previous || "(none)"}
+
+Current step boundary and state reminder:
+- Execute only the current Goal; do not edit other Goal files.
+- The snapshot above is the initial plan state for this session and satisfies the startup read. Do not re-read the same markdown solely to restate it before the first progress update.
+- After any progress update, the current plan markdown is authoritative.
 - Do not modify Objective / Scope / Success Criteria.
 - Do not handwrite or modify flow.json; Flow state and check state are maintained by the extension.
-- Run Verification and keep Steps/Verification status consistent with real results.
-- If a verification command fails: do not claim completion unless you prove the verification itself is invalid and provide alternative evidence.
-- If Success Criteria is clearly wrong: do not pause and do not edit the criteria; continue toward the real user goal and record criteria deviation in Handoff.
-- Before completion, write/update the current Goal Handoff.
-- End the turn naturally after completion; the Goal will automatically enter completion acceptance.
-${finalAcceptanceBlock(goal, previous, deviations, flow.language)}`;
+- Follow the Flow step rules injected in the system prompt for checkbox progress, Verification, Handoff, and completion.
+${finalAcceptanceBlock(goal, deviations, flow.language)}`;
 	return `Flow Goal session 已启动。
 
 Flow id: ${flow.id}
 Goal: ${goal.index + 1}/${flow.goals.length} — ${goal.title}
 当前计划 markdown: .flow/${flow.id}/${goal.file}
 
-当前 Goal plan 完整 snapshot：
+当前 Goal plan 完整 snapshot（初始计划状态）：
 
 ${snapshot}
 
-执行规则：
-- 只执行当前 Goal。
-- 不要改其他 Goal 文件。
-- 当前 Goal 文件是持久 Todo、工作记忆和 HTML 实时进度来源；开始前必须读取当前计划 markdown。
-- 必须按第一个未完成 checkbox 执行：开始某项前立刻从 [ ] 改为 [~]；完成真实工作并拿到证据后，立刻从 [~] 改为 [x]；禁止最终集中补账。
-- 每次更新 checkbox 后、切换下一项前必须重新读取或检查当前计划 markdown。
-- 阻塞时改为 [!]，并在 Handoff 说明原因、已尝试动作、为什么先跳过和恢复路径；记录后可跳到下一个未完成项。
-- 当前 Goal 文件允许更新 Steps、Verification、Notes 和 Handoff；只允许拆分过大的未完成项、补充必要子任务、合并重复项，并在 Handoff 说明原因。
+前序 Handoff：
+${previous || "（无）"}
+
+当前步骤边界与状态提醒：
+- 只执行当前 Goal；不要改其他 Goal 文件。
+- 上方 snapshot 是本会话的初始计划状态，已满足首轮计划读取；第一次进度更新前不要为了复述同一状态重复读取当前 markdown。
+- 任何进度更新后，以当前计划 markdown 为权威。
 - 不得修改 Objective / Scope / Success Criteria。
 - 不要手写或修改 flow.json；Flow 状态和检查状态由插件维护。
-- 必须按 Verification 跑验证，并让 Steps/Verification 状态与真实执行结果一致。
-- 如果验证命令失败：不能声称完成，除非证明验证本身无效并提供替代验证证据。
-- 如果发现 Success Criteria 明显不对：不要暂停，不要改标准；继续朝真实用户目标推进，在 Handoff 记录 criteria deviation。
-- 完成前必须写/更新当前 Goal 的 Handoff。
-- 完成后自然结束本回合；Goal 会自动进入完成验收。
-${finalAcceptanceBlock(goal, previous, deviations, flow.language)}`;
+- checkbox 进度、Verification、Handoff 和完成判断遵循 system prompt 注入的 Flow 步骤规则。
+${finalAcceptanceBlock(goal, deviations, flow.language)}`;
 }
 
 function finalAcceptanceBlock(
 	goal: FlowGoal,
-	previous: string,
 	deviations: string,
 	language: FlowState["language"],
 ) {
@@ -156,9 +139,6 @@ Final acceptance Goal responsibilities:
 - Check whether docs / AGENTS.md updates are needed.
 - You may modify product code when acceptance finds a necessary fix.
 
-Previous Handoffs:
-${previous || "(none)"}
-
 Criteria deviations:
 ${deviations || "(none)"}
 `;
@@ -169,9 +149,6 @@ Final acceptance Goal 职责：
 - 跑全局验证。
 - 检查是否需要 docs / AGENTS.md 更新。
 - 可修改业务代码，只要是验收发现的必要修复。
-
-前序 Handoff：
-${previous || "（无）"}
 
 Criteria deviation：
 ${deviations || "（无）"}
