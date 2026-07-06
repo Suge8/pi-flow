@@ -61,8 +61,8 @@ export function latestFlow(
 	return flowStore.latest(cwd, include);
 }
 
-export function runningFlow(cwd: string) {
-	return listFlows(cwd).find((item) => item.flow.status === "running");
+export function runningFlows(cwd: string) {
+	return listFlows(cwd).filter((item) => item.flow.status === "running");
 }
 
 function resolveFlowId(cwd: string, id: string) {
@@ -81,6 +81,7 @@ export function flowOwningSession(
 	return listFlows(cwd).find(
 		({ flow }) =>
 			flow.status === "running" &&
+			Array.isArray(flow.goals) &&
 			flow.goals.some((goal) => goal.sessionFile === sessionFile),
 	);
 }

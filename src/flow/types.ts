@@ -37,8 +37,14 @@ export interface FlowGoal {
 	checks: GoalChecks;
 }
 
+export interface FlowParallelRun {
+	id: string;
+	goalIndexes: number[];
+	startedAt: number;
+}
+
 export interface FlowState {
-	schemaVersion: 6;
+	schemaVersion: 7;
 	language: Language;
 	id: string;
 	title: string;
@@ -48,7 +54,7 @@ export interface FlowState {
 	updatedAt: number;
 	startedAt: number | null;
 	currentGoal: number;
-	parallelBatch?: number[] | null;
+	parallelRun: FlowParallelRun | null;
 	repairAttempts: number;
 	errors: string[];
 	goals: FlowGoal[];
@@ -73,4 +79,5 @@ export interface GoalCompletionFact {
 	acceptance: string;
 	sessionFile: string | null;
 	checks?: GoalChecks | null;
+	parallelRunId?: string;
 }

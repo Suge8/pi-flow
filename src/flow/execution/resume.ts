@@ -3,13 +3,12 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { objectiveFromPlan } from "../../goal/validator.js";
-import { getGoalState, startGoalFromFlow } from "../../goal.js";
+import { getGoalState } from "../../goal.js";
 import { runtimeLanguage } from "../../shared/language.js";
 import { notifyUser } from "../../shared/ui-language.js";
 import { latestGoalCompletion } from "../completion.js";
+import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { currentSessionFile } from "../ownership.js";
-import { planGoalPrompt } from "../prompt.js";
 import { rememberFlowContext } from "../runtime.js";
 import { currentGoal, tryReadFlow } from "../store.js";
 import type { FlowState } from "../types.js";
@@ -17,27 +16,39 @@ import { validateFlowDir } from "../validator.js";
 import { handleGoalCompletionEnd } from "./continue.js";
 import {
 	continueCurrentGoal,
-	flowCommandLanguage,
-	runningFlowOrNotify,
+	flowTargetOrNotify,
 	verifyCurrentSnapshot,
 } from "./shared.js";
 import {
 	bindFlowReportStatus,
 	prepareGoalStart,
-	rollbackPreparedGoalStart,
-	sendFlowGoalStartCard,
 	startGoalInNewSession,
+	startPreparedGoalWithLockHeld,
 	startSelectedGoalInNewSession,
 } from "./start.js";
 
 export async function resumeFlow(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
+	id?: string,
 ) {
-	const location = runningFlowOrNotify(ctx);
-	if (location === null) return;
-	if (!location) return notifyNoRunningFlow(ctx);
-	const verifiedFlow = verifyCurrentSnapshot(ctx, location.dir, location.flow);
+	const location = flowTargetOrNotify(ctx, { id, command: "continue" });
+	if (!location) return;
+	const verified = await withFlowLock(
+		location.dir,
+		`verify ${location.flow.id}`,
+		() => verifyCurrentSnapshot(ctx, location.dir, location.flow),
+	);
+	if (!verified.ok) {
+		notifyUser(
+			ctx,
+			flowLockBusyMessage(verified.owner, location.flow.language),
+			"warning",
+			location.flow.language,
+		);
+		return;
+	}
+	const verifiedFlow = verified.value;
 	if (!verifiedFlow) return;
 	const plan = currentGoal(verifiedFlow);
 	if (!plan)
@@ -107,7 +118,19 @@ async function resumeInSession(
 			language,
 		);
 	}
-	const verifiedFlow = verifyCurrentSnapshot(ctx, dir, validation.flow);
+	const verified = await withFlowLock(dir, `verify ${validation.flow.id}`, () =>
+		verifyCurrentSnapshot(ctx, dir, validation.flow),
+	);
+	if (!verified.ok) {
+		notifyUser(
+			ctx,
+			flowLockBusyMessage(verified.owner, validation.flow.language),
+			"warning",
+			validation.flow.language,
+		);
+		return;
+	}
+	const verifiedFlow = verified.value;
 	if (!verifiedFlow) return;
 	const plan = currentGoal(verifiedFlow);
 	if (!plan)
@@ -120,26 +143,48 @@ async function resumeInSession(
 	if (await handleGoalCompletionEnd(pi, ctx)) return;
 	const goal = getGoalState(ctx);
 	if (!goal && plan.status !== "complete") {
-		const saved = prepareGoalStart(
-			ctx,
+		const prepared = await withFlowLock(
 			dir,
-			verifiedFlow,
-			verifiedFlow.currentGoal,
-			pi,
-		);
-		await bindFlowReportStatus(ctx, dir, verifiedFlow.language);
-		const savedGoal = saved.goals[saved.currentGoal];
-		const snapshot = savedGoal.snapshot ?? "";
-		const objective = objectiveFromPlan(snapshot) || savedGoal.title;
-		sendFlowGoalStartCard(pi, ctx, saved, savedGoal, objective);
-		const started = await startGoalFromFlow(
-			{
-				objective,
-				prompt: planGoalPrompt(saved, savedGoal, snapshot),
+			`resume ${verifiedFlow.id}`,
+			async () => {
+				const validation = validateFlowDir(dir, verifiedFlow.language);
+				if (!validation.ok || !validation.flow) {
+					notifyUser(
+						ctx,
+						verifiedFlow.language === "en"
+							? `Flow validation failed:\n${validation.errors.join("\n")}`
+							: `Flow 校验失败：\n${validation.errors.join("\n")}`,
+						"error",
+						verifiedFlow.language,
+					);
+					return false;
+				}
+				const current = verifyCurrentSnapshot(ctx, dir, validation.flow);
+				if (!current || currentGoal(current)?.status === "complete")
+					return false;
+				const saved = prepareGoalStart(ctx, dir, current, current.currentGoal);
+				await bindFlowReportStatus(ctx, dir, saved.language);
+				return startPreparedGoalWithLockHeld(
+					ctx,
+					dir,
+					current,
+					saved,
+					saved.currentGoal,
+					pi,
+					true,
+				);
 			},
-			ctx,
 		);
-		if (!started) rollbackPreparedGoalStart(dir, verifiedFlow);
+		if (!prepared.ok) {
+			notifyUser(
+				ctx,
+				flowLockBusyMessage(prepared.owner, verifiedFlow.language),
+				"warning",
+				verifiedFlow.language,
+			);
+			return;
+		}
+		if (!prepared.value) return;
 		return;
 	}
 	if (!goal && plan.status === "complete" && !latestGoalCompletion(ctx)) {
@@ -153,18 +198,6 @@ async function resumeInSession(
 		);
 	}
 	await continueCurrentGoal(ctx);
-}
-
-function notifyNoRunningFlow(ctx: ExtensionCommandContext) {
-	const language = flowCommandLanguage(ctx);
-	return notifyUser(
-		ctx,
-		language === "en"
-			? "No running Flow in the current directory."
-			: "当前目录没有运行中的 Flow。",
-		"warning",
-		language,
-	);
 }
 
 function flowNoActiveStepMessage(language: "zh" | "en") {

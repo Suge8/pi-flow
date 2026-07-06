@@ -3,7 +3,8 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { writeFlowHtml } from "../flow/html.js";
-import { listFlows, writeFlow } from "../flow/store.js";
+import { flowLockBusyMessage, withFlowLockSync } from "../flow/lock.js";
+import { listFlows, readFlow, writeFlow } from "../flow/store.js";
 import { formatError } from "./guards.js";
 import { currentSessionFile } from "./session.js";
 
@@ -29,17 +30,36 @@ function syncFlowSessionName(
 	sessionName: string | null,
 ) {
 	for (const location of listFlows(cwd)) {
-		let changed = false;
-		const goals = location.flow.goals.map((goal) => {
-			if (goal.sessionFile !== sessionFile || goal.sessionName === sessionName)
-				return goal;
-			changed = true;
-			return { ...goal, sessionName };
-		});
-		if (!changed) continue;
-		const flow = writeFlow(location.dir, { ...location.flow, goals });
-		writeFlowHtml(location.dir, flow);
+		if (!location.flow.goals.some((goal) => goal.sessionFile === sessionFile))
+			continue;
+		const synced = withFlowLockSync(
+			location.dir,
+			`sync session name ${location.flow.id}`,
+			() => syncFlowSessionNameWithLock(location.dir, sessionFile, sessionName),
+		);
+		if (!synced.ok)
+			throw new Error(
+				flowLockBusyMessage(synced.owner, location.flow.language),
+			);
 	}
+}
+
+function syncFlowSessionNameWithLock(
+	dir: string,
+	sessionFile: string,
+	sessionName: string | null,
+) {
+	const flow = readFlow(dir);
+	let changed = false;
+	const goals = flow.goals.map((goal) => {
+		if (goal.sessionFile !== sessionFile || goal.sessionName === sessionName)
+			return goal;
+		changed = true;
+		return { ...goal, sessionName };
+	});
+	if (!changed) return;
+	const saved = writeFlow(dir, { ...flow, goals });
+	writeFlowHtml(dir, saved);
 }
 
 function sessionNameOrNull(name: unknown) {

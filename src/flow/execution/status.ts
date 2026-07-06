@@ -1,6 +1,6 @@
 import { flowStepLabel } from "../../shared/progress-labels.js";
 import type { FlowState } from "../types.js";
-import { clip } from "../util.js";
+import { clip, flowCommandId } from "../util.js";
 import { flowStatusLabel, goalStatusLabel } from "./shared.js";
 
 export function statusText(flow: FlowState) {
@@ -10,7 +10,7 @@ export function statusText(flow: FlowState) {
 		`Flow: ${flow.id}`,
 		`${label.title}: ${flow.title}`,
 		`${label.state}: ${status}`,
-		`${label.current}: ${flow.goals[flow.currentGoal]?.title ?? label.none}`,
+		`${label.current}: ${currentGoalTitle(flow, label.none)}`,
 		`${label.next}: ${nextHint(flow)}`,
 	];
 	for (const goal of flow.goals) {
@@ -21,6 +21,17 @@ export function statusText(flow: FlowState) {
 	if (flow.errors.length)
 		lines.push(`${label.errors}:\n${flow.errors.join("\n")}`);
 	return lines.join("\n");
+}
+
+function currentGoalTitle(flow: FlowState, fallback: string) {
+	const indexes = flow.parallelRun?.goalIndexes ?? [flow.currentGoal];
+	const titles = indexes.flatMap((index) => {
+		const title = flow.goals[index]?.title;
+		return title ? [title] : [];
+	});
+	return titles.length
+		? titles.join(flow.language === "en" ? ", " : "、")
+		: fallback;
 }
 
 function sessionLabel(
@@ -58,7 +69,8 @@ function statusLabels(language: FlowState["language"]) {
 }
 
 function nextHint(flow: FlowState) {
-	if (flow.status === "draft") return `/flow start ${flow.id}`;
-	if (flow.status === "running") return "/flow continue";
-	return `/flow status ${flow.id}`;
+	const id = flowCommandId(flow.id);
+	if (flow.status === "draft") return `/flow start ${id}`;
+	if (flow.status === "running") return `/flow continue ${id}`;
+	return `/flow status ${id}`;
 }

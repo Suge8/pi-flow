@@ -5,12 +5,19 @@ import {
 	resumePausedGoalFromFlow,
 } from "../../goal.js";
 import type { Language } from "../../shared/config.js";
-import { formatError } from "../../shared/guards.js";
 import { runtimeLanguage } from "../../shared/language.js";
 import { notifyUser } from "../../shared/ui-language.js";
 import { writeFlowHtml } from "../html.js";
 import { planSnapshotError } from "../snapshot.js";
-import { currentGoal, latestFlow, runningFlow, writeFlow } from "../store.js";
+import { currentGoal, latestFlow, writeFlow } from "../store.js";
+import {
+	type FlowTargetResult,
+	flowNotFoundMessage,
+	flowNotRunningMessage,
+	flowTargetLookupFailedMessage,
+	flowTargetMessage,
+	resolveFlowTarget,
+} from "../target.js";
 import type { FlowLocation, FlowState } from "../types.js";
 import { validateFlowDir } from "../validator.js";
 
@@ -53,34 +60,73 @@ export async function continueCurrentGoal(ctx: ExtensionContext) {
 
 export function flowCommandLanguage(ctx: ExtensionContext): Language {
 	try {
+		const target = resolveFlowTarget(ctx);
+		if (target.ok) return target.location.flow.language;
 		return (
-			(
-				runningFlow(ctx.cwd) ??
-				latestFlow(ctx.cwd, (flow) => flow.status !== "cancelled")
-			)?.flow.language ?? runtimeLanguage()
+			latestFlow(ctx.cwd, (flow) => flow.status !== "cancelled")?.flow
+				.language ?? runtimeLanguage()
 		);
 	} catch {
 		return runtimeLanguage();
 	}
 }
 
-export function runningFlowOrNotify(ctx: ExtensionContext) {
-	let location: FlowLocation | undefined;
+type FlowTargetNotifyOptions = {
+	id?: string;
+	command: string;
+	level?: "info" | "warning";
+	quietNone?: boolean;
+	requireRunning?: boolean;
+};
+
+export function flowTargetOrNotify(
+	ctx: ExtensionContext,
+	options: FlowTargetNotifyOptions,
+) {
+	let target: FlowTargetResult;
 	try {
-		location = runningFlow(ctx.cwd);
+		target = resolveFlowTarget(ctx, options.id);
 	} catch (error) {
 		const language = runtimeLanguage();
 		notifyUser(
 			ctx,
-			language === "en"
-				? `flow.json read failed: ${formatError(error)}`
-				: `flow.json 读取失败：${formatError(error)}`,
+			flowTargetLookupFailedMessage(error, language),
 			"error",
 			language,
 		);
 		return null;
 	}
-	if (!location) return undefined;
+	if (!target.ok) return notifyMissingTarget(ctx, target, options);
+	return validatedTarget(
+		ctx,
+		target.location,
+		options.requireRunning !== false,
+	);
+}
+
+export { flowNotFoundMessage };
+
+function notifyMissingTarget(
+	ctx: ExtensionContext,
+	target: Exclude<FlowTargetResult, { ok: true }>,
+	options: FlowTargetNotifyOptions,
+) {
+	if (target.reason === "none" && options.quietNone) return undefined;
+	const language = targetResultLanguage(target);
+	notifyUser(
+		ctx,
+		flowTargetMessage(target, language, options.command),
+		options.level ?? "warning",
+		language,
+	);
+	return null;
+}
+
+function validatedTarget(
+	ctx: ExtensionContext,
+	location: FlowLocation,
+	requireRunning: boolean,
+) {
 	const validation = validateFlowDir(location.dir, location.flow.language);
 	if (!validation.ok || !validation.flow) {
 		notifyUser(
@@ -93,7 +139,27 @@ export function runningFlowOrNotify(ctx: ExtensionContext) {
 		);
 		return null;
 	}
+	if (requireRunning && validation.flow.status !== "running") {
+		notifyUser(
+			ctx,
+			flowNotRunningMessage(validation.flow.id, validation.flow.language),
+			"warning",
+			validation.flow.language,
+		);
+		return null;
+	}
 	return { ...location, flow: validation.flow };
+}
+
+function targetResultLanguage(
+	target: Exclude<FlowTargetResult, { ok: true }>,
+): Language {
+	if (target.reason !== "ambiguous_running") return runtimeLanguage();
+	const language = target.flows[0]?.flow.language;
+	return language &&
+		target.flows.every((item) => item.flow.language === language)
+		? language
+		: runtimeLanguage();
 }
 
 export function verifyCurrentSnapshot(
@@ -101,25 +167,32 @@ export function verifyCurrentSnapshot(
 	dir: string,
 	flow: FlowState,
 ) {
-	const plan = currentGoal(flow);
-	if (!plan || plan.status !== "running") return flow;
-	const error = planSnapshotError(dir, plan, flow.language);
-	if (error) {
-		const saved = writeFlow(dir, { ...flow, errors: [error] });
-		writeFlowHtml(dir, saved);
-		notifyUser(ctx, error, "error", flow.language);
+	const validation = validateFlowDir(dir, flow.language);
+	if (!validation.ok || !validation.flow) {
+		notifyUser(
+			ctx,
+			flow.language === "en"
+				? `Flow validation failed:\n${validation.errors.join("\n")}`
+				: `Flow 校验失败：\n${validation.errors.join("\n")}`,
+			"error",
+			flow.language,
+		);
 		return undefined;
 	}
-	if (flow.errors.length === 0) return flow;
-	const saved = writeFlow(dir, { ...flow, errors: [] });
+	const current = validation.flow;
+	const plan = currentGoal(current);
+	if (!plan || plan.status !== "running") return current;
+	const error = planSnapshotError(dir, plan, current.language);
+	if (error) {
+		const saved = writeFlow(dir, { ...current, errors: [error] });
+		writeFlowHtml(dir, saved);
+		notifyUser(ctx, error, "error", current.language);
+		return undefined;
+	}
+	if (current.errors.length === 0) return current;
+	const saved = writeFlow(dir, { ...current, errors: [] });
 	writeFlowHtml(dir, saved);
 	return saved;
-}
-
-export function flowNotFoundMessage(flowId: string, language: Language) {
-	return language === "en"
-		? `Flow not found: ${flowId}`
-		: `未找到 Flow：${flowId}`;
 }
 
 export function flowStatusLabel(status: string, language: Language = "zh") {

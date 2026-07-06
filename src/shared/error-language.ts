@@ -8,7 +8,7 @@ const EXACT_EN = new Map<string, string>([
 		"Usage: node scripts/validate-draft.mjs <.flow/F1-id>",
 	],
 	["缺少 flow.json", "Missing flow.json"],
-	["schemaVersion 必须为 6", "schemaVersion must be 6"],
+	["schemaVersion 必须为 7", "schemaVersion must be 7"],
 	["language 必须是 zh 或 en", "language must be zh or en"],
 	["id 必须匹配 F1-xxx", "id must match F1-xxx"],
 	["title 必须是非空字符串", "title must be a non-empty string"],
@@ -258,6 +258,7 @@ function typeText(text: string) {
 		.replace("字符串数组", "a string array")
 		.replace("非空字符串", "a non-empty string")
 		.replace("字符串或 null", "a string or null")
+		.replace("对象或 null", "an object or null")
 		.replace("数组或 null", "an array or null")
 		.replace("非空数组", "a non-empty array")
 		.replace("布尔值", "a boolean")

@@ -31,9 +31,12 @@ export function replaceGoal(flow: FlowState, index: number, goal: FlowGoal) {
 	return flow.goals.map((item, offset) => (offset === index ? goal : item));
 }
 
+export function flowCommandId(id: string) {
+	return /^F[1-9]\d*/u.exec(id)?.[0] ?? id;
+}
+
 export function flowSessionName(flow: FlowState, goal: FlowGoal) {
-	const flowNumber = /^F([0-9]+)/u.exec(flow.id)?.[1] ?? "0";
-	return `F${flowNumber}-G${goal.index + 1} ${clipText(goal.title, 18)}`;
+	return `${flowCommandId(flow.id)}-G${goal.index + 1} ${clipText(goal.title, 18)}`;
 }
 
 export function requireFlowStartedAt(flow: Pick<FlowState, "startedAt">) {

@@ -13,16 +13,15 @@ import { liveReportUrl } from "../../shared/report-server.js";
 import { sendResultCard } from "../../shared/result-card.js";
 import { notifyUser } from "../../shared/ui-language.js";
 import { writeFlowHtml } from "../html.js";
+import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { currentSessionFile } from "../ownership.js";
-import {
-	activeParallelBatch,
-	runParallelBatch,
-} from "../parallel/batch-runner.js";
+import { runParallelBatch } from "../parallel/batch-runner.js";
 import { planGoalPrompt } from "../prompt.js";
 import { rememberFlowContext } from "../runtime.js";
 import { computeReadyBatch } from "../scheduler.js";
 import { planSnapshotHash } from "../snapshot.js";
 import { findFlow, latestFlow, writeFlow } from "../store.js";
+import { flowTargetLookupFailedMessage } from "../target.js";
 import type { FlowGoal, FlowLocation, FlowState } from "../types.js";
 import {
 	clip,
@@ -36,7 +35,6 @@ import { askRepair } from "./repair.js";
 import {
 	flowNotFoundMessage,
 	flowStatusLabel,
-	runningFlowOrNotify,
 	verifyCurrentSnapshot,
 } from "./shared.js";
 
@@ -54,9 +52,7 @@ export async function startFlow(
 		const language = runtimeLanguage();
 		notifyUser(
 			ctx,
-			language === "en"
-				? `flow.json read failed: ${formatError(error)}`
-				: `flow.json 读取失败：${formatError(error)}`,
+			flowTargetLookupFailedMessage(error, language),
 			"error",
 			language,
 		);
@@ -83,29 +79,23 @@ export async function startFlow(
 	}
 	const flow = validation.flow;
 	if (flow.status !== "draft") {
-		verifyCurrentSnapshot(ctx, location.dir, flow);
+		const verified = await withFlowLock(location.dir, `verify ${flow.id}`, () =>
+			verifyCurrentSnapshot(ctx, location.dir, flow),
+		);
+		if (!verified.ok) {
+			notifyUser(
+				ctx,
+				flowLockBusyMessage(verified.owner, flow.language),
+				"warning",
+				flow.language,
+			);
+			return false;
+		}
 		notifyUser(ctx, flowCannotStartMessage(flow), "warning", flow.language);
 		return false;
 	}
-	const activeBatch = activeParallelBatch(ctx.cwd);
-	if (activeBatch) {
-		notifyUser(
-			ctx,
-			runningFlowMessage(activeBatch.flow),
-			"warning",
-			activeBatch.flow.language,
-		);
-		return false;
-	}
-	const running = runningFlowOrNotify(ctx);
-	if (running === null) return false;
-	if (running) {
-		notifyUser(
-			ctx,
-			runningFlowMessage(running.flow),
-			"warning",
-			running.flow.language,
-		);
+	if (hasActiveFlowExecution(flow)) {
+		notifyUser(ctx, runningFlowMessage(flow), "warning", flow.language);
 		return false;
 	}
 	return startGoalInNewSession(pi, ctx, location.dir, flow, 0);
@@ -118,15 +108,18 @@ export async function startGoalInNewSession(
 	flow: FlowState,
 	goalIndex: number,
 ): Promise<boolean> {
-	const batch = computeReadyBatch(flow);
-	if (batch?.mode === "parallel")
-		return startParallelBatch(pi, ctx, dir, flow, batch.indices);
+	const current = validatedFlowForScheduling(ctx, dir, flow.language);
+	if (!current) return false;
+	const batch = computeReadyBatch(current);
+	if (!batch) return false;
+	if (batch.mode === "parallel")
+		return startParallelBatch(pi, ctx, dir, current, batch.indices);
 	return startSelectedGoalInNewSession(
 		pi,
 		ctx,
 		dir,
-		flow,
-		batch?.indices[0] ?? goalIndex,
+		current,
+		batch.indices[0] ?? goalIndex,
 	);
 }
 
@@ -148,6 +141,41 @@ export async function startSelectedGoalInNewSession(
 		);
 		return false;
 	}
+	const locked = await withFlowLock(
+		dir,
+		`start ${flow.id} G${goalIndex + 1}`,
+		async () => startSelectedGoalWithLock(pi, ctx, dir, flow, goalIndex),
+	);
+	if (!locked.ok) {
+		notifyUser(
+			ctx,
+			flowLockBusyMessage(locked.owner, flow.language),
+			"warning",
+			flow.language,
+		);
+		return false;
+	}
+	return locked.value;
+}
+
+async function startSelectedGoalWithLock(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	dir: string,
+	flow: FlowState,
+	goalIndex: number,
+) {
+	const current = validatedFlowForScheduling(ctx, dir, flow.language);
+	if (!current) return false;
+	if (!canStartSelectedGoal(current, goalIndex)) {
+		notifyUser(
+			ctx,
+			noSchedulableGoalMessage(current),
+			"warning",
+			current.language,
+		);
+		return false;
+	}
 	let prepared = false;
 	let replacementCtx: ExtensionCommandContext | undefined;
 	try {
@@ -156,19 +184,26 @@ export async function startSelectedGoalInNewSession(
 				replacementCtx = sessionCtx;
 				rememberFlowContext(sessionCtx);
 				try {
-					const saved = prepareGoalStart(sessionCtx, dir, flow, goalIndex, pi);
-					await bindFlowReportStatus(sessionCtx, dir, flow.language);
-					scheduleGoalPromptStart(sessionCtx, dir, flow, saved, goalIndex);
-					prepared = true;
+					const saved = prepareGoalStart(sessionCtx, dir, current, goalIndex);
+					await bindFlowReportStatus(sessionCtx, dir, current.language);
+					prepared = await startPreparedGoalWithLockHeld(
+						sessionCtx,
+						dir,
+						current,
+						saved,
+						goalIndex,
+						pi,
+						true,
+					);
 				} catch (error) {
 					notifyUser(
 						sessionCtx,
 						flowStepSessionStartFailedMessage(
 							formatError(error),
-							flow.language,
+							current.language,
 						),
 						"error",
-						flow.language,
+						current.language,
 					);
 				}
 			},
@@ -177,11 +212,11 @@ export async function startSelectedGoalInNewSession(
 	} catch (error) {
 		const message = flowStepSessionStartFailedMessage(
 			formatError(error),
-			flow.language,
+			current.language,
 		);
 		const notified = replacementCtx
-			? notifySessionStartFailed(replacementCtx, message, flow.language)
-			: notifySessionStartFailed(ctx, message, flow.language);
+			? notifySessionStartFailed(replacementCtx, message, current.language)
+			: notifySessionStartFailed(ctx, message, current.language);
 		if (!notified) throw new Error(message);
 		return false;
 	}
@@ -218,13 +253,12 @@ export function prepareGoalStart(
 	dir: string,
 	flow: FlowState,
 	goalIndex: number,
-	pi?: ExtensionAPI,
 ) {
 	const goal = flow.goals[goalIndex];
 	const currentFile = readFileSync(join(dir, goal.file), "utf8");
 	const snapshot = goal.snapshot ?? currentFile;
 	const sessionName = flowSessionName(flow, goal);
-	setSessionName(pi, ctx, sessionName);
+	setSessionName(ctx, sessionName);
 	const goals = replaceGoal(flow, goalIndex, {
 		...goal,
 		status: "running",
@@ -254,28 +288,65 @@ export async function startPreparedGoal(
 	originalFlow: FlowState,
 	saved: FlowState,
 	goalIndex: number,
+	pi?: ExtensionAPI,
+) {
+	const started = await withFlowLock(dir, `prompt ${saved.id}`, async () => {
+		const validation = validateFlowDir(dir, saved.language);
+		const currentFlow = validation.flow;
+		if (!currentFlow || !preparedGoalCanStart(currentFlow, saved)) return false;
+		return startPreparedGoalWithLockHeld(
+			ctx,
+			dir,
+			originalFlow,
+			saved,
+			goalIndex,
+			pi,
+			preparedGoalStillCurrent(currentFlow, saved),
+		);
+	});
+	if (started.ok) return started.value;
+	notifyUser(
+		ctx,
+		flowLockBusyMessage(started.owner, saved.language),
+		"warning",
+		saved.language,
+	);
+	return false;
+}
+
+export async function startPreparedGoalWithLockHeld(
+	ctx: ExtensionCommandContext,
+	dir: string,
+	originalFlow: FlowState,
+	saved: FlowState,
+	goalIndex: number,
+	pi: ExtensionAPI | undefined,
+	canRollback: boolean,
 ) {
 	try {
 		const goal = saved.goals[goalIndex];
 		const snapshot = goal.snapshot ?? "";
 		const objective = objectiveFromPlan(snapshot) || goal.title;
-		sendFlowGoalStartCard(undefined, ctx, saved, goal, objective);
-		const started = await startGoalFromFlow(
+		sendFlowGoalStartCard(pi, ctx, saved, goal, objective);
+		const sent = await startGoalFromFlow(
 			{
 				objective,
 				prompt: planGoalPrompt(saved, goal, snapshot),
 			},
 			ctx,
 		);
-		if (!started) rollbackPreparedGoalStart(dir, originalFlow);
+		if (!sent && canRollback)
+			rollbackPreparedGoalStartUnlocked(dir, originalFlow);
+		return sent;
 	} catch (error) {
-		rollbackPreparedGoalStart(dir, originalFlow);
+		if (canRollback) rollbackPreparedGoalStartUnlocked(dir, originalFlow);
 		notifyUser(
 			ctx,
 			flowStepSessionStartFailedMessage(formatError(error), saved.language),
 			"error",
 			saved.language,
 		);
+		return false;
 	}
 }
 
@@ -289,10 +360,72 @@ export async function bindFlowReportStatus(
 	);
 }
 
-export function rollbackPreparedGoalStart(dir: string, flow: FlowState) {
-	closeFlowGoalWatcher();
-	const saved = writeFlow(dir, flow);
+export async function rollbackPreparedGoalStart(
+	ctx: ExtensionCommandContext,
+	dir: string,
+	originalFlow: FlowState,
+	preparedFlow: FlowState,
+) {
+	const rolledBack = await withFlowLock(
+		dir,
+		`rollback ${preparedFlow.id}`,
+		() => {
+			const validation = validateFlowDir(dir, preparedFlow.language);
+			if (
+				!validation.flow ||
+				!preparedGoalStillCurrent(validation.flow, preparedFlow)
+			)
+				return false;
+			rollbackPreparedGoalStartUnlocked(dir, originalFlow);
+			return true;
+		},
+	);
+	if (rolledBack.ok) return rolledBack.value;
+	notifyUser(
+		ctx,
+		flowLockBusyMessage(rolledBack.owner, preparedFlow.language),
+		"warning",
+		preparedFlow.language,
+	);
+	return false;
+}
+
+function rollbackPreparedGoalStartUnlocked(
+	dir: string,
+	originalFlow: FlowState,
+) {
+	closeFlowGoalWatcher(dir);
+	const saved = writeFlow(dir, originalFlow);
 	writeFlowHtml(dir, saved);
+}
+
+function preparedGoalCanStart(current: FlowState, prepared: FlowState) {
+	return preparedGoalMatches(current, prepared, false);
+}
+
+function preparedGoalStillCurrent(current: FlowState, prepared: FlowState) {
+	return preparedGoalMatches(current, prepared, true);
+}
+
+function preparedGoalMatches(
+	current: FlowState,
+	prepared: FlowState,
+	checkSessionName: boolean,
+) {
+	const index = prepared.currentGoal;
+	const currentGoal = current.goals[index];
+	const preparedGoal = prepared.goals[index];
+	return (
+		current.id === prepared.id &&
+		current.status === prepared.status &&
+		current.currentGoal === prepared.currentGoal &&
+		current.parallelRun?.id === prepared.parallelRun?.id &&
+		currentGoal?.status === "running" &&
+		currentGoal.sessionFile === preparedGoal?.sessionFile &&
+		(!checkSessionName ||
+			currentGoal.sessionName === preparedGoal?.sessionName) &&
+		currentGoal.snapshotHash === preparedGoal?.snapshotHash
+	);
 }
 
 export function sendFlowGoalStartCard(
@@ -331,6 +464,44 @@ export function sendFlowGoalStartCard(
 	});
 }
 
+function validatedFlowForScheduling(
+	ctx: ExtensionCommandContext,
+	dir: string,
+	language: FlowState["language"],
+) {
+	const validation = validateFlowDir(dir, language);
+	if (validation.ok && validation.flow) return validation.flow;
+	notifyUser(
+		ctx,
+		language === "en"
+			? `Flow validation failed:\n${validation.errors.join("\n")}`
+			: `Flow 校验失败：\n${validation.errors.join("\n")}`,
+		"error",
+		language,
+	);
+	return undefined;
+}
+
+function canStartSelectedGoal(flow: FlowState, goalIndex: number) {
+	return (
+		(flow.status === "draft" || flow.status === "running") &&
+		!hasActiveFlowExecution(flow) &&
+		flow.goals[goalIndex]?.status === "pending"
+	);
+}
+
+function hasActiveFlowExecution(flow: FlowState) {
+	return (
+		!!flow.parallelRun || flow.goals.some((goal) => goal.status === "running")
+	);
+}
+
+function noSchedulableGoalMessage(flow: FlowState) {
+	return flow.language === "en"
+		? "Flow has no pending step ready to start."
+		: "Flow 没有可启动的待执行步骤。";
+}
+
 function flowCannotStartMessage(flow: FlowState) {
 	const status = flowStatusLabel(flow.status, flow.language);
 	return flow.language === "en"
@@ -367,31 +538,7 @@ function flowStepSessionStartFailedMessage(
 		: `Flow 步骤会话启动失败：${error}`;
 }
 
-function scheduleGoalPromptStart(
-	ctx: ExtensionCommandContext,
-	dir: string,
-	originalFlow: FlowState,
-	saved: FlowState,
-	goalIndex: number,
-) {
-	setImmediate(() => {
-		void startPreparedGoal(ctx, dir, originalFlow, saved, goalIndex);
-	});
-}
-
-function setSessionName(
-	pi: ExtensionAPI | undefined,
-	ctx: ExtensionCommandContext,
-	name: string,
-) {
-	if (typeof pi?.setSessionName === "function") {
-		try {
-			pi.setSessionName(name);
-			return;
-		} catch (error) {
-			if (!isStaleSessionError(error)) throw error;
-		}
-	}
+function setSessionName(ctx: ExtensionCommandContext, name: string) {
 	appendSessionName(ctx, name);
 }
 

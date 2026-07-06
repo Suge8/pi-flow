@@ -55,10 +55,8 @@ const EN_REPLACEMENTS: [string, string][] = [
 	["目标令牌预算仍已达到：", "Goal token budget is still reached: "],
 	["目标提示发送失败", "Goal prompt send failed"],
 	["当前步骤状态：", "Current step status: "],
-	[
-		"Flow 已更新；运行 /flow continue 继续下一步。",
-		"Flow updated; run /flow continue to continue to the next step.",
-	],
+	["Flow 已更新；运行 ", "Flow updated; run "],
+	[" 继续下一步。", " to continue to the next step."],
 	["Flow 继续结果：", "Flow continue result: "],
 	[".flow 目录不可用：", ".flow directory unavailable: "],
 	[

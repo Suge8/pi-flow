@@ -8,8 +8,8 @@ import type {
 import { onFlowGoalCompleted } from "./flow/completion.js";
 import {
 	isWorkerContext,
-	registerWorkerCommand,
-	runWorkerCommand,
+	registerWorkerRuntime,
+	startPrivateWorkerFromEnv,
 } from "./flow/execution/worker-command.js";
 import {
 	cancelFlow,
@@ -44,16 +44,13 @@ import {
 import { liveReportUrl } from "./shared/report-server.js";
 import { installLocalizedUi, localizeUserText } from "./shared/ui-language.js";
 
+let currentApi: ExtensionAPI | undefined;
+let completionListenerRegistered = false;
+
 export default function flowExtension(pi: ExtensionAPI) {
-	registerWorkerCommand(pi);
-	onFlowGoalCompleted((fact, emittedCtx) => {
-		if (isWorkerContext(emittedCtx)) return;
-		rememberCompletionFact(fact);
-		const ctx = emittedCtx
-			? (emittedCtx as ExtensionContext)
-			: rememberedFlowContext(fact.sessionFile);
-		if (ctx) void handleGoalCompletionEnd(pi, ctx);
-	});
+	currentApi = pi;
+	registerWorkerRuntime(pi);
+	registerFlowCompletionListener();
 	pi.registerCommand("flow", {
 		description:
 			localizeUserText("生成并执行单步或多步任务：/flow [需求|path.md]") ??
@@ -63,6 +60,7 @@ export default function flowExtension(pi: ExtensionAPI) {
 	});
 	pi.on("session_start", async (_event, ctx) => {
 		await bindOwnedFlowReportStatus(ctx);
+		await startPrivateWorkerFromEnv(pi, ctx);
 	});
 	pi.on("agent_end", async (event, ctx) => {
 		const generated = await handleGenerationEnd(pi, ctx, event);
@@ -88,7 +86,23 @@ export default function flowExtension(pi: ExtensionAPI) {
 		if (!sent) clearFlowGeneration(ctx);
 		return { action: "handled" as const };
 	});
-	pi.on("session_shutdown", () => closeFlowGoalWatcher());
+	pi.on("session_shutdown", (_event, ctx) => {
+		const owner = flowOwnerForSession(ctx);
+		if (owner) closeFlowGoalWatcher(owner.dir);
+	});
+}
+
+function registerFlowCompletionListener() {
+	if (completionListenerRegistered) return;
+	completionListenerRegistered = true;
+	onFlowGoalCompleted((fact, emittedCtx) => {
+		if (isWorkerContext(emittedCtx)) return;
+		rememberCompletionFact(fact);
+		const ctx = emittedCtx
+			? (emittedCtx as ExtensionContext)
+			: rememberedFlowContext(fact.sessionFile);
+		if (currentApi && ctx) void handleGoalCompletionEnd(currentApi, ctx, fact);
+	});
 }
 
 async function bindOwnedFlowReportStatus(ctx: ExtensionContext) {
@@ -109,7 +123,7 @@ async function handleFlowCommand(
 	ctx: ExtensionCommandContext,
 ) {
 	installLocalizedUi(ctx);
-	cancelGoalRecoveryAfterUserAction();
+	cancelGoalRecoveryAfterUserAction(ctx);
 	const tokens = tokenize(args.trim());
 	const [command, ...rest] = tokens;
 	if (!command) {
@@ -130,20 +144,21 @@ async function handleFlowCommand(
 		return showStatus(ctx, rest[0]);
 	}
 	if (command === "pause") {
-		if (rest.length > 0) return ctx.ui.notify("用法：/flow pause", "warning");
-		return pauseFlow(ctx);
+		if (rest.length > 1)
+			return ctx.ui.notify("用法：/flow pause [id]", "warning");
+		return pauseFlow(ctx, rest[0]);
 	}
 	if (command === "continue") {
-		if (rest.length > 0)
-			return ctx.ui.notify("用法：/flow continue", "warning");
-		return continueFlow(pi, ctx);
+		if (rest.length > 1)
+			return ctx.ui.notify("用法：/flow continue [id]", "warning");
+		return continueFlow(pi, ctx, rest[0]);
 	}
-	if (command === "worker") return runWorkerCommand(pi, ctx, rest);
 	if (command === "cancel") {
-		if (rest.length > 0) return ctx.ui.notify("用法：/flow cancel", "warning");
-		if (clearFlowGeneration(ctx))
+		if (rest.length > 1)
+			return ctx.ui.notify("用法：/flow cancel [id]", "warning");
+		if (!rest[0] && clearFlowGeneration(ctx))
 			return ctx.ui.notify("Flow 计划生成已取消。", "warning");
-		return cancelFlow(ctx);
+		return cancelFlow(ctx, rest[0]);
 	}
 	const options = await generationStartOptions(ctx);
 	if (!options) return;
