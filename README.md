@@ -134,7 +134,7 @@ cp config.template.json config.json
 
 </details>
 
-### 30 seconds to start
+### 5 seconds to start
 
 ```text
 /flow          # Plan → execute → accept → quality check; single-step or multi-step automatically
@@ -164,12 +164,15 @@ Continue, cancel, status:
 /flow continue | cancel | status
 ```
 
-Target a previous item:
+Target a Flow by id (short id preferred; full id also works):
 
 ```text
-/flow status <id>   # full id or short id, e.g. F1
-/flow start <id>
+/flow status F4
+/flow start F4
+/flow continue F4
 ```
+
+Multiple Flows can run in one project. Bare `continue` / `cancel` / `status` targets the current Flow or the only running Flow; otherwise Pi asks for a short id.
 
 </details>
 
@@ -313,7 +316,7 @@ cp config.template.json config.json
 
 </details>
 
-### 30 秒开始
+### 5 秒开始
 
 ```text
 /flow          # 计划 → 执行 → 验收 → 质量检查；自动判断单步或多步
@@ -343,12 +346,15 @@ cp config.template.json config.json
 /flow continue | cancel | status
 ```
 
-指定历史目标：
+按 id 指定 Flow（优先使用短 id，完整 id 仍可用）：
 
 ```text
-/flow status <id>   # 支持完整 id 或短 id，例如 F1
-/flow start <id>
+/flow status F4
+/flow start F4
+/flow continue F4
 ```
+
+同一项目可同时运行多个 Flow。裸 `continue` / `cancel` / `status` 会路由到当前 Flow 或唯一运行中的 Flow；多义时 Pi 会要求指定短 id。
 
 </details>
 

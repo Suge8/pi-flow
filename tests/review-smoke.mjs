@@ -272,6 +272,7 @@ async function autoFailureScenario() {
 	assert(displayLines.includes("发现 1"), displayLines);
 	assert(displayLines.includes("发现 1\n• 问题: x\n\n发现 2"), displayLines);
 	assert(displayLines.includes("⏱ 用时："), displayLines);
+	assertFooterLayout(card.message.details.lines, "⏱ 用时：");
 	assert(
 		state.statuses.some((item) => item?.startsWith("💯 quality/质量修复中 · ")),
 		state.statuses.join(" | "),
@@ -475,6 +476,7 @@ async function reviewRoundTimeUsesCurrentStepScenario() {
 			pass.message.details.lines.join("\n").includes("用时：0s / 总 2m"),
 			pass.message.details.lines.join("\n"),
 		);
+		assertFooterLayout(pass.message.details.lines, "⏱ 用时：");
 		assert(
 			state.statuses.some((item) =>
 				item?.startsWith("💯 quality/第 2 轮质量检查 · 0s / 总 2m"),
@@ -723,6 +725,7 @@ async function mixedReviewerFailureAndErrorScenario() {
 	assert(lines.includes("模型 2 · missing"), lines);
 	assert(!lines.includes("FAIL"), lines);
 	assert(lines.includes("⏱ 用时："), lines);
+	assertFooterLayout(card.message.details.lines, "⏱ 用时：");
 }
 
 async function processFailureRetriesScenario() {
@@ -1065,6 +1068,17 @@ function reviewErrorCard(state) {
 		titles.includes("质量检查中") &&
 		titles.includes("质量检查错误") &&
 		!titles.includes("质量检查未通过")
+	);
+}
+
+function assertFooterLayout(lines, footerPrefix) {
+	const index = lines.findIndex((line) => line.startsWith(footerPrefix));
+	assert(index >= 3, `footer missing: ${lines.join("|")}`);
+	assert(
+		lines[index - 3] === "" &&
+			lines[index - 2] === "---" &&
+			lines[index - 1] === "",
+		`footer separator missing: ${lines.join("|")}`,
 	);
 }
 

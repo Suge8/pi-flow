@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Language } from "./config.js";
 import { copy } from "./copy.js";
 import { localizeErrors } from "./error-language.js";
@@ -52,8 +53,6 @@ export function card(body: string, options: { tone?: Tone; bg?: string } = {}) {
 }
 
 export function hero(args: {
-	kindLabel: string;
-	statusSeal: string;
 	title: string;
 	subtitle: string;
 	percent: number;
@@ -67,7 +66,6 @@ export function hero(args: {
 	return `<header data-rough-card class="bg-white p-6">
 <div class="flex flex-wrap items-center justify-between gap-6">
 <div class="min-w-0 flex-1 space-y-3">
-<div class="flex flex-wrap items-center gap-2">${args.statusSeal}<span class="text-[11px] font-semibold uppercase tracking-[0.18em] text-stone-400">${escapeHtml(args.kindLabel)}</span></div>
 <h1 class="font-serif text-3xl leading-snug text-stone-900">${escapeHtml(args.title)}</h1>
 <p class="text-sm leading-6 text-stone-500">${escapeHtml(args.subtitle)}</p>
 ${chips}
@@ -75,6 +73,28 @@ ${chips}
 ${progressRing(args.percent, args.tone, args.caption)}
 </div>
 </header>`;
+}
+let logoDataUri: string | undefined;
+
+export function brandHeader() {
+	const logo = flowLogoDataUri();
+	const mark = logo
+		? `<img src="${logo}" alt="" class="h-full w-full rounded-xl object-cover" />`
+		: reportIcon("sparkle", "h-6 w-6 text-stone-900");
+	return `<div class="flex items-center gap-3 px-1 pb-1" aria-label="Flow">
+<span class="grid h-11 w-11 place-items-center rounded-2xl bg-white p-1 shadow-[0_0_0_1px_rgba(41,37,36,0.14),0_10px_24px_rgba(41,37,36,0.08)]">${mark}</span>
+<span class="font-serif text-3xl font-semibold tracking-[-0.055em] text-stone-950">Flow</span>
+</div>`;
+}
+
+function flowLogoDataUri() {
+	if (logoDataUri !== undefined) return logoDataUri;
+	try {
+		logoDataUri = `data:image/png;base64,${readFileSync(new URL("../../assets/logo.png", import.meta.url)).toString("base64")}`;
+	} catch {
+		logoDataUri = "";
+	}
+	return logoDataUri;
 }
 
 export function seal(text: string, tone: Tone) {
@@ -107,7 +127,17 @@ export function progressBar(percent: number, tone: Tone) {
 }
 
 export function detailsCard(label: string, body: string) {
-	return `<details data-rough-card data-key="${escapeHtml(label)}" class="bg-white/70 px-5 py-4"><summary class="text-sm font-medium text-stone-600">${escapeHtml(label)}</summary><div class="mt-3 space-y-4">${body}</div></details>`;
+	return `<details data-rough-card data-key="${escapeHtml(label)}" class="bg-white/70 px-5 py-4">${detailsSummary(label, "text-sm font-medium text-stone-600")}<div class="mt-3 space-y-4">${body}</div></details>`;
+}
+
+export function detailsSummary(
+	label: string,
+	className: string,
+	options: { iconOnly?: boolean } = {},
+) {
+	if (options.iconOnly)
+		return `<summary aria-label="${escapeHtml(label)}" class="inline-grid h-6 w-6 place-items-center rounded-full bg-white/75 text-stone-500 shadow-[0_0_0_1px_rgba(41,37,36,0.08),0_5px_12px_rgba(41,37,36,0.05)] transition-[color,background-color,box-shadow,transform] duration-150 hover:bg-stone-50 hover:text-stone-900 hover:shadow-[0_0_0_1px_rgba(41,37,36,0.12),0_7px_16px_rgba(41,37,36,0.08)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200 active:scale-[0.96] ${className}">${reportIcon("dots-three", "h-3.5 w-3.5")}</summary>`;
+	return `<summary class="inline-flex items-center gap-1.5 ${className}">${reportIcon("dots-three", "h-3.5 w-3.5 opacity-70")}<span>${escapeHtml(label)}</span></summary>`;
 }
 
 export function subSection(label: string, markdown: string) {

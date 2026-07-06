@@ -14,14 +14,22 @@ export function reportHead() {
 
 function reportStyles() {
 	return `<style>
+html{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 details>summary{cursor:pointer;list-style:none}
 details>summary::-webkit-details-marker{display:none}
-details>summary::before{content:"▸";display:inline-block;margin-right:.5rem;color:#A8A29E;transition:transform .15s}
-details[open]>summary::before{transform:rotate(90deg)}
+h1{text-wrap:balance}
+p,li{text-wrap:pretty}
 pre{white-space:pre-wrap;word-break:break-word}
+.tooltip{position:relative}
+.tooltip::before,.tooltip::after{position:absolute;left:50%;pointer-events:none;opacity:0;transition-property:opacity,transform;transition-duration:.16s;transition-timing-function:cubic-bezier(.2,0,0,1);z-index:40}
+.tooltip::before{content:"";bottom:calc(100% + 2px);transform:translate(-50%,4px);border:5px solid transparent;border-top-color:rgba(41,37,36,.92)}
+.tooltip::after{content:attr(data-tooltip);bottom:calc(100% + 12px);width:max-content;max-width:16rem;transform:translate(-50%,4px);border-radius:10px;background:rgba(41,37,36,.92);padding:.4rem .55rem;color:white;font-size:12px;line-height:1.45;text-align:center;box-shadow:0 10px 24px rgba(41,37,36,.18)}
+.tooltip:hover::before,.tooltip:hover::after,.tooltip:focus-visible::before,.tooltip:focus-visible::after{opacity:1;transform:translate(-50%,0)}
 [data-rough-card],[data-rough-ring],[data-rough-bar],[data-rough-node],[data-rough-line],[data-rough-seal]{position:relative}
+[data-rough-card]{border-radius:18px;background-clip:padding-box}
+[data-rough-seal]{border-radius:9999px;background-clip:padding-box}
 svg.rough-layer{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible;z-index:0}
-[data-rough-card]>*:not(svg.rough-layer){position:relative;z-index:1}
+[data-rough-card]>*:not(svg.rough-layer),[data-rough-ring]>*:not(svg.rough-layer),[data-rough-node]>*:not(svg.rough-layer),[data-rough-seal]>*:not(svg.rough-layer){position:relative;z-index:1}
 </style>`;
 }
 
@@ -73,6 +81,14 @@ window.piFlowDraw = () => {
   };
   const tone = (el) => TONES[el.dataset.tone] || TONES.gray;
   const pct = (el) => Math.max(0, Math.min(100, Number(el.dataset.percent) || 0));
+  const cssRadius = (el, fallback) => {
+    const value = Number.parseFloat(getComputedStyle(el).borderTopLeftRadius);
+    return Number.isFinite(value) ? value : fallback;
+  };
+  const roundedRectPath = (x, y, w, h, r) => {
+    const radius = Math.max(0, Math.min(r, w / 2, h / 2));
+    return "M" + (x + radius) + "," + y + "H" + (x + w - radius) + "Q" + (x + w) + "," + y + " " + (x + w) + "," + (y + radius) + "V" + (y + h - radius) + "Q" + (x + w) + "," + (y + h) + " " + (x + w - radius) + "," + (y + h) + "H" + (x + radius) + "Q" + x + "," + (y + h) + " " + x + "," + (y + h - radius) + "V" + (y + radius) + "Q" + x + "," + y + " " + (x + radius) + "," + y + "Z";
+  };
   const layer = (el) => {
     el.querySelectorAll(":scope > svg.rough-layer").forEach((node) => node.remove());
     const rect = el.getBoundingClientRect();
@@ -92,7 +108,8 @@ window.piFlowDraw = () => {
   };
   each("[data-rough-card]", (el, s) => {
     const t = TONES[el.dataset.tone];
-    s.add(s.rc.rectangle(1.5, 1.5, s.w - 3, s.h - 3, { stroke: t ? t.stroke : "#D8D5CF", strokeWidth: t ? 1.4 : 1.1, roughness: 1.4, bowing: 1.2 }));
+    const inset = 1.5;
+    s.add(s.rc.path(roundedRectPath(inset, inset, s.w - inset * 2, s.h - inset * 2, cssRadius(el, 18) - inset), { stroke: t ? t.stroke : "#D8D5CF", strokeWidth: t ? 1.4 : 1.1, roughness: 1.4, bowing: 1.2 }));
   });
   each("[data-rough-ring]", (el, s) => {
     const t = tone(el), p = pct(el), c = s.w / 2, d = s.w - 14;
@@ -117,7 +134,8 @@ window.piFlowDraw = () => {
     else s.add(s.rc.line(1, s.h / 2, s.w - 1, s.h / 2, { stroke: t.stroke, strokeWidth: 1.4, roughness: 1.8, bowing: 2 }));
   });
   each("[data-rough-seal]", (el, s) => {
-    s.add(s.rc.rectangle(1, 1, s.w - 2, s.h - 2, { stroke: tone(el).stroke, strokeWidth: 1.1, roughness: 1.7, bowing: 1.8 }));
+    const inset = 1;
+    s.add(s.rc.path(roundedRectPath(inset, inset, s.w - inset * 2, s.h - inset * 2, cssRadius(el, s.h / 2) - inset), { stroke: tone(el).stroke, strokeWidth: 1.1, roughness: 1.7, bowing: 1.8 }));
   });
 };
 (() => {

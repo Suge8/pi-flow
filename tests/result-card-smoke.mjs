@@ -18,7 +18,11 @@ execFileSync(
 );
 
 try {
-	const { registerResultCardRenderer } = await import(
+	const {
+		composeResultCardLines,
+		registerResultCardRenderer,
+		resultCardElapsedLine,
+	} = await import(
 		`file://${join(srcOut, "shared/result-card.js")}?t=${Date.now()}`
 	);
 	const { summarizeReviewText } = await import(
@@ -66,6 +70,26 @@ try {
 				"问题:完成验收的系统失败/超时/启动失败被压成普通“未通过”，会继续走triggerTurn:true的原目标推进",
 			),
 		`wrap dropped characters:\n${wrapped}`,
+	);
+
+	const layoutLines = composeResultCardLines(
+		[["内容"], ["检查摘要"]],
+		[resultCardElapsedLine("1s", "zh")],
+	);
+	assert(
+		JSON.stringify(layoutLines) ===
+			JSON.stringify([
+				"内容",
+				"",
+				"---",
+				"",
+				"检查摘要",
+				"",
+				"---",
+				"",
+				"⏱ 用时：1s",
+			]),
+		`shared card layout changed: ${JSON.stringify(layoutLines)}`,
 	);
 
 	const multilineCard = render(

@@ -31,6 +31,7 @@
 		"src",
 		"prompts",
 		"scripts",
+		"assets/logo.png",
 		"config.template.json",
 		"README.md",
 		"LICENSE"

@@ -5,7 +5,6 @@ export interface UiCopy {
 	goal: string;
 	flow: string;
 	draftGoal: string;
-	draftFlow: string;
 	running: string;
 	completed: string;
 	cancelled: string;
@@ -43,8 +42,6 @@ export interface UiCopy {
 	failed: string;
 	error: string;
 	model: string;
-	roundDetails: string;
-	stepProgress: string;
 	allStepsDone: (total: number) => string;
 	flowWaitingStart: (total: number) => string;
 	flowRunningStep: (label: string) => string;
@@ -62,7 +59,6 @@ const ZH: UiCopy = {
 	goal: "目标",
 	flow: "Flow",
 	draftGoal: "单任务计划",
-	draftFlow: "Flow 计划",
 	running: "执行中",
 	completed: "已完成",
 	cancelled: "已取消",
@@ -100,8 +96,6 @@ const ZH: UiCopy = {
 	failed: "未通过",
 	error: "错误",
 	model: "模型",
-	roundDetails: "详情",
-	stepProgress: "执行进度",
 	allStepsDone: (total) => `全部 ${total} 步已完成`,
 	flowWaitingStart: (total) => `共 ${total} 步，等待启动`,
 	flowRunningStep: (label) => `正在执行${label}`,
@@ -115,7 +109,6 @@ const EN: UiCopy = {
 	goal: "Goal",
 	flow: "Flow",
 	draftGoal: "Single-goal plan",
-	draftFlow: "Flow plan",
 	running: "Running",
 	completed: "Complete",
 	cancelled: "Cancelled",
@@ -153,8 +146,6 @@ const EN: UiCopy = {
 	failed: "Failed",
 	error: "Error",
 	model: "Model",
-	roundDetails: "Details",
-	stepProgress: "Progress",
 	allStepsDone: (total) => `All ${total} steps complete`,
 	flowWaitingStart: (total) => `${total} steps, waiting to start`,
 	flowRunningStep: (label) => `Running ${label}`,

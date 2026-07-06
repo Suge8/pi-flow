@@ -6,6 +6,7 @@ import { copy } from "../shared/copy.js";
 import { clipText, renderMarkdownBlock } from "../shared/html-markdown.js";
 import { flowStepLabel } from "../shared/progress-labels.js";
 import {
+	brandHeader,
 	card,
 	debugList,
 	detailsCard,
@@ -15,7 +16,6 @@ import {
 	hero,
 	pageShell,
 	seal,
-	sectionTitle,
 	subSection,
 	TONE_TEXT,
 	type Tone,
@@ -26,6 +26,7 @@ import { checkPhases, pendingChecks } from "../shared/report-review.js";
 import { notifyReportChanged } from "../shared/report-server.js";
 import { stepList } from "../shared/report-steps.js";
 import type { FlowGoal, FlowState } from "./types.js";
+import { flowCommandId } from "./util.js";
 
 export function writeFlowHtml(dir: string, flow: FlowState) {
 	const htmlPath = join(dir, "flow.html");
@@ -57,16 +58,11 @@ export function writeFlowErrorHtml(
 	return htmlPath;
 }
 
-function flowStatus(
-	language: FlowState["language"],
-): Record<string, { label: string; tone: Tone }> {
-	const t = copy(language);
-	return {
-		draft: { label: t.draftFlow, tone: "gray" },
-		running: { label: t.running, tone: "blue" },
-		complete: { label: t.completed, tone: "green" },
-		cancelled: { label: t.cancelled, tone: "red" },
-	};
+function flowTone(status: FlowState["status"]): Tone {
+	if (status === "running") return "blue";
+	if (status === "complete") return "green";
+	if (status === "cancelled") return "red";
+	return "gray";
 }
 
 function goalStatus(
@@ -86,20 +82,16 @@ export function renderFlowHtml(dir: string, flow: FlowState) {
 		(goal) => goal.status === "complete",
 	).length;
 	const total = flow.goals.length;
-	const status = flowStatus(flow.language)[flow.status] ?? {
-		label: flow.status,
-		tone: "gray" as Tone,
-	};
+	const statusTone = flowTone(flow.status);
 	return pageShell(
 		`Flow — ${flow.title}`,
 		[
+			brandHeader(),
 			hero({
-				kindLabel: "Flow",
-				statusSeal: seal(status.label, status.tone),
 				title: flow.title,
 				subtitle: heroSubtitle(flow, total),
 				percent: total === 0 ? 0 : Math.round((complete / total) * 100),
-				tone: status.tone,
+				tone: statusTone,
 				caption: t.stepsDoneCaption(complete, total),
 				commands: nextCommands(flow),
 			}),
@@ -139,7 +131,7 @@ function stepperCard(flow: FlowState) {
 		parts.push(stepNode(goal, flow, currentIndexes));
 	});
 	return card(
-		`${sectionTitle(copy(flow.language).stepProgress)}<div class="mt-4 flex items-start overflow-x-auto pb-1">${parts.join("")}</div>`,
+		`<div class="flex items-start overflow-x-auto pb-1">${parts.join("")}</div>`,
 	);
 }
 
@@ -148,10 +140,7 @@ function stepperLineTone(
 	index: number,
 	currentIndexes: Set<number>,
 ): Tone {
-	if (
-		hasParallelBatch(flow) &&
-		isCurrentGoal(flow.goals[index], currentIndexes)
-	)
+	if (hasParallelRun(flow) && isCurrentGoal(flow.goals[index], currentIndexes))
 		return "blue";
 	return flow.goals[index - 1].status === "complete" ? "green" : "gray";
 }
@@ -179,7 +168,7 @@ function goalNode(goal: FlowGoal, tone: Tone) {
 }
 
 function goalGlyph(goal: FlowGoal) {
-	if (goal.status === "complete") return reportIcon("check-circle", "h-5 w-5");
+	if (goal.status === "complete") return reportIcon("check", "h-5 w-5");
 	if (goal.role === "final_acceptance") return reportIcon("flag", "h-5 w-5");
 	return String(goal.index + 1);
 }
@@ -190,14 +179,14 @@ function goalTone(goal: FlowGoal, language: FlowState["language"]): Tone {
 
 function currentFlowGoalIndexes(flow: FlowState) {
 	return new Set(
-		hasParallelBatch(flow) ? flow.parallelBatch : [flow.currentGoal],
+		hasParallelRun(flow) ? flow.parallelRun.goalIndexes : [flow.currentGoal],
 	);
 }
 
-function hasParallelBatch(
+function hasParallelRun(
 	flow: FlowState,
-): flow is FlowState & { parallelBatch: number[] } {
-	return Array.isArray(flow.parallelBatch) && flow.parallelBatch.length > 0;
+): flow is FlowState & { parallelRun: NonNullable<FlowState["parallelRun"]> } {
+	return (flow.parallelRun?.goalIndexes.length ?? 0) > 0;
 }
 
 function isCurrentGoal(goal: FlowGoal, currentIndexes: Set<number>) {
@@ -226,7 +215,7 @@ ${goalNode(goal, status.tone)}
 <h2 class="truncate text-base font-semibold text-stone-900">${escapeHtml(goal.title)}</h2>
 </div>
 </div>
-${seal(status.label, status.tone)}
+${goal.status === "complete" ? "" : seal(status.label, status.tone)}
 </div>
 <div class="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px] xl:items-start">
 <div class="min-w-0">
@@ -265,7 +254,7 @@ function goalReviewBlock(
 	const chips = deviationChips(goal, language, finalAcceptance);
 	if (!checks)
 		return `<div data-rough-card data-tone="green" class="bg-emerald-50/50 p-4"><div class="flex flex-wrap items-center gap-2"><span${goal.result.summary ? ` title="${escapeHtml(clipText(goal.result.summary, 200))}"` : ""} class="inline-flex items-center gap-1 text-xs font-medium text-emerald-800">${reportIcon("check-circle", "h-4 w-4")} ${language === "en" ? "Checks passed" : "检查通过"}</span>${chips}</div></div>`;
-	return `<div data-rough-card class="bg-stone-50/50 p-4"><div class="grid gap-5">${checkPhases(checks, `g${goal.index + 1}`, language)}</div>${chips ? `<div class="mt-3 flex flex-wrap items-center gap-3">${chips}</div>` : ""}</div>`;
+	return `<div class="space-y-3">${checkPhases(checks, `g${goal.index + 1}`, language)}${chips ? `<div class="flex flex-wrap items-center gap-3">${chips}</div>` : ""}</div>`;
 }
 
 function deviationChips(
@@ -289,7 +278,15 @@ function deviationChips(
 function handoffBlock(goal: FlowGoal, language: FlowState["language"]) {
 	if (goal.status !== "complete" || !goal.result.handoff) return "";
 	const label = language === "en" ? "Handoff to next step" : "交接给下一步";
-	return `<details data-key="g${goal.index}-handoff" class="mt-3"><summary class="text-xs font-medium text-stone-500">${label}</summary>${renderMarkdownBlock(clipText(goal.result.handoff, 1200), "mt-2 space-y-2 text-sm leading-6 text-stone-600")}</details>`;
+	return `<details data-key="g${goal.index}-handoff" class="mt-3">${labeledSummary(label, "arrow-right")}${renderMarkdownBlock(clipText(goal.result.handoff, 1200), "mt-2 space-y-2 text-sm leading-6 text-stone-600")}</details>`;
+}
+
+function labeledSummary(
+	label: string,
+	icon: Parameters<typeof reportIcon>[0],
+	className = "text-stone-500",
+) {
+	return `<summary class="inline-flex items-center gap-1.5 rounded-full bg-white/70 px-2.5 py-1 text-xs font-medium ${className} shadow-[0_0_0_1px_rgba(41,37,36,0.08),0_6px_14px_rgba(41,37,36,0.05)] transition-[color,background-color,box-shadow,transform] duration-150 hover:bg-stone-50 hover:text-stone-900 hover:shadow-[0_0_0_1px_rgba(41,37,36,0.12),0_8px_18px_rgba(41,37,36,0.08)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200 active:scale-[0.96]">${reportIcon(icon, "h-3.5 w-3.5")}<span>${escapeHtml(label)}</span></summary>`;
 }
 
 function goalDetails(
@@ -318,7 +315,7 @@ function goalDetails(
 	]
 		.filter(Boolean)
 		.join("");
-	return `<details data-key="g${goal.index}-detail" class="mt-3"><summary class="text-xs font-medium text-stone-500">${t.details}</summary><div class="mt-3 space-y-4">${body}</div></details>`;
+	return `<details data-key="g${goal.index}-detail" class="mt-3">${labeledSummary(t.fullDetails, "list-checks")}<div class="mt-3 space-y-4">${body}</div></details>`;
 }
 
 function completionCard(flow: FlowState) {
@@ -326,7 +323,7 @@ function completionCard(flow: FlowState) {
 	const deviation = flow.goals.some((goal) => goal.result.criteriaChanged);
 	const finalAcceptance = hasFinalAcceptance(flow);
 	const handoff = finalGoal?.result.handoff
-		? `<details data-key="final-handoff" class="mt-3"><summary class="text-xs font-medium text-emerald-800">${flow.language === "en" ? "Final handoff" : "最终交接"}</summary>${renderMarkdownBlock(clipText(finalGoal.result.handoff, 1500), "mt-2 space-y-2 text-sm leading-6 text-emerald-900")}</details>`
+		? `<details data-key="final-handoff" class="mt-3">${labeledSummary(flow.language === "en" ? "Final handoff" : "最终交接", "arrow-right", "text-emerald-800")}${renderMarkdownBlock(clipText(finalGoal.result.handoff, 1500), "mt-2 space-y-2 text-sm leading-6 text-emerald-900")}</details>`
 		: "";
 	return card(
 		`<p class="inline-flex items-center gap-2 text-base font-semibold text-emerald-900">${reportIcon("seal-check", "h-5 w-5")} ${flow.language === "en" ? "All complete" : "全部完成"}</p>
@@ -413,8 +410,10 @@ function sourceTypeLabel(type: string, language: FlowState["language"]) {
 }
 
 function nextCommands(flow: FlowState) {
+	const id = flowCommandId(flow.id);
 	if (flow.status === "draft")
-		return [`/flow start ${flow.id}`, `/flow status ${flow.id}`];
-	if (flow.status === "running") return ["/flow continue", "/flow cancel"];
-	return [`/flow status ${flow.id}`];
+		return [`/flow start ${id}`, `/flow status ${id}`];
+	if (flow.status === "running")
+		return [`/flow continue ${id}`, `/flow cancel ${id}`];
+	return [`/flow status ${id}`];
 }

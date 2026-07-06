@@ -10,13 +10,7 @@ import { type Language, reviewToggles } from "./config.js";
 import { copy } from "./copy.js";
 import { renderMarkdownBlock } from "./html-markdown.js";
 import { roundLabel } from "./progress-labels.js";
-import {
-	escapeHtml,
-	seal,
-	sectionTitle,
-	TONE_TEXT,
-	type Tone,
-} from "./report-blocks.js";
+import { escapeHtml, seal, TONE_TEXT, type Tone } from "./report-blocks.js";
 import { reportIcon } from "./report-icons.js";
 import { formatReviewResultLines } from "./review-format.js";
 
@@ -65,24 +59,75 @@ export function checkPhases(
 	language: Language = "zh",
 ) {
 	const t = copy(language);
-	return `${checkPhase(t.completionAcceptance, t.completionAcceptanceHint, checks.acceptance, `${keyPrefix}-acceptance`, language)}${checkPhase(t.qualityCheck, t.qualityCheckHint, checks.quality, `${keyPrefix}-quality`, language)}`;
+	return [
+		checkPhase({
+			name: t.completionAcceptance,
+			hint: t.completionAcceptanceHint,
+			phase: checks.acceptance,
+			keyPrefix: `${keyPrefix}-acceptance`,
+			language,
+			icon: "target",
+			accent: "blue",
+		}),
+		checkPhase({
+			name: t.qualityCheck,
+			hint: t.qualityCheckHint,
+			phase: checks.quality,
+			keyPrefix: `${keyPrefix}-quality`,
+			language,
+			icon: "shield-check",
+			accent: "green",
+		}),
+	].join("");
 }
 
-export function checkPhase(
-	name: string,
-	hint: string,
-	phase: CheckPhase,
-	keyPrefix: string,
-	language: Language = "zh",
-) {
+function checkPhase({
+	name,
+	hint,
+	phase,
+	keyPrefix,
+	language,
+	icon,
+	accent,
+}: {
+	name: string;
+	hint: string;
+	phase: CheckPhase;
+	keyPrefix: string;
+	language: Language;
+	icon: Parameters<typeof reportIcon>[0];
+	accent: Tone;
+}) {
 	const state = phaseState(phase, language);
 	const chips = (phase.active ?? []).map(modelChip).join("");
 	const history = phaseHistory(phase, keyPrefix, language);
-	return `<div class="space-y-3">
-<div class="flex items-start justify-between gap-2"><div>${sectionTitle(name)}<p class="mt-0.5 text-xs text-stone-400">${hint}</p></div>${seal(state.label, state.tone)}</div>
-${chips ? `<div class="flex flex-wrap gap-1.5">${chips}</div>` : ""}
-${history}
+	const tone = state.tone === "gray" ? undefined : state.tone;
+	return `<section data-rough-card${tone ? ` data-tone="${tone}"` : ""} class="${checkCardClass(state.tone)}">
+<div class="flex items-start justify-between gap-3">${checkTitle(name, hint, icon, phase.enabled && state.tone === "gray" ? accent : state.tone)}${seal(state.label, state.tone)}</div>
+${chips ? `<div class="mt-3 flex flex-wrap gap-1.5">${chips}</div>` : ""}
+${history ? `<div class="mt-3">${history}</div>` : ""}
+</section>`;
+}
+
+function checkTitle(
+	name: string,
+	hint: string,
+	icon: Parameters<typeof reportIcon>[0],
+	tone: Tone,
+) {
+	return `<div class="inline-flex min-w-0 items-center gap-2">
+<span class="${TONE_TEXT[tone]}">${reportIcon(icon, "h-5 w-5")}</span>
+<p class="text-base font-semibold leading-6 text-stone-900">${escapeHtml(name)}</p>
+<span tabindex="0" aria-label="${escapeHtml(hint)}" data-tooltip="${escapeHtml(hint)}" class="tooltip inline-grid h-4 w-4 shrink-0 cursor-help place-items-center rounded-full bg-stone-100 text-[10px] font-semibold text-stone-500 shadow-[inset_0_0_0_1px_rgba(41,37,36,0.08)] transition-[color,background-color,box-shadow] duration-150 hover:bg-white hover:text-stone-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200">?</span>
 </div>`;
+}
+
+function checkCardClass(tone: Tone) {
+	if (tone === "green") return "bg-emerald-50/60 p-4";
+	if (tone === "blue") return "bg-sky-50/60 p-4";
+	if (tone === "amber") return "bg-amber-50/60 p-4";
+	if (tone === "red") return "bg-rose-50/60 p-4";
+	return "bg-white/80 p-4";
 }
 
 export function phaseState(
@@ -95,7 +140,7 @@ export function phaseState(
 	const t = copy(language);
 	if (!phase.enabled) return { label: t.disabled, tone: "gray" };
 	if (phase.active?.some((item) => item.status === "running"))
-		return { label: t.checking, tone: "amber" };
+		return { label: t.checking, tone: "blue" };
 	const last = phase.rounds.at(-1);
 	if (!last) return { label: t.waiting, tone: "gray" };
 	if (last.result === "passed") return { label: t.passed, tone: "green" };
@@ -121,7 +166,7 @@ const ROUND_TONE: Record<CheckResult, Tone> = {
 	error: "amber",
 };
 const ROUND_ICON: Record<CheckResult, string> = {
-	passed: reportIcon("check-circle", "h-3 w-3"),
+	passed: reportIcon("check", "h-3 w-3"),
 	failed: reportIcon("x-circle", "h-3 w-3"),
 	error: reportIcon("warning-circle", "h-3 w-3"),
 };
@@ -145,7 +190,7 @@ function roundItem(
 	const title = roundHistoryTitle(round, total, language);
 	const summary = clipText(round.summary, 160);
 	const details = roundDetails(round, keyPrefix, language);
-	return `<li class="flex gap-2 text-xs leading-5 text-stone-600"><span data-rough-node data-tone="${tone}"${round.result === "passed" ? ' data-fill="solid"' : ""} class="mt-0.5 grid h-4 w-4 shrink-0 place-items-center ${TONE_TEXT[tone]}">${ROUND_ICON[round.result]}</span><div class="min-w-0"><span><span class="font-medium ${TONE_TEXT[tone]}">${escapeHtml(title)}</span>${summary ? ` · ${escapeHtml(summary)}` : ""}</span>${details}</div></li>`;
+	return `<li class="flex gap-2 text-xs leading-5 text-stone-600"><span data-rough-node data-tone="${tone}" class="mt-0.5 grid h-4 w-4 shrink-0 place-items-center ${TONE_TEXT[tone]}">${ROUND_ICON[round.result]}</span><div class="min-w-0"><span><span class="font-medium ${TONE_TEXT[tone]}">${escapeHtml(title)}</span>${summary ? ` · ${escapeHtml(summary)}` : ""}</span>${details}</div></li>`;
 }
 
 function roundHistoryTitle(
@@ -170,7 +215,22 @@ function roundDetails(
 	if (!details) return "";
 	const markdown = formatReviewResultLines(details).join("\n");
 	const key = `${keyPrefix}-round-${round.round}`;
-	return `<details data-key="${escapeHtml(key)}" class="mt-1"><summary class="text-xs font-medium text-stone-500">${copy(language).roundDetails}</summary>${renderMarkdownBlock(clipText(markdown, 2400), "mt-2 space-y-2 text-xs leading-5 text-stone-600")}</details>`;
+	return `<details data-key="${escapeHtml(key)}" class="mt-1">${roundDetailsSummary(round.result, language)}${renderMarkdownBlock(clipText(markdown, 2400), "mt-2 space-y-2 text-xs leading-5 text-stone-600")}</details>`;
+}
+
+function roundDetailsSummary(result: CheckResult, language: Language) {
+	return `<summary class="inline-flex items-center gap-1 rounded-full bg-white/75 px-2.5 py-1 text-[11px] font-medium text-stone-500 shadow-[0_0_0_1px_rgba(41,37,36,0.08),0_6px_14px_rgba(41,37,36,0.05)] transition-[color,background-color,box-shadow,transform] duration-150 hover:bg-stone-50 hover:text-stone-900 hover:shadow-[0_0_0_1px_rgba(41,37,36,0.12),0_8px_18px_rgba(41,37,36,0.08)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200 active:scale-[0.96]">${reportIcon("dots-three", "h-3.5 w-3.5")}<span>${escapeHtml(roundDetailsLabel(result, language))}</span></summary>`;
+}
+
+function roundDetailsLabel(result: CheckResult, language: Language) {
+	if (language === "en") {
+		if (result === "failed") return "View findings";
+		if (result === "error") return "View error";
+		return "View output";
+	}
+	if (result === "failed") return "查看未通过原因";
+	if (result === "error") return "查看错误信息";
+	return "查看输出";
 }
 
 function resultLabel(result: CheckResult, language: Language) {
