@@ -72,7 +72,7 @@ export function validateFlowDir(dir: string, language?: Language) {
 }
 
 export function validateFlowShape(flow: FlowState, errors: string[]) {
-	if (flow.schemaVersion !== 6) errors.push("schemaVersion 必须为 6");
+	if (flow.schemaVersion !== 7) errors.push("schemaVersion 必须为 7");
 	validateLanguage(flow.language, errors);
 	if (!FLOW_ID_PATTERN.test(String(flow.id ?? "")))
 		errors.push("id 必须匹配 F1-xxx");
@@ -88,8 +88,8 @@ export function validateFlowShape(flow: FlowState, errors: string[]) {
 		errors.push("repairAttempts 必须是整数");
 	validateSource(flow.source, errors);
 	validateErrorsArray(flow.errors, errors);
-	validateParallelBatch(
-		flow.parallelBatch,
+	validateParallelRun(
+		flow.parallelRun,
 		Array.isArray(flow.goals) ? flow.goals.length : undefined,
 		errors,
 	);
@@ -222,17 +222,29 @@ function validateGoalShape(
 	validateChecks(goal.checks, errors, `goals[${expectedIndex}].checks`);
 }
 
-function validateParallelBatch(
+function validateParallelRun(
 	value: unknown,
 	goalCount: number | undefined,
 	errors: string[],
 ) {
-	if (value === undefined || value === null) return;
-	if (!Array.isArray(value)) {
-		errors.push("parallelBatch 必须是数组或 null");
+	if (value === null) return;
+	if (!isRecord(value)) {
+		errors.push("parallelRun 必须是对象或 null");
 		return;
 	}
-	validateGoalIndexArray(value, "parallelBatch", goalCount, errors);
+	if (!nonEmpty(value.id)) errors.push("parallelRun.id 必须是非空字符串");
+	if (!Array.isArray(value.goalIndexes) || value.goalIndexes.length === 0) {
+		errors.push("parallelRun.goalIndexes 必须是非空数组");
+	} else {
+		validateGoalIndexArray(
+			value.goalIndexes,
+			"parallelRun.goalIndexes",
+			goalCount,
+			errors,
+		);
+	}
+	if (!Number.isFinite(value.startedAt))
+		errors.push("parallelRun.startedAt 必须是时间戳");
 }
 
 function validateDependsOn(

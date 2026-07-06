@@ -11,8 +11,8 @@ import {
 } from "../shared/activity-frame.js";
 import type { Language } from "../shared/config.js";
 import {
+	buildAlignmentFollowUpPrompt,
 	buildAlignmentPrompt,
-	extractAlignedRequest,
 	type GenerationStartOptions,
 	generationAlignmentActivityCopy,
 	generationAlignmentSummary,
@@ -23,7 +23,6 @@ import {
 } from "../shared/generation-alignment.js";
 import { sendAlignmentStartCard } from "../shared/generation-card.js";
 import {
-	alignedRequestForGeneration,
 	appendAlignmentAnswer,
 	appendGenerationClarification,
 	finishPendingGeneration,
@@ -54,6 +53,7 @@ import {
 	writeFlow,
 } from "./store.js";
 import type { FlowLocation, FlowSource, FlowSourceType } from "./types.js";
+import { flowCommandId } from "./util.js";
 import { validateFlowDir } from "./validator.js";
 
 interface PendingGeneration extends PendingGenerationBase {
@@ -302,19 +302,11 @@ function waitForAlignment(
 	pending: PendingGeneration,
 	assistantText: string,
 ) {
-	if (hasReadyToDraft(assistantText)) {
-		const alignedRequest = extractAlignedRequest(assistantText);
-		if (alignedRequest) {
-			pending.stage = "awaiting_final_confirm";
-			pending.alignedRequest = alignedRequest;
-			return setGoalActivityBox(ctx, flowPendingBox(pending));
-		}
-		ctx.ui.notify(
-			"对齐摘要缺失；请继续对齐，直到 AI 输出 <aligned-request>。",
-			"warning",
-		);
-	}
 	rememberAlignmentQuestion(pending, assistantText);
+	if (hasReadyToDraft(assistantText)) {
+		pending.stage = "awaiting_final_confirm";
+		return setGoalActivityBox(ctx, flowPendingBox(pending));
+	}
 	pending.stage = "awaiting_alignment_input";
 	setGoalActivityBox(ctx, flowPendingBox(pending));
 }
@@ -379,7 +371,6 @@ function confirmFlowDraft(pending: PendingGeneration): FlowClarificationAction {
 			originalRequest: pending.originalRequest,
 			sourceType: pending.sourceType,
 			sourcePath: pending.sourcePath,
-			alignedRequest: alignedRequestForGeneration(pending),
 			language: pending.language,
 		}),
 	};
@@ -395,13 +386,8 @@ function continueFlowAlignment(
 		kind: "prompt",
 		activityBox: flowPendingBox(pending),
 		showUserInput: true,
-		prompt: buildAlignmentPrompt({
-			kind: "flow",
+		prompt: buildAlignmentFollowUpPrompt({
 			language: pending.language,
-			originalRequest: pending.originalRequest,
-			source: sourceLabel(pending),
-			alignmentTurns: pending.alignmentTurns,
-			alignedRequest: pending.alignedRequest,
 		}),
 	};
 }
@@ -421,7 +407,6 @@ function continueFlowGeneration(
 			originalRequest: pending.originalRequest,
 			sourceType: pending.sourceType,
 			sourcePath: pending.sourcePath,
-			alignedRequest: pending.alignedRequest,
 			language: pending.language,
 		}),
 	};
@@ -564,20 +549,21 @@ function generatedSummary(flow: {
 	language: Language;
 	goals: { index: number; title: string }[];
 }) {
+	const id = flowCommandId(flow.id);
 	if (flow.language === "en")
 		return [
 			`Flow plan generated: ${flow.id}`,
 			...flow.goals.map(
 				(goal) => `- ${flowStepLabel(goal.index, goal.title, flow.language)}`,
 			),
-			`Next: /flow start ${flow.id}`,
+			`Next: /flow start ${id}`,
 		].join("\n");
 	return [
 		`Flow 计划已生成：${flow.id}`,
 		...flow.goals.map(
 			(goal) => `- ${flowStepLabel(goal.index, goal.title, flow.language)}`,
 		),
-		`下一步：/flow start ${flow.id}`,
+		`下一步：/flow start ${id}`,
 	].join("\n");
 }
 

@@ -27,14 +27,14 @@ Rules:
 - Each Goal's `Success Criteria` must be ordinary bullets, not checkboxes; write completion status and evidence in `Verification` / `Handoff`, not in `Success Criteria`.
 - Each Goal's `Steps` and `Verification` must use checkboxes, initially only `[ ]`; `Verification` needs an objectively verifiable command or explicit manual verification step.
   (e.g. `- [ ] \`npm test -- --testPathPattern=auth\` exit 0`; avoid `- [ ] check that the feature works` which cannot be objectively judged)
-- `Steps` are runtime todo items, not coarse phases. Prefer 3–12 small items per Goal; smaller tasks may use fewer. Each item must be independently actionable and updatable.
+- `Steps` are runtime todo items, not a mechanical list of tiny tasks or vague phases. Prefer 2–10 user-understandable milestones per Goal; smaller tasks may use fewer. Each item must be independently actionable, updatable when complete, and able to provide completion evidence in `Verification` / `Handoff`.
 - Write each Step as `- [ ] **Short title**: technical detail`; short title <= 20 Chinese chars or concise English, user-readable; detail can be technical.
-  (e.g. `- [ ] **Add verifyToken**: implement verifyToken(token) in auth.ts, handle TokenExpiredError and invalid signature, return parsed payload`)
+  (e.g. `- [ ] **Token verification works**: implement verifyToken(token) in auth.ts, handle TokenExpiredError and invalid signature, return parsed payload`)
 - Include the `Handoff` heading when generating; content may be empty.
 - `dependsOn` is an optional field on each `goals` item. Its value is an array of 0-based indexes of earlier Goals; when omitted, it defaults to depending on the previous Goal; write `[]` when there are explicitly no prerequisites.
 - `writeScope` is an optional field on each `goals` item. Its value is an array of module/directory-level globs (e.g. `src/api/**`); do not list exact files. When omitted, the write range is unknown and the scheduler will conservatively serialize it.
 - Chinese titles use `G<N>-goal.md`; English titles may slug, e.g. `G1-login-ui.md`.
-- `flow.semantic.json` must be a JSON object with only top-level `title` and `goals`; do not write `source`, `schemaVersion`, `status`, `currentGoal`, `parallelBatch`, `checks`, or other runtime fields.
+- `flow.semantic.json` must be a JSON object with only top-level `title` and `goals`; do not write `source`, `schemaVersion`, `status`, `currentGoal`, `parallelRun`, `checks`, or other runtime fields.
 - The `goals` array order is the execution order. Each item only needs `title`, `role`, `file`, and optional `dependsOn` / `writeScope`. Do not write `index`; the extension recalculates 0-based indexes from order.
 - The only Goal in a single-step Flow and each non-final Goal in a multi-step Flow use role `normal`; the last Goal in a multi-step Flow uses role `final_acceptance`, and `final_acceptance` may appear only once; do not use `implementation`.
 - Each `file` must be a relative path inside the current Flow directory, and the referenced Goal markdown file must exist.
@@ -46,7 +46,7 @@ Rules:
   - [ ] **Doc close-out**: check docs / AGENTS.md for affected module descriptions; update if needed
   - [ ] **Confirm no loose ends**: no open issues, no unresolved TODO/FIXME
 - After writing `flow.semantic.json` and all Goal markdown files, stop. The extension will assemble the complete Flow state and run structural validation (`{{validateCommand}} <Flow directory>`). Do not replace real tool output with "self-check", and do not manually simulate extension validation.
-- Do not do deep alignment now; generate directly from current context, aligned summary, and user input.
+- Do not do deep alignment now; generate directly from current context and user input.
 - Ask one blocking question only when the target is missing, requirements conflict, or an irreversible decision cannot be reasonably assumed. End the question with `<!-- pi-flow:need-input -->` on its own line.
 - If a question can be answered by reading the codebase, docs, or existing `.flow` files, inspect them instead of asking the user.
 

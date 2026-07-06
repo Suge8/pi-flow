@@ -27,14 +27,14 @@
 - 每个 Goal 的 `Success Criteria` 必须是普通 bullet，禁止 checkbox；完成状态和证据写入 `Verification` / `Handoff`，不要写入 `Success Criteria`。
 - 每个 Goal 的 `Steps` 和 `Verification` 都必须使用 checkbox，初始只允许 `[ ]`；`Verification` 必须有可客观判断的验证命令或明确人工验证步骤。
   （例：`- [ ] \`npm test -- --testPathPattern=auth\` exit 0`；避免 `- [ ] 检查功能是否正常` 这种无法客观判断的步骤）
-- `Steps` 是运行时 Todo，不是粗略阶段；每个 Goal 推荐 3–12 个小步骤，小任务可少于 3 个，超过 12 个优先拆 Goal 或合并过细步骤。每项必须可单独完成、可立刻更新状态，避免“实现功能 / 完成开发 / 最终检查”这种只能最后才完成的大步骤。
+- `Steps` 是运行时 Todo，不是流水账小任务或粗略阶段；每个 Goal 推荐 2–10 个用户可理解的里程碑，小任务可少于 2 个，超过 10 个优先拆 Goal 或合并过细步骤。每项必须可单独完成、完成后能在 `Verification` / `Handoff` 给出证据并更新状态，避免“实现功能 / 完成开发 / 最终检查”这种只能最后才完成的大步骤。
 - `Steps` 每项写成 `- [ ] **短标题**：技术细节`：短标题 ≤20 字、用户视角人话；技术细节给执行 AI，可精确技术化。HTML 报告把标题直接展示给用户、细节折叠。
-  （例：`- [ ] **添加 verifyToken**：在 auth.ts 实现 verifyToken(token)，处理过期和签名错误，返回解析后的 payload`）
+  （例：`- [ ] **登录令牌可验证**：在 auth.ts 实现 verifyToken(token)，处理过期和签名错误，返回解析后的 payload`）
 - 生成时 `Handoff` 标题必须有，内容可空。
 - `dependsOn` 是每个 `goals` 项的可选字段，值为先序 Goal 的 0-based index 数组；不写时默认依赖前一个 Goal；明确无前置依赖时写 `[]`。
 - `writeScope` 是每个 `goals` 项的可选字段，值为模块/目录级 glob 数组（如 `src/api/**`），不要写具体文件；不写视为未知写入范围，调度器会保守串行化。
 - 中文标题 Goal 文件用 `G<N>-goal.md`；英文标题可 slug，如 `G1-login-ui.md`。
-- `flow.semantic.json` 必须是 JSON 对象，顶层字段只需要 `title` 和 `goals`；不要写 `source`、`schemaVersion`、`status`、`currentGoal`、`parallelBatch`、`checks` 等运行态字段。
+- `flow.semantic.json` 必须是 JSON 对象，顶层字段只需要 `title` 和 `goals`；不要写 `source`、`schemaVersion`、`status`、`currentGoal`、`parallelRun`、`checks` 等运行态字段。
 - `goals` 数组顺序就是执行顺序；每项只写 `title`、`role`、`file`，以及可选的 `dependsOn` / `writeScope`。不要写 `index`，插件会按顺序重算 0-based index。
 - 单步 Flow 的唯一 Goal、以及多步 Flow 的每个非最终 Goal，`role` 必须是 `normal`；多步 Flow 最后一个 Goal 的 `role` 必须是 `final_acceptance`，且 `final_acceptance` 只能出现一次；禁止使用 `implementation`。
 - 每个 `file` 必须是当前 Flow 目录内的相对路径，并且对应的 Goal markdown 文件必须存在。
@@ -46,7 +46,7 @@
   - [ ] **文档收口**：检查 docs / AGENTS.md 受影响的模块说明，有则更新
   - [ ] **确认无遗留**：无未关闭问题、无 TODO/FIXME 未解决
 - 写完 `flow.semantic.json` 和所有 Goal markdown 后即可结束；插件会组装完整 Flow 状态并运行结构校验（`{{validateCommand}} <Flow目录>`）。不要用“已自检”替代真实工具输出，也不要手动模拟插件校验结果。
-- 不要做生成前深度对齐；基于当前上下文、对齐摘要和用户输入直接生成草稿。
+- 不要做生成前深度对齐；基于当前上下文和用户输入直接生成草稿。
 - 只有目标缺失、需求互斥、不可逆决策无法合理假设，导致不能生成可执行草稿时，才问一个阻塞问题；问题末尾单独输出 `<!-- pi-flow:need-input -->`。
 - 如果问题能通过阅读代码库、文档或现有 `.flow` 文件回答，就自己查，不要问用户。
 

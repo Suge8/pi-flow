@@ -39,7 +39,7 @@ function validateFlow(root) {
 	const errors = [];
 	const flow = readArtifact(join(root, "flow.json"), "flow.json", errors);
 	if (!flow) return errors;
-	if (flow.schemaVersion !== 6) errors.push("schemaVersion 必须为 6");
+	if (flow.schemaVersion !== 7) errors.push("schemaVersion 必须为 7");
 	validateLanguage(flow.language, errors);
 	if (!FLOW_ID_PATTERN.test(String(flow.id ?? "")))
 		errors.push("id 必须匹配 F1-xxx");
@@ -62,8 +62,8 @@ function validateFlow(root) {
 		errors.push("repairAttempts 必须是整数");
 	validateSource(flow.source, errors);
 	validateStringArray(flow.errors, "errors", errors);
-	validateParallelBatch(
-		flow.parallelBatch,
+	validateParallelRun(
+		flow.parallelRun,
 		Array.isArray(flow.goals) ? flow.goals.length : undefined,
 		errors,
 	);
@@ -159,13 +159,25 @@ function validateFlowGoalShape(goal, index, errors) {
 	validateChecks(goal.checks, errors, `goals[${index}].checks`);
 }
 
-function validateParallelBatch(value, goalCount, errors) {
-	if (value === undefined || value === null) return;
-	if (!Array.isArray(value)) {
-		errors.push("parallelBatch 必须是数组或 null");
+function validateParallelRun(value, goalCount, errors) {
+	if (value === null) return;
+	if (!isRecord(value)) {
+		errors.push("parallelRun 必须是对象或 null");
 		return;
 	}
-	validateGoalIndexArray(value, "parallelBatch", goalCount, errors);
+	if (!nonEmpty(value.id)) errors.push("parallelRun.id 必须是非空字符串");
+	if (!Array.isArray(value.goalIndexes) || value.goalIndexes.length === 0) {
+		errors.push("parallelRun.goalIndexes 必须是非空数组");
+	} else {
+		validateGoalIndexArray(
+			value.goalIndexes,
+			"parallelRun.goalIndexes",
+			goalCount,
+			errors,
+		);
+	}
+	if (!Number.isFinite(value.startedAt))
+		errors.push("parallelRun.startedAt 必须是时间戳");
 }
 
 function validateDependsOn(value, goalIndex, errors) {

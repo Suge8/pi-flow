@@ -341,6 +341,7 @@ async function flowBuilderScenario() {
 		"updatedAt",
 		"startedAt",
 		"currentGoal",
+		"parallelRun",
 		"repairAttempts",
 		"errors",
 		"goals",
@@ -484,7 +485,7 @@ function runValidateDraft(dir) {
 
 function baseFlow(id, goals, overrides = {}) {
 	return {
-		schemaVersion: 6,
+		schemaVersion: 7,
 		language: "zh",
 		id,
 		title: "Flow CLI",
@@ -494,6 +495,7 @@ function baseFlow(id, goals, overrides = {}) {
 		updatedAt: Date.now(),
 		startedAt: null,
 		currentGoal: 0,
+		parallelRun: null,
 		repairAttempts: 0,
 		errors: [],
 		goals,
