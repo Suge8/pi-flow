@@ -20,6 +20,15 @@ export function flowStepLabel(
 		: `第 ${index + 1} 步 · ${title}`;
 }
 
+export function flowGoalDisplayLabel(
+	index: number,
+	title: string,
+	totalGoals: number,
+	language: Language = "zh",
+) {
+	return totalGoals === 1 ? title : flowStepLabel(index, title, language);
+}
+
 export function roundLabel(
 	round: number,
 	language: Language = runtimeLanguage(),

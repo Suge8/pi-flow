@@ -21,7 +21,7 @@ export function scopesOverlap(a: string[], b: string[]) {
 function hasActiveBatch(flow: FlowState) {
 	return (
 		flow.goals.some((goal) => goal.status === "running") ||
-		(flow.parallelBatch?.length ?? 0) > 0
+		(flow.parallelRun?.goalIndexes.length ?? 0) > 0
 	);
 }
 

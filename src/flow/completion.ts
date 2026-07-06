@@ -56,6 +56,8 @@ function isGoalCompletionFact(value: unknown): value is GoalCompletionFact {
 		(typeof value.sessionFile === "string" || value.sessionFile === null) &&
 		(value.checks === undefined ||
 			value.checks === null ||
-			isRecord(value.checks))
+			isRecord(value.checks)) &&
+		(value.parallelRunId === undefined ||
+			typeof value.parallelRunId === "string")
 	);
 }

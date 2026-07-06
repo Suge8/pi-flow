@@ -5,7 +5,6 @@ import type { Language } from "./config.js";
 import {
 	type AlignmentTurn,
 	extractAlignmentQuestion,
-	formatAlignmentTurns,
 	type GenerationStage,
 } from "./generation-alignment.js";
 import { currentSessionFile } from "./session.js";
@@ -22,7 +21,6 @@ export interface PendingGenerationBase {
 	stage: GenerationStage;
 	awaitingClarification: boolean;
 	lastClarification?: string;
-	alignedRequest?: string;
 	alignmentTurns?: AlignmentTurn[];
 	lastAlignmentQuestion?: string;
 	autoStart?: boolean;
@@ -69,20 +67,14 @@ export function appendAlignmentAnswer(
 	pending: PendingGenerationBase,
 	answer: string,
 ) {
-	const question = pending.lastAlignmentQuestion ?? "（上一轮问题未捕获）";
+	const question =
+		pending.lastAlignmentQuestion ??
+		(pending.language === "en" ? "User addition" : "用户补充");
 	pending.alignmentTurns = [
 		...(pending.alignmentTurns ?? []),
 		{ question, answer },
-	].slice(-8);
+	];
 	pending.lastAlignmentQuestion = undefined;
-}
-
-export function alignedRequestForGeneration(pending: PendingGenerationBase) {
-	const aligned = pending.alignedRequest?.trim();
-	if (aligned) return aligned;
-	if (!pending.alignmentTurns?.length) return undefined;
-	const separator = pending.language === "en" ? ":" : "：";
-	return `${pending.language === "en" ? "Aligned Q&A" : "已对齐问答"}${separator}\n${formatAlignmentTurns(pending.alignmentTurns)}`;
 }
 
 export function generationDraftBox(

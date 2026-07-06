@@ -7,10 +7,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { auditGoalCompletion, type GoalAuditResult } from "../auditor.js";
 import { writeFlowHtml } from "../flow/html.js";
-import { flowOwnerForSession } from "../flow/ownership.js";
+import { flowLockBusyMessage, withFlowLockSync } from "../flow/lock.js";
+import { currentSessionFile, flowOwnerForSession } from "../flow/ownership.js";
 import { rememberFlowContext } from "../flow/runtime.js";
-import { currentGoal, writeFlow } from "../flow/store.js";
-import { requireFlowStartedAt } from "../flow/util.js";
+import { currentGoal, readFlow, writeFlow } from "../flow/store.js";
+import { flowCommandId, requireFlowStartedAt } from "../flow/util.js";
 import {
 	isGoalScopedReviewActive,
 	isReviewLoopActive,
@@ -42,6 +43,7 @@ import { switchToRoleModel } from "../shared/model-roles.js";
 import type { PlanEvidence } from "../shared/plan-evidence.js";
 import {
 	elapsedLabel,
+	flowGoalDisplayLabel,
 	flowScope,
 	flowStepLabel,
 	GOAL_SCOPE,
@@ -49,7 +51,9 @@ import {
 	roundTitle,
 } from "../shared/progress-labels.js";
 import {
+	composeResultCardLines,
 	registerResultCardRenderer,
+	resultCardElapsedLine,
 	sendResultCard,
 } from "../shared/result-card.js";
 import { formatReviewResultLines } from "../shared/review-format.js";
@@ -174,8 +178,15 @@ interface FlowGoalStartOptions {
 
 export { yieldForGoalReviewCard };
 
-export function cancelGoalRecoveryAfterUserAction() {
-	cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
+export function cancelGoalRecoveryAfterUserAction(ctx?: StatusContext) {
+	if (ctx) {
+		cancelGoalRecoveryTimers(goalStateForSession(ctx), {
+			resetAutoResumeUse: true,
+		});
+		return;
+	}
+	for (const state of goalRuntimeState.sessions.values())
+		cancelGoalRecoveryTimers(state, { resetAutoResumeUse: true });
 }
 
 const STATUS_KEY = "goal";
@@ -209,7 +220,6 @@ export interface GoalRuntimeState {
 	activeGoal?: ActiveGoal;
 	completionStatusTimer?: NodeJS.Timeout;
 	goalStatusTimer?: ElapsedStatus;
-	extensionApi?: ExtensionAPI;
 	continuationPending?: ContinuationPending;
 	completionAuditPending?: CompletionAuditPending;
 	completionAuditGeneration: number;
@@ -223,32 +233,83 @@ export interface GoalRuntimeState {
 	retryAutoResumeUsedGoalIds: Set<string>;
 }
 
-export const goalRuntimeState: GoalRuntimeState = {
-	completionAuditGeneration: 0,
-	cancelledContinuationMarkers: new Set<string>(),
-	websocketLimitRecoveryAt: new Map<string, number>(),
-	retryRecoveryGeneration: 0,
-	retryAutoResumeUsedGoalIds: new Set<string>(),
+interface GoalRuntimeGlobalState {
+	extensionApi?: ExtensionAPI;
+	sessions: Map<string, GoalRuntimeState>;
+}
+
+export const goalRuntimeState: GoalRuntimeGlobalState = {
+	sessions: new Map<string, GoalRuntimeState>(),
 };
 
+function createGoalSessionState(): GoalRuntimeState {
+	return {
+		completionAuditGeneration: 0,
+		cancelledContinuationMarkers: new Set<string>(),
+		websocketLimitRecoveryAt: new Map<string, number>(),
+		retryRecoveryGeneration: 0,
+		retryAutoResumeUsedGoalIds: new Set<string>(),
+	};
+}
+
 function resetGoalRuntimeState(pi: ExtensionAPI): void {
-	if (goalRuntimeState.completionStatusTimer)
-		clearTimeout(goalRuntimeState.completionStatusTimer);
-	goalRuntimeState.goalStatusTimer?.stop();
-	goalRuntimeState.completionAuditPending?.controller.abort();
-	goalRuntimeState.completionAuditPending?.status?.stop();
-	goalRuntimeState.activeGoal = undefined;
-	goalRuntimeState.completionStatusTimer = undefined;
-	goalRuntimeState.goalStatusTimer = undefined;
+	for (const state of goalRuntimeState.sessions.values())
+		resetGoalSessionState(state);
+	goalRuntimeState.sessions.clear();
 	goalRuntimeState.extensionApi = pi;
-	goalRuntimeState.continuationPending = undefined;
-	goalRuntimeState.completionAuditPending = undefined;
-	goalRuntimeState.completionAuditGeneration = 0;
-	cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
-	goalRuntimeState.cancelledContinuationMarkers = new Set<string>();
-	goalRuntimeState.websocketLimitRecoveryAt = new Map<string, number>();
-	goalRuntimeState.goalReviewLive = undefined;
-	goalRuntimeState.scheduledGoalStateReview = undefined;
+}
+
+function resetGoalSessionState(state: GoalRuntimeState): void {
+	if (state.completionStatusTimer) clearTimeout(state.completionStatusTimer);
+	state.goalStatusTimer?.stop();
+	state.completionAuditPending?.controller.abort();
+	state.completionAuditPending?.status?.stop();
+	if (state.retryExhaustionWatch)
+		clearTimeout(state.retryExhaustionWatch.timer);
+	if (state.deferredAutoResume) clearTimeout(state.deferredAutoResume.timer);
+	state.activeGoal = undefined;
+	state.completionStatusTimer = undefined;
+	state.goalStatusTimer = undefined;
+	state.continuationPending = undefined;
+	state.completionAuditPending = undefined;
+	state.completionAuditGeneration = 0;
+	state.cancelledContinuationMarkers = new Set<string>();
+	state.websocketLimitRecoveryAt = new Map<string, number>();
+	state.goalReviewLive = undefined;
+	state.scheduledGoalStateReview = undefined;
+	state.retryExhaustionWatch = undefined;
+	state.deferredAutoResume = undefined;
+	state.retryRecoveryGeneration = 0;
+	state.retryAutoResumeUsedGoalIds = new Set<string>();
+}
+
+function goalStateForSession(ctx: StatusContext): GoalRuntimeState {
+	const key = goalSessionKey(ctx);
+	let state = goalRuntimeState.sessions.get(key);
+	if (!state) {
+		state = createGoalSessionState();
+		goalRuntimeState.sessions.set(key, state);
+	}
+	return state;
+}
+
+function goalSessionKey(ctx: StatusContext): string {
+	return currentSessionFile(ctx) ?? `${ctx.cwd}:no-session`;
+}
+
+function setActiveGoalForSession(
+	ctx: StatusContext,
+	goal: ActiveGoal | undefined,
+) {
+	const state = goalStateForSession(ctx);
+	state.activeGoal = goal;
+	return goal;
+}
+
+function activeGoalForSession(ctx: StatusContext): ActiveGoal | undefined {
+	const state = goalStateForSession(ctx);
+	if (!state.activeGoal) state.activeGoal = loadGoalFromSession(ctx);
+	return state.activeGoal;
 }
 
 export default function goal(pi: ExtensionAPI) {
@@ -256,175 +317,149 @@ export default function goal(pi: ExtensionAPI) {
 	registerResultCardRenderer(pi);
 
 	pi.on("session_start", (_event, ctx) => {
+		const state = goalStateForSession(ctx);
 		installFlowActivityFrame(ctx);
-		clearContinuationTracking();
-		goalRuntimeState.activeGoal = loadGoalFromSession(ctx);
-		if (goalRuntimeState.activeGoal && flowContext(ctx))
-			rememberFlowContext(ctx);
-		if (goalRuntimeState.activeGoal) {
-			if (
-				goalRuntimeState.activeGoal.status === "active" &&
-				goalRuntimeState.activeGoal.artifactDir
-			)
-				watchGoalPlan(goalRuntimeState.activeGoal.artifactDir);
-			updateStatus(ctx, goalRuntimeState.activeGoal);
+		clearContinuationTracking(state);
+		state.activeGoal = loadGoalFromSession(ctx);
+		if (state.activeGoal && flowContext(ctx)) rememberFlowContext(ctx);
+		if (state.activeGoal) {
+			if (state.activeGoal.status === "active" && state.activeGoal.artifactDir)
+				watchGoalPlan(state.activeGoal.artifactDir);
+			updateStatus(ctx, state.activeGoal);
 		} else clearGoalUi(ctx);
-		syncGoalStatusTimer(ctx, goalRuntimeState.activeGoal);
+		syncGoalStatusTimer(ctx, state, state.activeGoal);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		cancelGoalRecoveryTimers();
-		if (goalRuntimeState.activeGoal)
-			persistGoal(goalRuntimeState.activeGoal, ctx);
+		const state = goalStateForSession(ctx);
+		cancelGoalRecoveryTimers(state);
+		if (state.activeGoal) persistGoal(state.activeGoal, ctx);
 		closeGoalPlanWatcher();
-		clearContinuationTracking();
-		if (goalRuntimeState.activeGoal)
-			syncGoalReviewSurfaces(
-				goalRuntimeState,
-				ctx,
-				goalRuntimeState.activeGoal,
-			);
-		stopGoalStatusTimer();
-		clearCompletionStatusTimer();
+		clearContinuationTracking(state);
+		if (state.activeGoal) syncGoalReviewSurfaces(state, ctx, state.activeGoal);
+		stopGoalStatusTimer(state);
+		clearCompletionStatusTimer(state);
 		setGoalActivityBox(ctx, undefined);
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 		clearFlowActivities();
 	});
 
-	pi.on("input", (event) => {
+	pi.on("input", (event, ctx) => {
+		const state = goalStateForSession(ctx);
 		if (event.source !== "extension") {
-			cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
+			cancelGoalRecoveryTimers(state, { resetAutoResumeUse: true });
 			return;
 		}
-		if (consumeCancelledContinuationPrompt(event.text))
+		if (consumeCancelledContinuationPrompt(state, event.text))
 			return { action: "handled" as const };
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
-		cancelGoalRecoveryTimers();
-		markContinuationDelivered(event.prompt);
-		if (
-			!goalRuntimeState.activeGoal ||
-			goalRuntimeState.activeGoal.status !== "active"
-		)
-			return;
-		const active = goalRuntimeState.activeGoal;
-		goalRuntimeState.activeGoal = { ...active, stepStartedAt: Date.now() };
-		updateStatusBox(ctx, goalRuntimeState.activeGoal);
+		const state = goalStateForSession(ctx);
+		cancelGoalRecoveryTimers(state);
+		markContinuationDelivered(state, event.prompt);
+		if (!state.activeGoal || state.activeGoal.status !== "active") return;
+		state.activeGoal = { ...state.activeGoal, stepStartedAt: Date.now() };
+		updateStatusBox(ctx, state.activeGoal);
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n${buildGoalSystemPrompt(goalRuntimeState.activeGoal, goalTodoPromptContext(ctx, goalRuntimeState.activeGoal))}`,
+			systemPrompt: `${event.systemPrompt}\n\n${buildGoalSystemPrompt(state.activeGoal, goalTodoPromptContext(ctx, state.activeGoal))}`,
 		};
 	});
 
 	pi.on("agent_start", (_event, ctx) => {
-		cancelGoalRecoveryTimers();
-		goalRuntimeState.activeGoal = goalRuntimeState.activeGoal
-			? sanitizeLoadedGoal(ctx, goalRuntimeState.activeGoal)
+		const state = goalStateForSession(ctx);
+		cancelGoalRecoveryTimers(state);
+		state.activeGoal = state.activeGoal
+			? sanitizeLoadedGoal(ctx, state.activeGoal)
 			: loadGoalFromSession(ctx);
-		if (goalRuntimeState.activeGoal?.status === "active")
-			updateStatusBox(ctx, goalRuntimeState.activeGoal);
+		if (state.activeGoal?.status === "active")
+			updateStatusBox(ctx, state.activeGoal);
 	});
 
-	pi.on("turn_start", () => cancelGoalRecoveryTimers());
-	pi.on("message_start", (event) => {
+	pi.on("turn_start", (_event, ctx) =>
+		cancelGoalRecoveryTimers(goalStateForSession(ctx)),
+	);
+	pi.on("message_start", (event, ctx) => {
 		if ((event.message as { role?: unknown }).role === "user")
-			cancelGoalRecoveryTimers();
+			cancelGoalRecoveryTimers(goalStateForSession(ctx));
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
-		goalRuntimeState.activeGoal = goalRuntimeState.activeGoal
-			? sanitizeLoadedGoal(ctx, goalRuntimeState.activeGoal)
+		const state = goalStateForSession(ctx);
+		state.activeGoal = state.activeGoal
+			? sanitizeLoadedGoal(ctx, state.activeGoal)
 			: loadGoalFromSession(ctx);
-		if (
-			!goalRuntimeState.activeGoal ||
-			goalRuntimeState.activeGoal.status !== "active"
-		)
-			return;
+		if (!state.activeGoal || state.activeGoal.status !== "active") return;
 		const eventKey = agentEndEventKey(event);
 		if (eventKey && handledGoalAgentEndEvents.has(eventKey)) return;
 		if (eventKey) handledGoalAgentEndEvents.add(eventKey);
-		const goalId = goalRuntimeState.activeGoal.id;
-		const hadPendingContinuation =
-			goalRuntimeState.continuationPending?.goalId === goalId;
+		const goalId = state.activeGoal.id;
+		const hadPendingContinuation = state.continuationPending?.goalId === goalId;
 		const finalAssistant = findFinalAssistantMessage(event.messages);
 		if (isReviewLoopActive()) {
 			scheduleContinueReviewAfterAgentEnd(pi, event, ctx);
 			return saveActiveGoal(ctx, { updateStatus: false });
 		}
 		if (
-			!goalRuntimeState.activeGoal ||
-			goalRuntimeState.activeGoal.id !== goalId ||
-			goalRuntimeState.activeGoal.status !== "active"
+			!state.activeGoal ||
+			state.activeGoal.id !== goalId ||
+			state.activeGoal.status !== "active"
 		)
 			return;
 		if (agentEndedWithRecoverableTransportStop(event)) {
-			updateGoalUsage(goalRuntimeState.activeGoal, ctx);
+			updateGoalUsage(state.activeGoal, ctx);
 			saveActiveGoal(ctx);
 			if (finalAssistant)
-				scheduleRetryExhaustionWatch(
-					pi,
-					ctx,
-					goalRuntimeState.activeGoal,
-					finalAssistant,
-				);
+				scheduleRetryExhaustionWatch(pi, ctx, state.activeGoal, finalAssistant);
 			notifyUser(
 				ctx,
-				goalRuntimeState.activeGoal.language === "en"
-					? `${goalScopeLabel(ctx, goalRuntimeState.activeGoal.language)} connection interrupted; waiting for Pi to retry automatically.`
-					: `${goalScopeLabel(ctx, goalRuntimeState.activeGoal.language)}连接中断，等待 Pi 自动重试。`,
+				state.activeGoal.language === "en"
+					? `${goalScopeLabel(ctx, state.activeGoal.language)} connection interrupted; waiting for Pi to retry automatically.`
+					: `${goalScopeLabel(ctx, state.activeGoal.language)}连接中断，等待 Pi 自动重试。`,
 				"warning",
-				goalRuntimeState.activeGoal.language,
+				state.activeGoal.language,
 			);
 			return;
 		}
 		if (finalAssistant && isPiRetryableAgentError(finalAssistant)) {
-			updateGoalUsage(goalRuntimeState.activeGoal, ctx);
+			updateGoalUsage(state.activeGoal, ctx);
 			saveActiveGoal(ctx);
-			scheduleRetryExhaustionWatch(
-				pi,
-				ctx,
-				goalRuntimeState.activeGoal,
-				finalAssistant,
-			);
+			scheduleRetryExhaustionWatch(pi, ctx, state.activeGoal, finalAssistant);
 			return;
 		}
 		if (!hadPendingContinuation)
-			goalRuntimeState.activeGoal = incrementGoal(goalRuntimeState.activeGoal);
-		updateGoalUsage(goalRuntimeState.activeGoal, ctx);
+			state.activeGoal = incrementGoal(state.activeGoal);
+		updateGoalUsage(state.activeGoal, ctx);
 
 		if (finalAssistant?.stopReason === "aborted")
-			return pauseGoalAfterAgentEnd(
-				ctx,
-				goalRuntimeState.activeGoal,
-				finalAssistant,
-			);
+			return pauseGoalAfterAgentEnd(ctx, state.activeGoal, finalAssistant);
 		if (finalAssistant?.stopReason === "error") {
 			saveActiveGoal(ctx);
 			if (
 				await recoverWebSocketLimitError(
 					pi,
 					ctx,
-					goalRuntimeState.activeGoal,
+					state.activeGoal,
 					finalAssistant,
 				)
 			)
 				return;
-			await sendContinuationPrompt(pi, ctx, goalRuntimeState.activeGoal);
+			await sendContinuationPrompt(pi, ctx, state.activeGoal);
 			return;
 		}
 		if (finalAssistant?.stopReason === "stop") {
 			if (ctx.mode === "json" || ctx.mode === "print")
-				await startGoalStateReview(ctx, goalRuntimeState.activeGoal);
-			else scheduleGoalStateReview(ctx, goalRuntimeState.activeGoal);
+				await startGoalStateReview(ctx, state.activeGoal);
+			else scheduleGoalStateReview(ctx, state.activeGoal);
 			return;
 		}
-		if (goalRuntimeState.completionAuditPending?.goalId === goalId) return;
-		if (stopForBudget(ctx, goalRuntimeState.activeGoal)) return;
+		if (state.completionAuditPending?.goalId === goalId) return;
+		if (stopForBudget(ctx, state.activeGoal)) return;
 		saveActiveGoal(ctx);
 		if (hadPendingContinuation && !hasPendingMessages(ctx))
-			goalRuntimeState.continuationPending = undefined;
+			state.continuationPending = undefined;
 		if (!hasPendingMessages(ctx))
-			await sendContinuationPrompt(pi, ctx, goalRuntimeState.activeGoal);
+			await sendContinuationPrompt(pi, ctx, state.activeGoal);
 	});
 }
 
@@ -459,23 +494,25 @@ export async function startGoalFromFlow(
 		return false;
 	}
 	if (!(await switchToRoleModel(pi, ctx, "executor", language))) return false;
-	cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
-	cancelContinuationPending();
-	cancelCompletionAudit();
-	clearCompletionStatusTimer();
-	goalRuntimeState.activeGoal = createGoal(
+	const state = goalStateForSession(ctx);
+	cancelGoalRecoveryTimers(state, { resetAutoResumeUse: true });
+	cancelContinuationPending(state);
+	cancelCompletionAudit(state);
+	clearCompletionStatusTimer(state);
+	const goal = createGoal(
 		trimmed,
 		undefined,
 		currentTokenTotal(ctx),
 		options.artifact,
 		language,
 	);
-	if (goalRuntimeState.activeGoal.artifactDir) {
-		syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-		watchGoalPlan(goalRuntimeState.activeGoal.artifactDir);
+	setActiveGoalForSession(ctx, goal);
+	if (goal.artifactDir) {
+		syncStandaloneGoalArtifact(ctx, goal);
+		watchGoalPlan(goal.artifactDir);
 	}
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
+	persistGoal(goal, ctx);
+	updateStatus(ctx, goal);
 	const started = await sendRuntimePrompt(pi, ctx, prompt, { language });
 	if (!started) {
 		clearActiveGoal(ctx);
@@ -488,35 +525,26 @@ export async function startGoalFromFlow(
 export async function resumePausedGoalFromFlow(
 	ctx: StatusContext,
 ): Promise<FlowGoalContinueResult> {
-	if (!goalRuntimeState.activeGoal)
-		goalRuntimeState.activeGoal = loadGoalFromSession(ctx);
-	if (!goalRuntimeState.activeGoal) return "no_goal";
-	if (
-		goalRuntimeState.activeGoal.status !== "paused" &&
-		goalRuntimeState.activeGoal.status !== "budget_limited"
-	)
+	const state = goalStateForSession(ctx);
+	const goal = activeGoalForSession(ctx);
+	if (!goal) return "no_goal";
+	if (goal.status !== "paused" && goal.status !== "budget_limited")
 		return "not_resumable";
 	const pi = goalRuntimeState.extensionApi;
 	if (!pi) return "busy";
-	cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
-	const previousGoal = goalRuntimeState.activeGoal;
-	goalRuntimeState.activeGoal = transitionGoal(
-		goalRuntimeState.activeGoal,
-		"active",
-	);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
-	if (goalRuntimeState.activeGoal.status !== "active") return "not_resumable";
-	const routed = await continueFromCompletionCursor(
-		ctx,
-		goalRuntimeState.activeGoal,
-	);
+	cancelGoalRecoveryTimers(state, { resetAutoResumeUse: true });
+	const previousGoal = goal;
+	state.activeGoal = transitionGoal(goal, "active");
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
+	if (state.activeGoal.status !== "active") return "not_resumable";
+	const routed = await continueFromCompletionCursor(ctx, state.activeGoal);
 	if (routed) return routed;
-	const resumed = await sendResumePrompt(pi, ctx, goalRuntimeState.activeGoal);
+	const resumed = await sendResumePrompt(pi, ctx, state.activeGoal);
 	if (!resumed) {
-		goalRuntimeState.activeGoal = previousGoal;
-		persistGoal(goalRuntimeState.activeGoal, ctx);
-		updateStatus(ctx, goalRuntimeState.activeGoal);
+		state.activeGoal = previousGoal;
+		persistGoal(state.activeGoal, ctx);
+		updateStatus(ctx, state.activeGoal);
 		return "busy";
 	}
 	return "resumed";
@@ -576,57 +604,51 @@ async function continueAfterRepairCursor(
 export async function continueActiveGoalIfIdle(
 	ctx: StatusContext,
 ): Promise<FlowGoalContinueResult> {
-	if (!goalRuntimeState.activeGoal)
-		goalRuntimeState.activeGoal = loadGoalFromSession(ctx);
-	if (!goalRuntimeState.activeGoal) return "no_goal";
-	if (goalRuntimeState.activeGoal.status !== "active") return "not_resumable";
+	const state = goalStateForSession(ctx);
+	const goal = activeGoalForSession(ctx);
+	if (!goal) return "no_goal";
+	if (goal.status !== "active") return "not_resumable";
 	if (!ctx.isIdle?.() || hasPendingMessages(ctx)) return "busy";
-	cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
-	const routed = await continueFromCompletionCursor(
-		ctx,
-		goalRuntimeState.activeGoal,
-	);
+	cancelGoalRecoveryTimers(state, { resetAutoResumeUse: true });
+	const routed = await continueFromCompletionCursor(ctx, goal);
 	if (routed) return routed;
 	if (latestAssistantFromSession(ctx)?.stopReason === "stop")
-		return (
-			(await continueAfterRepairCursor(ctx, goalRuntimeState.activeGoal)) ??
-			"continued"
-		);
+		return (await continueAfterRepairCursor(ctx, goal)) ?? "continued";
 	const pi = goalRuntimeState.extensionApi;
 	if (!pi) return "busy";
-	return (await sendContinuationPrompt(pi, ctx, goalRuntimeState.activeGoal))
-		? "continued"
-		: "busy";
+	return (await sendContinuationPrompt(pi, ctx, goal)) ? "continued" : "busy";
 }
 
 export function pauseGoalFromFlow(ctx: StatusContext) {
-	if (!goalRuntimeState.activeGoal)
-		goalRuntimeState.activeGoal = loadGoalFromSession(ctx);
-	if (
-		!goalRuntimeState.activeGoal ||
-		goalRuntimeState.activeGoal.status !== "active"
-	)
-		return false;
-	cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
-	cancelContinuationPending();
-	cancelCompletionAudit();
-	goalRuntimeState.activeGoal = transitionGoal(
-		goalRuntimeState.activeGoal,
-		"paused",
-	);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
+	const state = goalStateForSession(ctx);
+	const goal = activeGoalForSession(ctx);
+	if (!goal || goal.status !== "active") return false;
+	cancelGoalRecoveryTimers(state, { resetAutoResumeUse: true });
+	cancelContinuationPending(state);
+	cancelCompletionAudit(state);
+	state.activeGoal = transitionGoal(goal, "paused");
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
 	return true;
 }
 
-export function clearCompletedGoalFromFlow(ctx: StatusContext) {
+export function clearCompletedGoalFromFlow(ctx: StatusContext, goalId: string) {
+	const state = goalStateForSession(ctx);
+	if (state.activeGoal?.id === goalId) {
+		clearActiveGoal(ctx);
+		return true;
+	}
+	const sessionGoal = loadGoalFromSession(ctx);
+	if (!sessionGoal || sessionGoal.id !== goalId) return false;
+	setActiveGoalForSession(ctx, sessionGoal);
 	clearActiveGoal(ctx);
+	return true;
 }
 
 export function getGoalState(
 	ctx: StatusContext,
 ): FlowGoalRuntimeState | undefined {
-	const goal = goalRuntimeState.activeGoal ?? loadGoalFromSession(ctx);
+	const goal = activeGoalForSession(ctx);
 	return goal
 		? {
 				id: goal.id,
@@ -642,10 +664,11 @@ export function isGoalActiveInSession(ctx: StatusContext) {
 }
 
 function scheduleGoalStateReview(ctx: ExtensionContext, goal: ActiveGoal) {
+	const state = goalStateForSession(ctx);
 	const goalId = goal.id;
-	goalRuntimeState.scheduledGoalStateReview = new Promise((resolve) => {
+	state.scheduledGoalStateReview = new Promise((resolve) => {
 		setImmediate(() => {
-			const current = goalRuntimeState.activeGoal ?? loadGoalFromSession(ctx);
+			const current = state.activeGoal ?? loadGoalFromSession(ctx);
 			if (!current || current.id !== goalId || current.status !== "active") {
 				resolve();
 				return;
@@ -667,17 +690,22 @@ function scheduleGoalStateReview(ctx: ExtensionContext, goal: ActiveGoal) {
 }
 
 export async function waitForScheduledGoalStateReview() {
-	await (goalRuntimeState.scheduledGoalStateReview ?? Promise.resolve());
+	await Promise.all(
+		[...goalRuntimeState.sessions.values()].map(
+			(state) => state.scheduledGoalStateReview ?? Promise.resolve(),
+		),
+	);
 	await waitForScheduledReviewAgentEnd();
 }
 
 async function startGoalStateReview(ctx: ExtensionContext, goal: ActiveGoal) {
-	cancelContinuationPending();
+	const state = goalStateForSession(ctx);
+	cancelContinuationPending(state);
 	updateGoalUsage(goal, ctx);
 	const now = Date.now();
 	if (!isGoalStateReviewEnabled()) {
 		const reviewGoal: ActiveGoal = { ...goal, stepStartedAt: now };
-		goalRuntimeState.activeGoal = reviewGoal;
+		state.activeGoal = reviewGoal;
 		persistGoal(reviewGoal, ctx);
 		await continueAfterGoalStateReviewPassed(
 			ctx,
@@ -693,11 +721,11 @@ async function startGoalStateReview(ctx: ExtensionContext, goal: ActiveGoal) {
 		stateReviewStartedAt: goal.stateReviewStartedAt ?? now,
 		stepStartedAt: now,
 	};
-	goalRuntimeState.activeGoal = reviewGoal;
+	state.activeGoal = reviewGoal;
 	setCompletionCursor(ctx, reviewGoal, "acceptance_retry");
 	persistGoal(reviewGoal, ctx);
 	sendGoalStateReviewStartCard(ctx, reviewGoal, round);
-	const run = startCompletionAudit(reviewGoal);
+	const run = startCompletionAudit(state, reviewGoal);
 	const audit = await runGoalStateReviewWithStatus(
 		reviewGoal,
 		round,
@@ -705,8 +733,8 @@ async function startGoalStateReview(ctx: ExtensionContext, goal: ActiveGoal) {
 		run.generation,
 		run.signal,
 	);
-	if (!isCurrentCompletionAudit(reviewGoal.id, run.generation)) return;
-	goalRuntimeState.completionAuditPending = undefined;
+	if (!isCurrentCompletionAudit(state, reviewGoal.id, run.generation)) return;
+	state.completionAuditPending = undefined;
 	await handleGoalStateReviewResult(reviewGoal, round, audit, ctx);
 }
 
@@ -716,8 +744,9 @@ async function handleGoalStateReviewResult(
 	audit: GoalAuditResult,
 	ctx: ExtensionContext,
 ) {
+	const state = goalStateForSession(ctx);
 	const reviewedGoal = recordGoalReview(goal, round, audit);
-	goalRuntimeState.goalReviewLive = undefined;
+	state.goalReviewLive = undefined;
 	if (!audit.complete) {
 		if (audit.systemError)
 			return pauseGoalAfterReviewSystemError(ctx, reviewedGoal, audit);
@@ -726,16 +755,16 @@ async function handleGoalStateReviewResult(
 			stepStartedAt: Date.now(),
 			updatedAt: Date.now(),
 		};
-		goalRuntimeState.activeGoal = repairGoal;
+		state.activeGoal = repairGoal;
 		setCompletionCursor(ctx, repairGoal, "acceptance_repair");
-		syncGoalReviewSurfaces(goalRuntimeState, ctx, repairGoal);
+		syncGoalReviewSurfaces(state, ctx, repairGoal);
 		persistGoal(repairGoal, ctx);
 		updateStatus(ctx, repairGoal);
 		sendGoalReviewCard(ctx, reviewedGoal, round, audit, false);
 		return;
 	}
-	goalRuntimeState.activeGoal = reviewedGoal;
-	syncGoalReviewSurfaces(goalRuntimeState, ctx, reviewedGoal);
+	state.activeGoal = reviewedGoal;
+	syncGoalReviewSurfaces(state, ctx, reviewedGoal);
 	sendGoalReviewCard(ctx, reviewedGoal, round, audit, true);
 	await continueAfterGoalStateReviewPassed(ctx, reviewedGoal, round);
 }
@@ -747,10 +776,11 @@ async function continueAfterGoalStateReviewPassed(
 ) {
 	if (!shouldReviewGoalCompletion())
 		return completeGoalAfterReviews(ctx, goal, stateReviewRound, undefined);
+	const state = goalStateForSession(ctx);
 	const flow = flowContext(ctx);
 	const plan = goalPlanEvidence(ctx, goal);
 	if (stateReviewRound > 0) await yieldForGoalReviewCard();
-	stopGoalStatusTimer();
+	stopGoalStatusTimer(state);
 	setCompletionCursor(ctx, goal, "quality_retry");
 	sendGoalQualityReviewStartCard(ctx, goal);
 	let qualityStopHandled = false;
@@ -767,11 +797,11 @@ async function continueAfterGoalStateReviewPassed(
 				statusKey: STATUS_KEY,
 				totalStartedAt: topStartedAt(ctx, goal),
 				showTotalElapsed: shouldShowTotalElapsed(ctx, stateReviewRound),
-				resumeCommand: "/flow continue",
+				resumeCommand: goalResumeCommand(ctx),
 				activity: flow
 					? {
 							object: "Flow",
-							rows: activityRows(flow.label, goalDisplayText(ctx, goal)),
+							rows: activityRows(flow.displayLabel, goalDisplayText(ctx, goal)),
 						}
 					: {
 							object: goal.language === "en" ? "Goal" : "目标",
@@ -825,11 +855,12 @@ function pauseGoalAfterReviewSystemError(
 	goal: ActiveGoal,
 	audit: GoalAuditResult,
 ) {
+	const state = goalStateForSession(ctx);
 	sendGoalReviewErrorCard(ctx, goal, goal.stateReviewRounds, audit);
-	goalRuntimeState.activeGoal = transitionGoal(goal, "paused");
-	syncGoalReviewSurfaces(goalRuntimeState, ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
+	state.activeGoal = transitionGoal(goal, "paused");
+	syncGoalReviewSurfaces(state, ctx, state.activeGoal);
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
 	notifyUser(
 		ctx,
 		`${audit.feedback} ${pausedContinueMessage(ctx, goal.language)}`,
@@ -844,22 +875,21 @@ function pauseGoalAfterQualityReviewStop(
 	message: string | undefined = undefined,
 	history: ReviewHistoryEntry[] = [],
 ) {
-	cancelCompletionAudit();
-	goalRuntimeState.goalReviewLive = undefined;
-	if (!goalRuntimeState.activeGoal || goalRuntimeState.activeGoal.id !== goalId)
-		return;
-	goalRuntimeState.activeGoal = transitionGoal(
-		recordGoalQualityReview(goalRuntimeState.activeGoal, history),
+	const state = goalStateForSession(ctx);
+	cancelCompletionAudit(state);
+	state.goalReviewLive = undefined;
+	if (!state.activeGoal || state.activeGoal.id !== goalId) return;
+	state.activeGoal = transitionGoal(
+		recordGoalQualityReview(state.activeGoal, history),
 		"paused",
 	);
-	syncGoalReviewSurfaces(goalRuntimeState, ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
+	syncGoalReviewSurfaces(state, ctx, state.activeGoal);
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
 	closeGoalPlanWatcher();
 	const reason =
-		message ??
-		qualityStopMessage("incomplete", goalRuntimeState.activeGoal.language);
-	sendGoalQualityReviewBlockedCard(ctx, goalRuntimeState.activeGoal, reason);
+		message ?? qualityStopMessage("incomplete", state.activeGoal.language);
+	sendGoalQualityReviewBlockedCard(ctx, state.activeGoal, reason);
 }
 
 function sendGoalStateReviewStartCard(
@@ -874,7 +904,7 @@ function sendGoalStateReviewStartCard(
 		goal.language,
 	);
 	const lines = [
-		...(flow ? [flowLine(flow.label, goal.language)] : []),
+		...(flow ? [flowLine(flow.displayLabel, goal.language)] : []),
 		goalLine(ctx, goal),
 		modelLine(goalAuditorLabels(goal.language), goal.language),
 	];
@@ -896,7 +926,7 @@ function sendGoalQualityReviewStartCard(
 	const flow = flowContext(ctx);
 	const title = qualityTitle("progress", goal.language);
 	const lines = [
-		...(flow ? [flowLine(flow.label, goal.language)] : []),
+		...(flow ? [flowLine(flow.displayLabel, goal.language)] : []),
 		goalLine(ctx, goal),
 		modelLine(qualityModelLabels(goal.language), goal.language),
 	];
@@ -915,12 +945,13 @@ function pauseGoalAfterCompletionFactFailure(
 	ctx: ExtensionContext,
 	goal: ActiveGoal,
 ) {
-	goalRuntimeState.activeGoal = transitionGoal(goal, "paused");
-	syncGoalReviewSurfaces(goalRuntimeState, ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
+	const state = goalStateForSession(ctx);
+	state.activeGoal = transitionGoal(goal, "paused");
+	syncGoalReviewSurfaces(state, ctx, state.activeGoal);
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
 	closeGoalPlanWatcher();
-	sendGoalCompletionFactErrorCard(ctx, goalRuntimeState.activeGoal);
+	sendGoalCompletionFactErrorCard(ctx, state.activeGoal);
 }
 
 function sendGoalQualityReviewBlockedCard(
@@ -929,7 +960,7 @@ function sendGoalQualityReviewBlockedCard(
 	message: string,
 ) {
 	const flow = flowContext(ctx);
-	const next = "/flow continue";
+	const next = goalResumeCommand(ctx);
 	const title = flow
 		? goal.language === "en"
 			? `Flow ${flow.label} incomplete`
@@ -959,7 +990,7 @@ function sendGoalCompletionFactErrorCard(
 	goal: ActiveGoal,
 ) {
 	const flow = flowContext(ctx);
-	const next = "/flow continue";
+	const next = goalResumeCommand(ctx);
 	const title = flow
 		? goal.language === "en"
 			? `Flow ${flow.label} completion fact write failed`
@@ -995,13 +1026,13 @@ function sendGoalReviewErrorCard(
 	round: number,
 	audit: GoalAuditResult,
 ) {
-	const next = "/flow continue";
+	const next = goalResumeCommand(ctx);
 	const title = roundTitle(
 		round,
 		acceptanceTitle("error", goal.language),
 		goal.language,
 	);
-	const lines = [
+	const bodyLines = [
 		goal.language === "en"
 			? "Blocker: acceptance did not complete"
 			: "卡点：完成验收未完成",
@@ -1009,13 +1040,17 @@ function sendGoalReviewErrorCard(
 			? `Reason: ${audit.feedback || audit.raw}`
 			: `原因：${audit.feedback || audit.raw}`,
 		goal.language === "en" ? `Next: ${next}` : `下一步：${next}`,
-		elapsedLine(goalReviewElapsedText(ctx, goal, round), goal.language),
 	];
-	const content = [
-		`[${title}]`,
-		goalLine(ctx, goal),
-		...lines.filter((line) => !line.startsWith("⏱ ")),
-	].join("\n");
+	const lines = composeResultCardLines(
+		[bodyLines],
+		[
+			resultCardElapsedLine(
+				goalReviewElapsedText(ctx, goal, round),
+				goal.language,
+			),
+		],
+	);
+	const content = [`[${title}]`, goalLine(ctx, goal), ...bodyLines].join("\n");
 	sendResultCard(goalRuntimeState.extensionApi, ctx, content, {
 		tone: "goal-review",
 		result: "错误",
@@ -1040,7 +1075,7 @@ function sendGoalReviewCard(
 	);
 	const content = goalReviewContent(goal, round, audit, passed);
 	const reviewLines = formatReviewResultLines(audit.raw);
-	const lines = [
+	const bodyLines = [
 		...(reviewLines.length
 			? reviewLines
 			: [
@@ -1051,8 +1086,16 @@ function sendGoalReviewCard(
 		...(audit.infraFeedback || !passed
 			? infraAuditLines(audit, goal.language)
 			: []),
-		elapsedLine(goalReviewElapsedText(ctx, goal, round), goal.language),
 	];
+	const lines = composeResultCardLines(
+		[bodyLines],
+		[
+			resultCardElapsedLine(
+				goalReviewElapsedText(ctx, goal, round),
+				goal.language,
+			),
+		],
+	);
 	sendResultCard(
 		goalRuntimeState.extensionApi,
 		ctx,
@@ -1147,10 +1190,6 @@ function modelLine(labels: string, language: Language) {
 	return language === "en" ? `Models: ${labels}` : `模型：${labels}`;
 }
 
-function elapsedLine(text: string, language: Language) {
-	return language === "en" ? `⏱ Elapsed: ${text}` : `⏱ 用时：${text}`;
-}
-
 function goalObjectiveContent(goal: ActiveGoal) {
 	const tag = goal.language === "en" ? "goal" : "目标";
 	return `<${tag}>\n${escapeXmlTextContent(goal.text)}\n</${tag}>`;
@@ -1171,13 +1210,14 @@ function completeGoalAfterReviews(
 	qualitySummary = "",
 ) {
 	finalizeGoalCompletion(
-		goalRuntimeState,
+		goalStateForSession(ctx),
 		ctx,
 		goal,
 		stateReviewRound,
 		reviewStats,
 		qualitySummary,
 		{
+			extensionApi: goalRuntimeState.extensionApi,
 			transitionGoal,
 			updateGoalUsage,
 			persistGoal,
@@ -1266,13 +1306,14 @@ function pauseGoalAfterAgentEnd(
 	goal: ActiveGoal,
 	assistant: AssistantMessageLike,
 ) {
-	cancelGoalRecoveryTimers();
-	cancelContinuationPending();
-	cancelCompletionAudit();
-	goalRuntimeState.activeGoal = transitionGoal(goal, "paused");
-	syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
+	const state = goalStateForSession(ctx);
+	cancelGoalRecoveryTimers(state);
+	cancelContinuationPending(state);
+	cancelCompletionAudit(state);
+	state.activeGoal = transitionGoal(goal, "paused");
+	syncStandaloneGoalArtifact(ctx, state.activeGoal);
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
 	closeGoalPlanWatcher();
 	const details = assistant.errorMessage
 		? ` (${truncateNotification(assistant.errorMessage)})`
@@ -1293,8 +1334,9 @@ function scheduleRetryExhaustionWatch(
 	goal: ActiveGoal,
 	assistant: AssistantMessageLike,
 ) {
-	cancelRetryExhaustionWatch();
-	const generation = nextRetryRecoveryGeneration();
+	const state = goalStateForSession(ctx);
+	cancelRetryExhaustionWatch(state);
+	const generation = nextRetryRecoveryGeneration(state);
 	const errorMessage =
 		assistant.errorMessage ??
 		(goal.language === "en" ? "unknown network error" : "未知网络错误");
@@ -1302,7 +1344,7 @@ function scheduleRetryExhaustionWatch(
 		pauseGoalAfterRetryExhaustion(pi, ctx, goal.id, generation, errorMessage);
 	}, PI_RETRY_EXHAUSTION_GUARD_MS);
 	timer.unref?.();
-	goalRuntimeState.retryExhaustionWatch = {
+	state.retryExhaustionWatch = {
 		goalId: goal.id,
 		generation,
 		timer,
@@ -1316,43 +1358,34 @@ function pauseGoalAfterRetryExhaustion(
 	generation: number,
 	errorMessage: string,
 ) {
-	const watch = goalRuntimeState.retryExhaustionWatch;
+	const state = goalStateForSession(ctx);
+	const watch = state.retryExhaustionWatch;
 	if (!watch || watch.goalId !== goalId || watch.generation !== generation)
 		return;
-	goalRuntimeState.retryExhaustionWatch = undefined;
-	const goal = goalRuntimeState.activeGoal ?? loadGoalFromSession(ctx);
+	state.retryExhaustionWatch = undefined;
+	const goal = state.activeGoal ?? loadGoalFromSession(ctx);
 	if (!goal || goal.id !== goalId || goal.status !== "active") return;
 	updateGoalUsage(goal, ctx);
-	goalRuntimeState.activeGoal = transitionGoal(goal, "paused");
-	syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
+	state.activeGoal = transitionGoal(goal, "paused");
+	syncStandaloneGoalArtifact(ctx, state.activeGoal);
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
 	closeGoalPlanWatcher();
-	const willAutoResume =
-		!goalRuntimeState.retryAutoResumeUsedGoalIds.has(goalId);
-	sendRetryExhaustedCard(
-		ctx,
-		goalRuntimeState.activeGoal,
-		errorMessage,
-		willAutoResume,
-	);
+	const willAutoResume = !state.retryAutoResumeUsedGoalIds.has(goalId);
+	sendRetryExhaustedCard(ctx, state.activeGoal, errorMessage, willAutoResume);
 	notifyUser(
 		ctx,
 		retryExhaustedNotification(
 			ctx,
-			goalRuntimeState.activeGoal,
+			state.activeGoal,
 			errorMessage,
 			willAutoResume,
 		),
 		"warning",
-		goalRuntimeState.activeGoal.language,
+		state.activeGoal.language,
 	);
 	if (willAutoResume)
-		scheduleAutoResumeAfterRetryExhaustion(
-			pi,
-			ctx,
-			goalRuntimeState.activeGoal,
-		);
+		scheduleAutoResumeAfterRetryExhaustion(pi, ctx, state.activeGoal);
 }
 
 function scheduleAutoResumeAfterRetryExhaustion(
@@ -1360,13 +1393,14 @@ function scheduleAutoResumeAfterRetryExhaustion(
 	ctx: StatusContext,
 	goal: ActiveGoal,
 ) {
-	cancelDeferredAutoResume();
-	const generation = nextRetryRecoveryGeneration();
+	const state = goalStateForSession(ctx);
+	cancelDeferredAutoResume(state);
+	const generation = nextRetryRecoveryGeneration(state);
 	const timer = setTimeout(() => {
 		void resumeGoalAfterRetryBackoff(pi, ctx, goal.id, generation);
 	}, AUTO_RESUME_AFTER_RETRY_EXHAUSTION_MS);
 	timer.unref?.();
-	goalRuntimeState.deferredAutoResume = { goalId: goal.id, generation, timer };
+	state.deferredAutoResume = { goalId: goal.id, generation, timer };
 }
 
 async function resumeGoalAfterRetryBackoff(
@@ -1375,31 +1409,31 @@ async function resumeGoalAfterRetryBackoff(
 	goalId: string,
 	generation: number,
 ) {
-	const deferred = goalRuntimeState.deferredAutoResume;
+	const state = goalStateForSession(ctx);
+	const deferred = state.deferredAutoResume;
 	if (
 		!deferred ||
 		deferred.goalId !== goalId ||
 		deferred.generation !== generation
 	)
 		return;
-	goalRuntimeState.deferredAutoResume = undefined;
-	const goal = goalRuntimeState.activeGoal ?? loadGoalFromSession(ctx);
+	state.deferredAutoResume = undefined;
+	const goal = state.activeGoal ?? loadGoalFromSession(ctx);
 	if (!goal || goal.id !== goalId || goal.status !== "paused") return;
-	goalRuntimeState.retryAutoResumeUsedGoalIds.add(goalId);
-	goalRuntimeState.activeGoal = transitionGoal(goal, "active");
-	syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
-	if (goalRuntimeState.activeGoal.status !== "active") return;
-	if (goalRuntimeState.activeGoal.artifactDir)
-		watchGoalPlan(goalRuntimeState.activeGoal.artifactDir);
-	sendRetryAutoResumeCard(ctx, goalRuntimeState.activeGoal);
-	const resumedGoal = goalRuntimeState.activeGoal;
+	state.retryAutoResumeUsedGoalIds.add(goalId);
+	state.activeGoal = transitionGoal(goal, "active");
+	syncStandaloneGoalArtifact(ctx, state.activeGoal);
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
+	if (state.activeGoal.status !== "active") return;
+	if (state.activeGoal.artifactDir) watchGoalPlan(state.activeGoal.artifactDir);
+	sendRetryAutoResumeCard(ctx, state.activeGoal);
+	const resumedGoal = state.activeGoal;
 	if (await sendResumePrompt(pi, ctx, resumedGoal)) return;
-	goalRuntimeState.activeGoal = transitionGoal(resumedGoal, "paused");
-	syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
+	state.activeGoal = transitionGoal(resumedGoal, "paused");
+	syncStandaloneGoalArtifact(ctx, state.activeGoal);
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
 }
 
 function sendRetryExhaustedCard(
@@ -1493,8 +1527,9 @@ async function recoverWebSocketLimitError(
 	goal: ActiveGoal,
 	assistant: AssistantMessageLike,
 ) {
+	const state = goalStateForSession(ctx);
 	if (!isResponsesWebSocketLimitError(assistant.errorMessage)) return false;
-	if (!canAutoRecoverWebSocketLimit(goal)) {
+	if (!canAutoRecoverWebSocketLimit(state, goal)) {
 		pauseGoalAfterWebSocketLimit(
 			ctx,
 			goal,
@@ -1513,7 +1548,7 @@ async function recoverWebSocketLimitError(
 		goal.language,
 	);
 	if (await sendContinuationPrompt(pi, ctx, goal)) {
-		goalRuntimeState.websocketLimitRecoveryAt.set(goal.id, Date.now());
+		state.websocketLimitRecoveryAt.set(goal.id, Date.now());
 		return true;
 	}
 	pauseGoalAfterWebSocketLimit(
@@ -1524,9 +1559,11 @@ async function recoverWebSocketLimitError(
 	return true;
 }
 
-function canAutoRecoverWebSocketLimit(goal: ActiveGoal) {
-	const recoveredAt =
-		goalRuntimeState.websocketLimitRecoveryAt.get(goal.id) ?? 0;
+function canAutoRecoverWebSocketLimit(
+	state: GoalRuntimeState,
+	goal: ActiveGoal,
+) {
+	const recoveredAt = state.websocketLimitRecoveryAt.get(goal.id) ?? 0;
 	return Date.now() - recoveredAt >= WEBSOCKET_LIMIT_RECOVERY_COOLDOWN_MS;
 }
 
@@ -1535,13 +1572,14 @@ function pauseGoalAfterWebSocketLimit(
 	goal: ActiveGoal,
 	reason: string,
 ) {
-	cancelGoalRecoveryTimers();
-	cancelContinuationPending();
-	cancelCompletionAudit();
-	goalRuntimeState.activeGoal = transitionGoal(goal, "paused");
-	syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
+	const state = goalStateForSession(ctx);
+	cancelGoalRecoveryTimers(state);
+	cancelContinuationPending(state);
+	cancelCompletionAudit(state);
+	state.activeGoal = transitionGoal(goal, "paused");
+	syncStandaloneGoalArtifact(ctx, state.activeGoal);
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
 	closeGoalPlanWatcher();
 	notifyUser(
 		ctx,
@@ -1597,30 +1635,34 @@ function qualityStopMessage(
 }
 
 function goalResumeCommand(ctx: StatusContext) {
-	void ctx;
-	return "/flow continue";
+	return `/flow continue${flowCommandSuffix(ctx)}`;
 }
 
 function goalClearCommand(ctx: StatusContext) {
-	void ctx;
-	return "/flow cancel";
+	return `/flow cancel${flowCommandSuffix(ctx)}`;
+}
+
+function flowCommandSuffix(ctx: StatusContext) {
+	const flow = flowContext(ctx);
+	return flow ? ` ${flowCommandId(flow.flow.id)}` : "";
 }
 
 function stopForBudget(ctx: StatusContext, goal: ActiveGoal) {
 	if (goal.tokenBudget === undefined || goal.tokensUsed < goal.tokenBudget)
 		return false;
-	cancelGoalRecoveryTimers();
-	cancelContinuationPending();
-	goalRuntimeState.activeGoal = transitionGoal(goal, "budget_limited");
-	syncStandaloneGoalArtifact(ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
+	const state = goalStateForSession(ctx);
+	cancelGoalRecoveryTimers(state);
+	cancelContinuationPending(state);
+	state.activeGoal = transitionGoal(goal, "budget_limited");
+	syncStandaloneGoalArtifact(ctx, state.activeGoal);
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
 	closeGoalPlanWatcher();
 	notifyUser(
 		ctx,
 		goal.language === "en"
-			? `Goal token budget reached: ${formatBudget(goalRuntimeState.activeGoal)}`
-			: `目标令牌预算已达到：${formatBudget(goalRuntimeState.activeGoal)}`,
+			? `Goal token budget reached: ${formatBudget(state.activeGoal)}`
+			: `目标令牌预算已达到：${formatBudget(state.activeGoal)}`,
 		"warning",
 		goal.language,
 	);
@@ -1643,7 +1685,7 @@ function updateStatus(ctx: StatusContext, goal: ActiveGoal) {
 	updateStatusBox(ctx, goal);
 	if (isActive) updateGoalElapsed(goal);
 	setStatusText(ctx, STATUS_KEY, formatStatus(ctx, goal), goal.language);
-	syncGoalStatusTimer(ctx, goal);
+	syncGoalStatusTimer(ctx, goalStateForSession(ctx), goal);
 }
 
 function updateStatusBox(ctx: StatusContext | undefined, goal: ActiveGoal) {
@@ -1674,7 +1716,8 @@ async function runGoalStateReviewWithStatus(
 	generation: number,
 	signal?: AbortSignal,
 ) {
-	stopGoalStatusTimer();
+	const state = goalStateForSession(ctx);
+	stopGoalStatusTimer(state);
 	setReviewActivityBox(ctx, undefined);
 	setGoalActivityBox(ctx, {
 		...goalReviewActivityMessage(ctx, goal, round),
@@ -1688,11 +1731,11 @@ async function runGoalStateReviewWithStatus(
 		(seconds) =>
 			`${goalReviewStatusPrefix(ctx, goal, round)} · ${elapsedLabel(seconds, elapsedSeconds(topStartedAt(ctx, goal)), shouldShowTotalElapsed(ctx, round), goal.language)}`,
 		{
-			isActive: () => isCurrentCompletionAudit(goal.id, generation),
+			isActive: () => isCurrentCompletionAudit(state, goal.id, generation),
 			language: goal.language,
 		},
 	);
-	trackCompletionAuditStatus(goal.id, generation, status);
+	trackCompletionAuditStatus(state, goal.id, generation, status);
 	try {
 		return await auditGoalCompletion(
 			{
@@ -1704,7 +1747,7 @@ async function runGoalStateReviewWithStatus(
 			ctx,
 			signal,
 			(progress) => {
-				if (!isCurrentCompletionAudit(goal.id, generation)) return;
+				if (!isCurrentCompletionAudit(state, goal.id, generation)) return;
 				publishGoalReviewLive(ctx, goal, { phase: "acceptance", progress });
 				setGoalActivityBox(ctx, {
 					...goalReviewActivityMessage(ctx, goal, round, progress),
@@ -1716,31 +1759,29 @@ async function runGoalStateReviewWithStatus(
 		setFlowEditorInputHidden(false);
 		setFlowCancelHandler(undefined);
 		setGoalActivityBox(ctx, undefined);
-		clearCompletionAuditStatus(ctx, goal.id, generation, status);
+		clearCompletionAuditStatus(state, ctx, goal.id, generation, status);
 	}
 }
 
 function cancelGoalReview(ctx: ExtensionContext) {
-	cancelCompletionAudit();
-	if (!goalRuntimeState.activeGoal) return;
-	goalRuntimeState.activeGoal = transitionGoal(
-		goalRuntimeState.activeGoal,
-		"paused",
-	);
-	syncGoalReviewSurfaces(goalRuntimeState, ctx, goalRuntimeState.activeGoal);
-	persistGoal(goalRuntimeState.activeGoal, ctx);
-	updateStatus(ctx, goalRuntimeState.activeGoal);
+	const state = goalStateForSession(ctx);
+	cancelCompletionAudit(state);
+	if (!state.activeGoal) return;
+	state.activeGoal = transitionGoal(state.activeGoal, "paused");
+	syncGoalReviewSurfaces(state, ctx, state.activeGoal);
+	persistGoal(state.activeGoal, ctx);
+	updateStatus(ctx, state.activeGoal);
 	closeGoalPlanWatcher();
 	notifyUser(
 		ctx,
-		pausedContinueMessage(ctx, goalRuntimeState.activeGoal.language),
+		pausedContinueMessage(ctx, state.activeGoal.language),
 		"info",
-		goalRuntimeState.activeGoal.language,
+		state.activeGoal.language,
 	);
 }
 
-function startCompletionAudit(goal: ActiveGoal) {
-	return startCompletionAuditState(goalRuntimeState, goal);
+function startCompletionAudit(state: GoalRuntimeState, goal: ActiveGoal) {
+	return startCompletionAuditState(state, goal);
 }
 
 function isGoalStateReviewEnabled() {
@@ -1784,7 +1825,9 @@ function goalReviewActivityMessage(
 function goalReviewActivityRows(ctx: StatusContext, goal: ActiveGoal) {
 	const flow = flowContext(ctx);
 	const goalText = goalDisplayText(ctx, goal);
-	return flow ? activityRows(flow.label, goalText) : activityRows(goalText);
+	return flow
+		? activityRows(flow.displayLabel, goalText)
+		: activityRows(goalText);
 }
 
 function goalAuditLines(_language: Language) {
@@ -1821,15 +1864,15 @@ function saveActiveGoal(
 	ctx: StatusContext,
 	options: { updateStatus?: boolean } = {},
 ) {
+	const state = goalStateForSession(ctx);
 	saveActiveGoalEntry({
 		ctx,
-		goal: goalRuntimeState.activeGoal,
-		live: goalRuntimeState.goalReviewLive,
+		goal: state.activeGoal,
+		live: state.goalReviewLive,
 		pi: goalRuntimeState.extensionApi,
 	});
 	if (options.updateStatus === false) return;
-	if (goalRuntimeState.activeGoal)
-		updateStatus(ctx, goalRuntimeState.activeGoal);
+	if (state.activeGoal) updateStatus(ctx, state.activeGoal);
 }
 
 function syncStandaloneGoalArtifact(
@@ -1840,7 +1883,7 @@ function syncStandaloneGoalArtifact(
 	syncStandaloneGoalArtifactEntry(
 		ctx,
 		goal,
-		goalRuntimeState.goalReviewLive,
+		goalStateForSession(ctx).goalReviewLive,
 		audit,
 	);
 }
@@ -1893,15 +1936,25 @@ function setCompletionCursor(
 					? "active Flow Goal has no flow artifact"
 					: "活动 Flow 目标缺少 flow artifact",
 			);
-		const current = currentGoal(owner.flow);
-		if (!current) return;
-		const goals = owner.flow.goals.map((item, index) =>
-			index === owner.flow.currentGoal
-				? { ...item, completionCursor: cursor }
-				: item,
+		const sessionFile = currentSessionFile(ctx);
+		const updated = withFlowLockSync(
+			owner.dir,
+			`completion cursor ${owner.flow.id}`,
+			() => {
+				const flow = readFlow(owner.dir);
+				const current = currentGoal(flow);
+				if (!current || current.sessionFile !== sessionFile) return;
+				const goals = flow.goals.map((item, index) =>
+					index === flow.currentGoal
+						? { ...item, completionCursor: cursor }
+						: item,
+				);
+				const saved = writeFlow(owner.dir, { ...flow, goals });
+				writeFlowHtml(owner.dir, saved);
+			},
 		);
-		const saved = writeFlow(owner.dir, { ...owner.flow, goals });
-		writeFlowHtml(owner.dir, saved);
+		if (!updated.ok)
+			throw new Error(flowLockBusyMessage(updated.owner, goal.language));
 	} catch (error) {
 		notifyUser(
 			ctx,
@@ -1919,8 +1972,9 @@ function publishGoalReviewLive(
 	goal: ActiveGoal,
 	live: GoalReviewLive,
 ) {
-	goalRuntimeState.goalReviewLive = live;
-	syncGoalReviewSurfaces(goalRuntimeState, ctx, goal);
+	const state = goalStateForSession(ctx);
+	state.goalReviewLive = live;
+	syncGoalReviewSurfaces(state, ctx, goal);
 }
 
 function clearGoalUi(ctx: StatusContext) {
@@ -1961,10 +2015,8 @@ async function sendContinuationPrompt(
 	ctx: StatusContext,
 	goal: ActiveGoal,
 ) {
-	if (
-		goalRuntimeState.continuationPending?.goalId === goal.id ||
-		hasPendingMessages(ctx)
-	)
+	const state = goalStateForSession(ctx);
+	if (state.continuationPending?.goalId === goal.id || hasPendingMessages(ctx))
 		return false;
 	const marker = continuationMarker(goal);
 	const prompt = buildContinuePrompt(
@@ -1972,7 +2024,7 @@ async function sendContinuationPrompt(
 		marker,
 		goalTodoPromptContext(ctx, goal),
 	);
-	goalRuntimeState.continuationPending = {
+	state.continuationPending = {
 		goalId: goal.id,
 		iteration: goal.iteration,
 		marker,
@@ -1982,8 +2034,8 @@ async function sendContinuationPrompt(
 		deliverAsFollowUp: true,
 		language: goal.language,
 	});
-	if (!sent && goalRuntimeState.continuationPending?.marker === marker)
-		goalRuntimeState.continuationPending = undefined;
+	if (!sent && state.continuationPending?.marker === marker)
+		state.continuationPending = undefined;
 	return sent;
 }
 
@@ -2117,7 +2169,7 @@ function flowActivityRows(
 	goal: ActiveGoal,
 ) {
 	return activityRows(
-		flow.label,
+		flow.displayLabel,
 		goal.text,
 		goal.language === "en"
 			? `Progress: ${flow.plan.index + 1}/${flow.flow.goals.length}`
@@ -2192,6 +2244,12 @@ function flowContext(ctx: StatusContext) {
 	return {
 		dir: owner.dir,
 		label: flowStepLabel(goal.index, goal.title, owner.flow.language),
+		displayLabel: flowGoalDisplayLabel(
+			goal.index,
+			goal.title,
+			owner.flow.goals.length,
+			owner.flow.language,
+		),
 		startedAt: requireFlowStartedAt(owner.flow),
 		flow: owner.flow,
 		plan: goal,
@@ -2261,107 +2319,110 @@ function hasPendingMessages(ctx: StatusContext) {
 	return ctx.hasPendingMessages?.() ?? false;
 }
 
-function clearContinuationTracking() {
-	goalRuntimeState.continuationPending = undefined;
-	cancelCompletionAudit();
-	cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
-	goalRuntimeState.cancelledContinuationMarkers.clear();
-	goalRuntimeState.websocketLimitRecoveryAt.clear();
+function clearContinuationTracking(state: GoalRuntimeState) {
+	state.continuationPending = undefined;
+	cancelCompletionAudit(state);
+	cancelGoalRecoveryTimers(state, { resetAutoResumeUse: true });
+	state.cancelledContinuationMarkers.clear();
+	state.websocketLimitRecoveryAt.clear();
 }
 
 function cancelGoalRecoveryTimers(
+	state: GoalRuntimeState,
 	options: { resetAutoResumeUse?: boolean } = {},
 ) {
-	cancelRetryExhaustionWatch();
-	cancelDeferredAutoResume();
-	if (options.resetAutoResumeUse)
-		goalRuntimeState.retryAutoResumeUsedGoalIds.clear();
+	cancelRetryExhaustionWatch(state);
+	cancelDeferredAutoResume(state);
+	if (options.resetAutoResumeUse) state.retryAutoResumeUsedGoalIds.clear();
 }
 
-function cancelRetryExhaustionWatch() {
-	const watch = goalRuntimeState.retryExhaustionWatch;
+function cancelRetryExhaustionWatch(state: GoalRuntimeState) {
+	const watch = state.retryExhaustionWatch;
 	if (!watch) return;
 	clearTimeout(watch.timer);
-	goalRuntimeState.retryExhaustionWatch = undefined;
-	nextRetryRecoveryGeneration();
+	state.retryExhaustionWatch = undefined;
+	nextRetryRecoveryGeneration(state);
 }
 
-function cancelDeferredAutoResume() {
-	const deferred = goalRuntimeState.deferredAutoResume;
+function cancelDeferredAutoResume(state: GoalRuntimeState) {
+	const deferred = state.deferredAutoResume;
 	if (!deferred) return;
 	clearTimeout(deferred.timer);
-	goalRuntimeState.deferredAutoResume = undefined;
-	nextRetryRecoveryGeneration();
+	state.deferredAutoResume = undefined;
+	nextRetryRecoveryGeneration(state);
 }
 
-function nextRetryRecoveryGeneration() {
-	goalRuntimeState.retryRecoveryGeneration += 1;
-	return goalRuntimeState.retryRecoveryGeneration;
+function nextRetryRecoveryGeneration(state: GoalRuntimeState) {
+	state.retryRecoveryGeneration += 1;
+	return state.retryRecoveryGeneration;
 }
 
-function cancelCompletionAudit() {
-	cancelCompletionAuditState(goalRuntimeState);
+function cancelCompletionAudit(state: GoalRuntimeState) {
+	cancelCompletionAuditState(state);
 }
 
 function trackCompletionAuditStatus(
+	state: GoalRuntimeState,
 	goalId: string,
 	generation: number,
 	status: ElapsedStatus,
 ) {
-	trackCompletionAuditStatusState(goalRuntimeState, goalId, generation, status);
+	trackCompletionAuditStatusState(state, goalId, generation, status);
 }
 
 function clearCompletionAuditStatus(
+	state: GoalRuntimeState,
 	ctx: StatusContext,
 	goalId: string,
 	generation: number,
 	status: ElapsedStatus,
 ) {
-	clearCompletionAuditStatusState(
-		goalRuntimeState,
-		ctx,
-		goalId,
-		generation,
-		status,
-	);
+	clearCompletionAuditStatusState(state, ctx, goalId, generation, status);
 }
 
-function isCurrentCompletionAudit(goalId: string, generation: number) {
-	return isCurrentCompletionAuditState(goalRuntimeState, goalId, generation);
+function isCurrentCompletionAudit(
+	state: GoalRuntimeState,
+	goalId: string,
+	generation: number,
+) {
+	return isCurrentCompletionAuditState(state, goalId, generation);
 }
 
-function cancelContinuationPending() {
-	if (goalRuntimeState.continuationPending)
+function cancelContinuationPending(state: GoalRuntimeState) {
+	if (state.continuationPending)
 		rememberCancelledContinuationMarker(
-			goalRuntimeState.continuationPending.marker,
+			state,
+			state.continuationPending.marker,
 		);
-	goalRuntimeState.continuationPending = undefined;
+	state.continuationPending = undefined;
 }
 
-function rememberCancelledContinuationMarker(marker: string) {
-	goalRuntimeState.cancelledContinuationMarkers.add(marker);
+function rememberCancelledContinuationMarker(
+	state: GoalRuntimeState,
+	marker: string,
+) {
+	state.cancelledContinuationMarkers.add(marker);
 	if (
-		goalRuntimeState.cancelledContinuationMarkers.size <=
+		state.cancelledContinuationMarkers.size <=
 		MAX_CANCELLED_CONTINUATION_PROMPTS
 	)
 		return;
-	const oldest = goalRuntimeState.cancelledContinuationMarkers
-		.values()
-		.next().value;
-	if (oldest) goalRuntimeState.cancelledContinuationMarkers.delete(oldest);
+	const oldest = state.cancelledContinuationMarkers.values().next().value;
+	if (oldest) state.cancelledContinuationMarkers.delete(oldest);
 }
 
-function consumeCancelledContinuationPrompt(prompt: string) {
+function consumeCancelledContinuationPrompt(
+	state: GoalRuntimeState,
+	prompt: string,
+) {
 	const marker = extractContinuationMarker(prompt);
-	return marker
-		? goalRuntimeState.cancelledContinuationMarkers.delete(marker)
-		: false;
+	return marker ? state.cancelledContinuationMarkers.delete(marker) : false;
 }
 
-function markContinuationDelivered(prompt: string) {
+function markContinuationDelivered(state: GoalRuntimeState, prompt: string) {
 	const marker = extractContinuationMarker(prompt);
-	if (marker && goalRuntimeState.continuationPending?.marker === marker)
-		goalRuntimeState.continuationPending = undefined;
+	if (marker && state.continuationPending?.marker === marker)
+		state.continuationPending = undefined;
 }
 
 function continuationMarker(goal: ActiveGoal) {
@@ -2545,61 +2606,66 @@ function normalizeLoadedGoal(value: unknown): ActiveGoal | undefined {
 }
 
 function clearActiveGoal(ctx: StatusContext) {
+	const state = goalStateForSession(ctx);
 	setFlowActivity("goal", false);
 	setGoalActivityBox(ctx, undefined);
 	closeGoalPlanWatcher();
-	cancelGoalRecoveryTimers({ resetAutoResumeUse: true });
-	cancelContinuationPending();
-	cancelCompletionAudit();
-	goalRuntimeState.activeGoal = undefined;
+	cancelGoalRecoveryTimers(state, { resetAutoResumeUse: true });
+	cancelContinuationPending(state);
+	cancelCompletionAudit(state);
+	state.activeGoal = undefined;
 	clearPersistedGoal(ctx.cwd, ctx);
-	stopGoalStatusTimer();
-	clearCompletionStatusTimer();
+	stopGoalStatusTimer(state);
+	clearCompletionStatusTimer(state);
 	clearStatus(ctx, STATUS_KEY);
 }
 
 function showCompletionStatus(ctx: StatusContext) {
-	clearCompletionStatusTimer();
-	const language = goalRuntimeState.activeGoal?.language ?? runtimeLanguage();
+	const state = goalStateForSession(ctx);
+	clearCompletionStatusTimer(state);
+	const language = state.activeGoal?.language ?? runtimeLanguage();
 	const text = language === "en" ? "🎯 Goal complete" : "🎯 目标已完成";
 	if (!setStatusSafe(ctx, STATUS_KEY, text, language)) return;
-	goalRuntimeState.completionStatusTimer = setTimeout(
+	state.completionStatusTimer = setTimeout(
 		() => clearStatus(ctx, STATUS_KEY),
 		8_000,
 	);
 }
 
-function clearCompletionStatusTimer() {
-	if (!goalRuntimeState.completionStatusTimer) return;
-	clearTimeout(goalRuntimeState.completionStatusTimer);
-	goalRuntimeState.completionStatusTimer = undefined;
+function clearCompletionStatusTimer(state: GoalRuntimeState) {
+	if (!state.completionStatusTimer) return;
+	clearTimeout(state.completionStatusTimer);
+	state.completionStatusTimer = undefined;
 }
 
-function syncGoalStatusTimer(ctx: StatusContext, goal: ActiveGoal | undefined) {
+function syncGoalStatusTimer(
+	ctx: StatusContext,
+	state: GoalRuntimeState,
+	goal: ActiveGoal | undefined,
+) {
 	if (goal?.status !== "active") {
-		stopGoalStatusTimer();
+		stopGoalStatusTimer(state);
 		return;
 	}
-	if (goalRuntimeState.goalStatusTimer) return;
-	goalRuntimeState.goalStatusTimer = startElapsedStatus(
+	if (state.goalStatusTimer) return;
+	state.goalStatusTimer = startElapsedStatus(
 		ctx,
 		STATUS_KEY,
 		() => {
-			if (goalRuntimeState.activeGoal)
-				updateGoalElapsed(goalRuntimeState.activeGoal);
-			return formatStatus(ctx, goalRuntimeState.activeGoal) ?? "";
+			if (state.activeGoal) updateGoalElapsed(state.activeGoal);
+			return formatStatus(ctx, state.activeGoal) ?? "";
 		},
 		{
-			isActive: () => goalRuntimeState.activeGoal?.status === "active",
+			isActive: () => state.activeGoal?.status === "active",
 			language: goal.language,
 		},
 	);
 }
 
-function stopGoalStatusTimer() {
-	if (!goalRuntimeState.goalStatusTimer) return;
-	goalRuntimeState.goalStatusTimer.stop();
-	goalRuntimeState.goalStatusTimer = undefined;
+function stopGoalStatusTimer(state: GoalRuntimeState) {
+	if (!state.goalStatusTimer) return;
+	state.goalStatusTimer.stop();
+	state.goalStatusTimer = undefined;
 }
 
 function isGoal(value: unknown): value is ActiveGoal {

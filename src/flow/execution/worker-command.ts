@@ -5,10 +5,12 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
+	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
 	artifactChecks,
@@ -22,15 +24,23 @@ import { notifyUser } from "../../shared/ui-language.js";
 import { onFlowGoalCompleted } from "../completion.js";
 import { currentSessionFile } from "../ownership.js";
 import { planGoalPrompt } from "../prompt.js";
-import { findFlow } from "../store.js";
 import type { FlowGoal, FlowState, GoalCompletionFact } from "../types.js";
 import { flowSessionName } from "../util.js";
 import { validateFlowDir } from "../validator.js";
-import { flowNotFoundMessage, flowStatusLabel } from "./shared.js";
+import { flowStatusLabel } from "./shared.js";
+import {
+	type PrivateWorkerControl,
+	type PrivateWorkerJob,
+	privateWorkerControlFromEnv,
+	privateWorkerMessage,
+	samePrivateWorkerJob,
+} from "./worker-protocol.js";
 
 interface WorkerJob {
 	resultPath: string;
 	completed: boolean;
+	parallelRunId?: string;
+	finishPrivateWorker?: () => void;
 }
 
 const workerContexts = new WeakSet<object>();
@@ -39,7 +49,7 @@ const workerJobsBySession = new Map<string, WorkerJob>();
 const workerSessionFiles = new Set<string>();
 let completionListenerRegistered = false;
 
-export function registerWorkerCommand(pi: ExtensionAPI) {
+export function registerWorkerRuntime(pi: ExtensionAPI) {
 	void pi;
 	if (completionListenerRegistered) return;
 	completionListenerRegistered = true;
@@ -53,40 +63,57 @@ export function isWorkerContext(ctx: unknown) {
 	return Boolean(sessionFile && workerSessionFiles.has(sessionFile));
 }
 
-export async function runWorkerCommand(
+export async function startPrivateWorkerFromEnv(
 	pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
-	args: string[],
+	ctx: ExtensionContext,
 ) {
-	if (args.length !== 2)
-		return notifyUser(ctx, workerUsageMessage(runtimeLanguage()), "warning");
-	const [flowId, goalIndexText] = args;
-	const goalIndex = parseGoalIndex(goalIndexText);
-	if (goalIndex === undefined)
-		return notifyUser(ctx, workerUsageMessage(runtimeLanguage()), "warning");
+	let control: PrivateWorkerControl | undefined;
 	try {
-		const location = findFlow(ctx.cwd, flowId);
-		if (!location)
-			return notifyUser(
-				ctx,
-				flowNotFoundMessage(flowId, runtimeLanguage()),
-				"warning",
-			);
-		const validation = validateFlowDir(location.dir, location.flow.language);
-		if (!validation.ok || !validation.flow)
-			return notifyUser(
-				ctx,
-				validationFailedMessage(validation.errors, location.flow.language),
-				"error",
-				location.flow.language,
-			);
-		return startWorkerGoal(pi, ctx, location.dir, validation.flow, goalIndex);
+		control = privateWorkerControlFromEnv();
 	} catch (error) {
-		return notifyUser(
+		notifyUser(
 			ctx,
 			workerStartFailedMessage(formatError(error), runtimeLanguage()),
 			"error",
 		);
+		return exitPrivateWorker();
+	}
+	if (!control) return false;
+	try {
+		const connection = await connectPrivateWorkerControl(control);
+		const validation = validateFlowDir(control.flowDir, runtimeLanguage());
+		if (!validation.ok || !validation.flow) {
+			notifyUser(
+				ctx,
+				validationFailedMessage(
+					validation.errors,
+					validation.flow?.language ?? runtimeLanguage(),
+				),
+				"error",
+				validation.flow?.language,
+			);
+			return exitPrivateWorker();
+		}
+		if (validation.flow.id !== control.flowId)
+			throw new Error(`Private worker flow mismatch: ${validation.flow.id}.`);
+		const started = await startWorkerGoal(
+			pi,
+			ctx as ExtensionCommandContext,
+			control.flowDir,
+			validation.flow,
+			control.goalIndex,
+			control,
+			connection.finish,
+		);
+		if (!started) return exitPrivateWorker();
+		return true;
+	} catch (error) {
+		notifyUser(
+			ctx,
+			workerStartFailedMessage(formatError(error), runtimeLanguage()),
+			"error",
+		);
+		return exitPrivateWorker();
 	}
 }
 
@@ -96,6 +123,8 @@ async function startWorkerGoal(
 	flowDir: string,
 	flow: FlowState,
 	goalIndex: number,
+	privateJob?: PrivateWorkerJob,
+	finishPrivateWorker?: () => void,
 ) {
 	if (flow.status === "complete" || flow.status === "cancelled")
 		return notifyUser(
@@ -123,12 +152,22 @@ async function startWorkerGoal(
 	const workerDir = join(flowDir, "workers", workerId);
 	mkdirSync(workerDir, { recursive: true });
 	const sessionPath = join(workerDir, "session.jsonl");
+	if (privateJob)
+		validatePrivateWorkerJob(privateJob, flow, flowDir, sessionPath);
 	if (currentSessionFile(ctx) !== sessionPath) {
 		let started = false;
 		const result = await ctx.switchSession(sessionPath, {
 			withSession: async (sessionCtx) => {
 				started = Boolean(
-					await startWorkerGoal(pi, sessionCtx, flowDir, flow, goalIndex),
+					await startWorkerGoal(
+						pi,
+						sessionCtx,
+						flowDir,
+						flow,
+						goalIndex,
+						privateJob,
+						finishPrivateWorker,
+					),
 				);
 			},
 		});
@@ -142,7 +181,13 @@ async function startWorkerGoal(
 	const sessionName = flowSessionName(flow, goal);
 	setSessionName(pi, ctx, sessionName);
 	writeWorkerGoalArtifact(ctx, workerDir, goal, sessionName);
-	setWorkerJob(ctx, { resultPath, completed: false });
+	setWorkerJob(ctx, {
+		resultPath,
+		completed: false,
+		parallelRunId:
+			privateJob?.parallelRunId ?? workerParallelRunId(flow, goalIndex),
+		finishPrivateWorker,
+	});
 	const promptGoal = { ...goal, file: `workers/${workerId}/plan.md` };
 	const started = await startGoalFromFlow(
 		{
@@ -191,14 +236,41 @@ function workerPromptFlow(flow: FlowState, promptGoal: FlowGoal) {
 	};
 }
 
+function workerParallelRunId(flow: FlowState, goalIndex: number) {
+	return flow.parallelRun?.goalIndexes.includes(goalIndex)
+		? flow.parallelRun.id
+		: undefined;
+}
+
+function validatePrivateWorkerJob(
+	job: PrivateWorkerJob,
+	flow: FlowState,
+	flowDir: string,
+	sessionPath: string,
+) {
+	if (job.flowId !== flow.id)
+		throw new Error("Private worker flow id mismatch.");
+	if (job.flowDir !== flowDir)
+		throw new Error("Private worker flow dir mismatch.");
+	if (job.sessionPath !== sessionPath)
+		throw new Error("Private worker session path mismatch.");
+	if (job.parallelRunId !== workerParallelRunId(flow, job.goalIndex))
+		throw new Error("Private worker parallel run mismatch.");
+}
+
 function writeWorkerResult(ctx: object | undefined, fact: GoalCompletionFact) {
 	if (!ctx || !isWorkerContext(ctx)) return;
 	const job = workerJob(ctx);
 	if (!job || job.completed) return;
+	const result = job.parallelRunId
+		? { ...fact, parallelRunId: job.parallelRunId }
+		: fact;
 	const tmpPath = `${job.resultPath}.tmp`;
-	writeFileSync(tmpPath, `${JSON.stringify(fact, null, 2)}\n`);
+	writeFileSync(tmpPath, `${JSON.stringify(result, null, 2)}\n`);
 	renameSync(tmpPath, job.resultPath);
 	setWorkerJob(ctx, { ...job, completed: true });
+	job.finishPrivateWorker?.();
+	if (job.finishPrivateWorker) setImmediate(() => process.exit(0));
 }
 
 function setWorkerJob(ctx: object, job: WorkerJob) {
@@ -246,15 +318,86 @@ function setSessionName(
 	sessionManager?.appendSessionInfo?.(name);
 }
 
-function parseGoalIndex(value: string) {
-	if (!/^\d+$/u.test(value)) return undefined;
-	return Number(value);
+function connectPrivateWorkerControl(control: PrivateWorkerControl) {
+	return new Promise<{ finish: () => void }>((resolve, reject) => {
+		const socket = createConnection(control.socketPath);
+		let buffer = "";
+		let settled = false;
+		const fail = (error: unknown) => {
+			if (settled) return;
+			settled = true;
+			socket.destroy();
+			reject(error instanceof Error ? error : new Error(formatError(error)));
+		};
+		socket.once("connect", () => {
+			socket.write(
+				privateWorkerMessage({ type: "hello", token: control.token }),
+			);
+		});
+		socket.on("data", (chunk) => {
+			buffer += chunk;
+			const newline = buffer.indexOf("\n");
+			if (newline === -1) return;
+			const job = privateWorkerStartJob(buffer.slice(0, newline));
+			if (!job || !samePrivateWorkerJob(job, control))
+				return fail(new Error("Private worker control rejected the job."));
+			settled = true;
+			const finish = stopWhenPrivateControlCloses(socket);
+			resolve({ finish });
+		});
+		socket.once("error", fail);
+		socket.once("close", () =>
+			fail(new Error("Private worker control closed.")),
+		);
+	});
 }
 
-function workerUsageMessage(language: "zh" | "en") {
-	return language === "en"
-		? "Usage: /flow worker <flowId> <goalIndex>"
-		: "用法：/flow worker <flowId> <goalIndex>";
+function privateWorkerStartJob(line: string): PrivateWorkerJob | undefined {
+	try {
+		const message = JSON.parse(line) as { type?: unknown; job?: unknown };
+		const job = message.job as Partial<PrivateWorkerJob> | undefined;
+		if (message.type !== "start" || !job) return undefined;
+		if (
+			typeof job.flowId !== "string" ||
+			typeof job.flowDir !== "string" ||
+			typeof job.goalIndex !== "number" ||
+			typeof job.parallelRunId !== "string" ||
+			typeof job.sessionPath !== "string"
+		)
+			return undefined;
+		return {
+			flowId: job.flowId,
+			flowDir: job.flowDir,
+			goalIndex: job.goalIndex,
+			parallelRunId: job.parallelRunId,
+			sessionPath: job.sessionPath,
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+function stopWhenPrivateControlCloses(socket: Socket) {
+	let active = true;
+	const stop = () => {
+		if (!active) return;
+		active = false;
+		process.exit(1);
+	};
+	socket.once("close", stop);
+	socket.once("error", stop);
+	return () => {
+		if (!active) return;
+		active = false;
+		socket.off("close", stop);
+		socket.off("error", stop);
+		socket.destroy();
+	};
+}
+
+function exitPrivateWorker() {
+	process.exit(1);
+	return true;
 }
 
 function validationFailedMessage(errors: string[], language: "zh" | "en") {

@@ -13,6 +13,7 @@ export function watchBatchResults(
 	paths: string[],
 	onResult: (path: string, fact: GoalCompletionFact) => void,
 	signal: AbortSignal,
+	parallelRunId?: string,
 ) {
 	const watchers: FSWatcher[] = [];
 	let closed = false;
@@ -29,7 +30,7 @@ export function watchBatchResults(
 		mkdirSync(parent, { recursive: true });
 		const readResult = () => {
 			if (closed) return;
-			const fact = readCompletionFact(path);
+			const fact = readCompletionFact(path, parallelRunId);
 			if (fact) onResult(path, fact);
 		};
 		readResult();
@@ -44,11 +45,14 @@ export function watchBatchResults(
 	return close;
 }
 
-export function readCompletionFact(path: string) {
+export function readCompletionFact(path: string, parallelRunId?: string) {
 	if (!existsSync(path)) return undefined;
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-		return isGoalCompletionFact(parsed) ? parsed : undefined;
+		if (!isGoalCompletionFact(parsed)) return undefined;
+		if (parallelRunId !== undefined && parsed.parallelRunId !== parallelRunId)
+			return undefined;
+		return parsed;
 	} catch {
 		return undefined;
 	}
@@ -63,6 +67,8 @@ function isGoalCompletionFact(value: unknown): value is GoalCompletionFact {
 		(typeof value.sessionFile === "string" || value.sessionFile === null) &&
 		(value.checks === undefined ||
 			value.checks === null ||
-			isRecord(value.checks))
+			isRecord(value.checks)) &&
+		(value.parallelRunId === undefined ||
+			typeof value.parallelRunId === "string")
 	);
 }

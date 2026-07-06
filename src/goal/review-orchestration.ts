@@ -1,5 +1,8 @@
 import { join } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import type { GoalAuditResult } from "../auditor.js";
 import {
 	emitFlowGoalCompleted,
@@ -7,17 +10,25 @@ import {
 	latestGoalCompletion,
 } from "../flow/completion.js";
 import { writeFlowHtml } from "../flow/html.js";
+import { flowLockBusyMessage, withFlowLockSync } from "../flow/lock.js";
 import { currentSessionFile, flowOwnerForSession } from "../flow/ownership.js";
-import { currentGoal, writeFlow } from "../flow/store.js";
+import { currentGoal, readFlow, writeFlow } from "../flow/store.js";
+import type { GoalCompletionFact } from "../flow/types.js";
 import { requireFlowStartedAt } from "../flow/util.js";
 import type { ReviewLoopStats } from "../review.js";
 import { requestImmediateFlowRender } from "../shared/activity-frame.js";
 import { clipText } from "../shared/clip.js";
 import { reviewToggles } from "../shared/config.js";
-import { flowStepLabel, roundLabel } from "../shared/progress-labels.js";
+import {
+	flowGoalDisplayLabel,
+	flowStepLabel,
+	roundLabel,
+} from "../shared/progress-labels.js";
 import { liveReportUrl } from "../shared/report-server.js";
 import {
+	composeResultCardLines,
 	finalReplyInstruction,
+	resultCardElapsedLine,
 	sendResultCard,
 } from "../shared/result-card.js";
 import { summarizeReviewText } from "../shared/review-format.js";
@@ -43,6 +54,7 @@ import type { CompletionCursor, GoalChecks } from "./types.js";
 import { objectiveFromPlan } from "./validator.js";
 
 export interface GoalCompletionActions {
+	extensionApi: ExtensionAPI | undefined;
 	transitionGoal: (
 		goal: ActiveGoal,
 		status: ActiveGoal["status"],
@@ -124,7 +136,14 @@ export function finalizeGoalCompletion(
 	actions.updateGoalUsage(reviewedGoal, ctx);
 	const audit = stateReviewSummary(reviewedGoal);
 	actions.setCompletionCursor(ctx, reviewedGoal, "finalize_retry");
-	if (!recordFlowGoalCompletion(state, reviewedGoal, audit, ctx, reviewStats)) {
+	const completionFact = recordFlowGoalCompletion(
+		actions.extensionApi,
+		reviewedGoal,
+		audit,
+		ctx,
+		reviewStats,
+	);
+	if (!completionFact) {
 		actions.onCompletionFactFailure(ctx, reviewedGoal);
 		return;
 	}
@@ -140,13 +159,14 @@ export function finalizeGoalCompletion(
 	actions.clearActiveGoal(ctx);
 	actions.showCompletionStatus(ctx);
 	sendCompletionCard(
-		state,
+		actions.extensionApi,
 		ctx,
 		reviewedGoal,
 		stateReviewRound,
 		reviewStats,
 		qualitySummary,
 	);
+	emitFlowGoalCompleted(completionFact, ctx);
 }
 
 export function startCompletionAudit(
@@ -231,7 +251,7 @@ export function yieldForGoalReviewCard(): Promise<void> {
 }
 
 function sendCompletionCard(
-	state: GoalRuntimeState,
+	pi: ExtensionAPI | undefined,
 	ctx: ExtensionContext,
 	goal: ActiveGoal,
 	stateReviewRound: number,
@@ -250,17 +270,22 @@ function sendCompletionCard(
 	if (flow) {
 		const title =
 			goal.language === "en"
-				? `Flow ${flow.label} complete`
-				: `Flow ${flow.label} 已完成`;
-		const durationLine = flowGoalCompleteDurationLine(
-			goal,
-			flow.startedAt,
+				? `Flow ${flow.displayLabel} complete`
+				: `Flow ${flow.displayLabel} 已完成`;
+		const goalLine =
+			goal.language === "en" ? `Goal: ${displayText}` : `目标：${displayText}`;
+		const durationLine = resultCardElapsedLine(
+			flowGoalCompleteDurationText(goal, flow.startedAt, goal.language),
 			goal.language,
+			"totalElapsed",
 		);
 		void refreshReportStatus(ctx, join(flow.dir, "flow.html"), goal.language);
-		const lines = [...checkLines, durationLine];
+		const lines = composeResultCardLines(
+			[[goalLine], checkLines],
+			[durationLine],
+		);
 		sendResultCard(
-			state.extensionApi,
+			pi,
 			ctx,
 			flowGoalCompleteContent(title, displayText, checkLines, goal.language),
 			{
@@ -273,34 +298,32 @@ function sendCompletionCard(
 		);
 		return;
 	}
-	const totalLine =
-		goal.language === "en"
-			? `⏱ Total elapsed: ${durationSince(goal.startedAt)}`
-			: `⏱ 总用时：${durationSince(goal.startedAt)}`;
+	const title = goal.language === "en" ? "Flow complete" : "Flow 已完成";
+	const stepLine =
+		goal.language === "en" ? `Step: ${displayText}` : `步骤：${displayText}`;
+	const totalLine = resultCardElapsedLine(
+		durationSince(goal.startedAt),
+		goal.language,
+		"totalElapsed",
+	);
 	void refreshReportStatus(ctx, undefined, goal.language);
 	const content = [
-		goal.language === "en" ? "[Flow step complete]" : "[Flow 步骤已完成]",
-		goal.language === "en" ? `Step: ${displayText}` : `步骤：${displayText}`,
+		`[${title}]`,
+		stepLine,
 		...checkLines,
 		"",
 		goal.language === "en" ? "Next:" : "下一步：",
 		finalReplyInstruction(goal.language),
 	].join("\n");
 	sendResultCard(
-		state.extensionApi,
+		pi,
 		ctx,
 		content,
 		{
 			tone: "success",
 			result: "完成",
-			title: goal.language === "en" ? "Flow step complete" : "Flow 步骤已完成",
-			lines: [
-				goal.language === "en"
-					? `Step: ${displayText}`
-					: `步骤：${displayText}`,
-				...checkLines,
-				totalLine,
-			],
+			title,
+			lines: composeResultCardLines([[stepLine], checkLines], [totalLine]),
 			language: goal.language,
 		},
 		{ triggerTurn: true },
@@ -329,14 +352,14 @@ async function refreshReportStatus(
 	await liveReportUrl(ctx, htmlPath, language).catch(() => undefined);
 }
 
-function flowGoalCompleteDurationLine(
+function flowGoalCompleteDurationText(
 	goal: ActiveGoal,
 	flowStartedAt: number,
 	language: ActiveGoal["language"],
 ) {
 	return language === "en"
-		? `⏱ Total elapsed: current step ${durationSince(goal.startedAt)} / Flow total ${durationSince(flowStartedAt)}`
-		: `⏱ 总用时：当前步骤 ${durationSince(goal.startedAt)} / Flow 总 ${durationSince(flowStartedAt)}`;
+		? `current step ${durationSince(goal.startedAt)} / Flow total ${durationSince(flowStartedAt)}`
+		: `当前步骤 ${durationSince(goal.startedAt)} / Flow 总 ${durationSince(flowStartedAt)}`;
 }
 
 function completionCheckLines(
@@ -496,12 +519,12 @@ function cleanCompletionDetail(line: string) {
 }
 
 function recordFlowGoalCompletion(
-	state: GoalRuntimeState,
+	pi: ExtensionAPI | undefined,
 	goal: ActiveGoal,
 	audit: string,
 	ctx: StatusContext,
 	reviewStats?: ReviewLoopStats,
-): boolean {
+): GoalCompletionFact | undefined {
 	const fact = {
 		goalId: goal.id,
 		summary:
@@ -512,7 +535,7 @@ function recordFlowGoalCompletion(
 		checks: settledGoalChecks(goal, reviewStats),
 	};
 	try {
-		appendCustomEntry(ctx, state.extensionApi, FLOW_GOAL_COMPLETED_ENTRY, fact);
+		appendCustomEntry(ctx, pi, FLOW_GOAL_COMPLETED_ENTRY, fact);
 	} catch (error) {
 		notifyUser(
 			ctx,
@@ -522,14 +545,13 @@ function recordFlowGoalCompletion(
 			"error",
 			goal.language,
 		);
-		return false;
+		return undefined;
 	}
 	if (sessionEntriesInspectable(ctx)) {
 		const stored = latestGoalCompletion(ctx);
-		if (!stored || stored.goalId !== goal.id) return false;
+		if (!stored || stored.goalId !== goal.id) return undefined;
 	}
-	emitFlowGoalCompleted(fact, ctx);
-	return true;
+	return fact;
 }
 
 function syncFlowGoalReviews(
@@ -540,21 +562,47 @@ function syncFlowGoalReviews(
 	try {
 		const owner = flowOwnerForSession(ctx);
 		if (!owner) return;
-		const current = owner.flow.goals[owner.flow.currentGoal];
-		if (!current || current.status !== "running") return;
-		const checks = artifactChecks(
-			goal.stateReviewHistory,
-			goal.qualityReviewHistory,
-			current.checks,
-			state.goalReviewLive,
+		const synced = withFlowLockSync(
+			owner.dir,
+			`sync goal reviews ${owner.flow.id}`,
+			() => {
+				const flow = readFlow(owner.dir);
+				const current = flow.goals[flow.currentGoal];
+				if (
+					!current ||
+					current.status !== "running" ||
+					current.sessionFile !== currentSessionFile(ctx)
+				)
+					return;
+				const checks = artifactChecks(
+					goal.stateReviewHistory,
+					goal.qualityReviewHistory,
+					current.checks,
+					state.goalReviewLive,
+				);
+				const goals = flow.goals.map((item, index) =>
+					index === flow.currentGoal ? { ...item, checks } : item,
+				);
+				const saved = writeFlow(owner.dir, { ...flow, goals });
+				writeFlowHtml(owner.dir, saved);
+			},
 		);
-		const goals = owner.flow.goals.map((item, index) =>
-			index === owner.flow.currentGoal ? { ...item, checks } : item,
+		if (!synced.ok)
+			notifyUser(
+				ctx,
+				flowLockBusyMessage(synced.owner, goal.language),
+				"warning",
+				goal.language,
+			);
+	} catch (error) {
+		notifyUser(
+			ctx,
+			goal.language === "en"
+				? `Goal review sync failed: ${formatNotifyError(error)}`
+				: `目标检查进度同步失败：${formatNotifyError(error)}`,
+			"warning",
+			goal.language,
 		);
-		const saved = writeFlow(owner.dir, { ...owner.flow, goals });
-		writeFlowHtml(owner.dir, saved);
-	} catch {
-		// 实时审查进度是 best-effort 展示刷新；权威状态由完成事实写入，失败有 notify。
 	}
 }
 
@@ -635,6 +683,12 @@ function flowContext(ctx: StatusContext) {
 	return {
 		dir: owner.dir,
 		label: flowStepLabel(goal.index, goal.title, owner.flow.language),
+		displayLabel: flowGoalDisplayLabel(
+			goal.index,
+			goal.title,
+			owner.flow.goals.length,
+			owner.flow.language,
+		),
 		startedAt: requireFlowStartedAt(owner.flow),
 		flow: owner.flow,
 		plan: goal,

@@ -29,17 +29,16 @@ export interface AlignmentPromptInput {
 	language: Language;
 	originalRequest: string;
 	source: string;
-	latestInput?: string;
-	alignedRequest?: string;
-	alignmentTurns?: AlignmentTurn[];
+}
+
+export interface AlignmentFollowUpPromptInput {
+	language: Language;
 }
 
 const ALIGN_OPTION = "先进行多轮问答对齐想法";
 const DIRECT_OPTION = "跳过对齐，直接根据上下文生成计划";
 const READY_TO_DRAFT_PATTERN = /<!--\s*pi-flow:ready-to-draft\s*-->/iu;
 const NEED_INPUT_PATTERN = /<!--\s*pi-flow:need-input\s*-->/iu;
-const ALIGNED_REQUEST_PATTERN =
-	/<aligned-request>([\s\S]*?)<\/aligned-request>/iu;
 const START_GENERATION_CONFIRMATIONS: Record<Language, string> = {
 	zh: "开始生成",
 	en: "Start generation",
@@ -66,21 +65,35 @@ export async function generationStartOptions(
 }
 
 export function buildAlignmentPrompt(input: AlignmentPromptInput) {
-	const separator = input.language === "en" ? ":" : "：";
-	const latest = input.latestInput
-		? `\n\n${input.language === "en" ? "Latest user input" : "用户最新补充"}${separator}\n${input.latestInput}`
-		: "";
-	const turns = input.alignmentTurns?.length
-		? `\n\n${input.language === "en" ? "Aligned Q&A" : "已对齐问答"}${separator}\n${formatAlignmentTurns(input.alignmentTurns)}`
-		: "";
-	const aligned = input.alignedRequest
-		? `\n\n${input.language === "en" ? "Existing alignment summary" : "已有对齐摘要"}${separator}\n${input.alignedRequest}`
-		: "";
 	const originalRequest =
 		input.originalRequest.trim() || defaultOriginalRequest(input.language);
 	if (input.language === "en")
-		return `${readPrompt("grilling", input.language)}\n\n---\n\nYou are aligning before draft generation.\n\nTarget: Flow plan\nSource: ${input.source}\nCurrent language: ${input.language}\n\nOriginal request:\n${originalRequest}${turns}${aligned}${latest}\n\nRules:\n- This is the alignment phase. Do not write .flow files and do not modify product code.\n- Output language must use current language: ${input.language}. Use Chinese for zh and English for en.\n- Continue the questioning protocol above: ask exactly one question at a time and include your recommended answer.\n- If a question can be answered by reading the codebase, docs, or existing .flow files, inspect them yourself instead of asking the user.\n- If there is enough information, output a user-visible alignment summary and then include the marker <!-- pi-flow:ready-to-draft --> on its own.\n- Put the summary inside <aligned-request>...</aligned-request>; it is a review anchor, not the full source of truth.\n- Do not write a confirmation instruction after the summary; the plugin UI will show how to start generation.`;
-	return `${readPrompt("grilling", input.language)}\n\n---\n\n你正在做生成前对齐。\n\n对象：Flow 计划\n来源：${input.source}\n当前 language：${input.language}\n\n原始需求：\n${originalRequest}${turns}${aligned}${latest}\n\n规则：\n- 这是对齐阶段，禁止写 .flow，禁止修改业务代码。\n- 输出语言必须使用当前 language：${input.language}。zh 用中文；en 用英文。\n- 继续按上面的拷问规则一次只问一个问题，并给出你的推荐答案。\n- 如果问题能通过阅读代码库、文档或现有 .flow 文件回答，就自己查，不要问用户。\n- 如果信息已经足够，请输出对用户可见的对齐摘要，然后单独包含标记 <!-- pi-flow:ready-to-draft -->。\n- 摘要必须放在 <aligned-request>...</aligned-request> 中；它是核对锚点，不是完整事实源。\n- 摘要后不要写确认操作；插件 UI 会显示如何开始生成。`;
+		return `${readPrompt("grilling", input.language)}\n\n---\n\nYou are aligning before draft generation.\n\nTarget: Flow plan\nSource: ${input.source}\nCurrent language: ${input.language}\n\nOriginal request:\n${originalRequest}\n\nRules:\n- This is the alignment phase. Do not write .flow files and do not modify product code.\n- Output language must use current language: ${input.language}. Use Chinese for zh and English for en.\n- Follow the questioning protocol above without turning each round into a full decision-tree report.\n- Only output the ready marker <!-- pi-flow:ready-to-draft --> on its own after all decisions that affect implementation scope, implementation details, requirements, prompt semantics, state source of truth, and test verification are aligned.\n- Do not write a confirmation instruction after the marker; the plugin UI will show how to start generation.`;
+	return `${readPrompt("grilling", input.language)}\n\n---\n\n你正在做生成前对齐。\n\n对象：Flow 计划\n来源：${input.source}\n当前 language：${input.language}\n\n原始需求：\n${originalRequest}\n\n规则：\n- 这是对齐阶段，禁止写 .flow，禁止修改业务代码。\n- 输出语言必须使用当前 language：${input.language}。zh 用中文；en 用英文。\n- 遵循上面的拷问规则，不要把每轮回复写成完整决策树报告。\n- 只有所有会影响实现范围、实现细节、需求、提示词语义、状态事实源、测试验证的决策都已对齐，才单独输出 ready marker <!-- pi-flow:ready-to-draft -->。\n- marker 后不要写确认操作；插件 UI 会显示如何开始生成。`;
+}
+
+export function buildAlignmentFollowUpPrompt(
+	input: AlignmentFollowUpPromptInput,
+) {
+	if (input.language === "en")
+		return `Continue Flow alignment.
+
+Rules:
+- This is still the alignment phase. Do not write .flow files and do not modify product code.
+- Use the visible conversation as context; do not restate a full decision-tree report.
+- Before asking, inspect the codebase, docs, or existing .flow files when facts there can reduce uncertainty.
+- Ask exactly one concise question, provide 2-4 concrete options, mark your recommendation based on the project, requirements, and best practices, and explain why.
+- Only when all decisions affecting implementation scope, implementation details, requirements, prompt semantics, state source of truth, and test verification are aligned, output only the ready marker <!-- pi-flow:ready-to-draft --> on its own.
+- Do not write a confirmation instruction after the marker; the plugin UI will show how to start generation.`;
+	return `继续 Flow 生成前对齐。
+
+规则：
+- 仍处于对齐阶段，禁止写 .flow，禁止修改业务代码。
+- 以上下文里的可见会话为背景；不要把每轮回复写成完整决策树报告。
+- 提问前，如果代码库、文档或现有 .flow 文件能减少不确定性，先探索事实源。
+- 一次只问一个简洁问题，给出 2-4 个具体选项，基于项目、需求和最佳实践标出推荐，并说明理由。
+- 只有所有会影响实现范围、实现细节、需求、提示词语义、状态事实源、测试验证的决策都已对齐，才单独输出 ready marker <!-- pi-flow:ready-to-draft -->。
+- marker 后不要写确认操作；插件 UI 会显示如何开始生成。`;
 }
 
 function defaultOriginalRequest(language: Language) {
@@ -90,42 +103,10 @@ function defaultOriginalRequest(language: Language) {
 }
 
 export function extractAlignmentQuestion(text: string) {
-	return clipAlignmentText(
-		text
-			.replace(READY_TO_DRAFT_PATTERN, "")
-			.replace(NEED_INPUT_PATTERN, "")
-			.replace(ALIGNED_REQUEST_PATTERN, "")
-			.trim(),
-	);
-}
-
-export function formatAlignmentTurns(turns: AlignmentTurn[]) {
-	return turns
-		.slice(-8)
-		.map(
-			(turn, index) =>
-				`Q${index + 1}: ${clipAlignmentText(turn.question)}\nA${index + 1}: ${clipAlignmentText(turn.answer)}`,
-		)
-		.join("\n");
-}
-
-function clipAlignmentText(text: string) {
-	const compact = text.replace(/\s+/gu, " ").trim();
-	return compact.length <= 800
-		? compact
-		: `${compact.slice(0, 800).trimEnd()}…`;
-}
-
-export function appendAlignedRequest(
-	prompt: string,
-	alignedRequest?: string,
-	language: Language = "zh",
-) {
-	const trimmed = alignedRequest?.trim();
-	if (!trimmed) return prompt;
-	const label = language === "en" ? "Alignment summary" : "对齐摘要";
-	const separator = language === "en" ? ":" : "：";
-	return `${prompt}\n\n${label}${separator}\n${trimmed}`;
+	return text
+		.replace(READY_TO_DRAFT_PATTERN, "")
+		.replace(NEED_INPUT_PATTERN, "")
+		.trim();
 }
 
 export function hasReadyToDraft(text: string) {
@@ -134,10 +115,6 @@ export function hasReadyToDraft(text: string) {
 
 export function hasNeedInput(text: string) {
 	return NEED_INPUT_PATTERN.test(text);
-}
-
-export function extractAlignedRequest(text: string) {
-	return ALIGNED_REQUEST_PATTERN.exec(text)?.[1]?.trim() ?? "";
 }
 
 export function startGenerationLabel(language: Language) {
@@ -254,7 +231,7 @@ function chineseAlignmentSummary(stage: GenerationStage, start: string) {
 		return `回答问题继续对齐，或回复「${start}」直接生成计划。`;
 	if (stage === "aligning") return "正在对齐，等待 AI 提问。";
 	if (stage === "awaiting_final_confirm")
-		return `对齐摘要已生成，回复「${start}」生成计划；继续输入则补充对齐。`;
+		return `对齐已完成，回复「${start}」生成计划；继续输入则补充对齐。`;
 	if (stage === "awaiting_blocking_input")
 		return "生成被阻塞，回答当前问题后继续生成。";
 	return "计划生成中。";
@@ -265,7 +242,7 @@ function englishAlignmentSummary(stage: GenerationStage, start: string) {
 		return `Continue alignment by answering the question, or reply “${start}” to generate the plan directly.`;
 	if (stage === "aligning") return "Aligning; waiting for AI to ask.";
 	if (stage === "awaiting_final_confirm")
-		return `Alignment summary is ready. Reply “${start}” to generate the plan; any other input continues alignment.`;
+		return `Alignment is ready. Reply “${start}” to generate the plan; any other input continues alignment.`;
 	if (stage === "awaiting_blocking_input")
 		return "Generation is blocked. Answer the current question to continue generation.";
 	return "Generating plan.";

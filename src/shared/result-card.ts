@@ -29,7 +29,49 @@ export interface ResultCardDetails {
 	language?: Language;
 }
 
+export type ResultCardElapsedKind = "elapsed" | "totalElapsed";
+
 export const RESULT_CARD_TYPE = "pi-flow-result-card";
+
+export function composeResultCardLines(
+	sections: readonly (readonly string[])[],
+	footer: readonly string[] = [],
+): string[] {
+	const lines: string[] = [];
+	for (const section of sections) appendResultCardSection(lines, section);
+	appendResultCardSection(lines, footer);
+	return lines;
+}
+
+export function resultCardElapsedLine(
+	text: string,
+	language: Language,
+	kind: ResultCardElapsedKind = "elapsed",
+) {
+	if (language === "en")
+		return kind === "totalElapsed"
+			? `⏱ Total elapsed: ${text}`
+			: `⏱ Elapsed: ${text}`;
+	return kind === "totalElapsed" ? `⏱ 总用时：${text}` : `⏱ 用时：${text}`;
+}
+
+function appendResultCardSection(
+	lines: string[],
+	section: readonly string[],
+): void {
+	const trimmed = trimBlankEdges(section);
+	if (trimmed.length === 0) return;
+	if (lines.length > 0) lines.push("", "---", "");
+	lines.push(...trimmed);
+}
+
+function trimBlankEdges(lines: readonly string[]) {
+	let start = 0;
+	let end = lines.length;
+	while (start < end && lines[start] === "") start += 1;
+	while (end > start && lines[end - 1] === "") end -= 1;
+	return lines.slice(start, end);
+}
 
 export function registerResultCardRenderer(pi: ExtensionAPI) {
 	pi.registerMessageRenderer<ResultCardDetails>(

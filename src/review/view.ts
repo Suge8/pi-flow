@@ -22,7 +22,9 @@ import {
 	roundTitle,
 } from "../shared/progress-labels.js";
 import {
+	composeResultCardLines,
 	finalReplyInstruction,
+	resultCardElapsedLine,
 	sendResultCard,
 } from "../shared/result-card.js";
 import { formatReviewResultLines } from "../shared/review-format.js";
@@ -227,11 +229,11 @@ export function cancelNotification(loop: ReviewLoop) {
 
 function reviewLines(review: string, loop: ReviewLoop, includeTotal: boolean) {
 	const lines = formatReviewResultLines(review);
-	return [
-		...lines,
-		"",
-		elapsedLine(reviewElapsedText(loop, includeTotal), reviewLanguage(loop)),
-	];
+	const language = reviewLanguage(loop);
+	return composeResultCardLines(
+		[lines],
+		[resultCardElapsedLine(reviewElapsedText(loop, includeTotal), language)],
+	);
 }
 
 function reviewStatusText(loop: ReviewLoop) {
@@ -373,8 +375,4 @@ function infraLabel(language: Language) {
 	return language === "en"
 		? "Non-fix item: model system error"
 		: "非修复项：模型系统错误";
-}
-
-function elapsedLine(text: string, language: Language) {
-	return language === "en" ? `⏱ Elapsed: ${text}` : `⏱ 用时：${text}`;
 }
