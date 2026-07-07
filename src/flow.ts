@@ -21,8 +21,11 @@ import {
 import {
 	clearFlowGeneration,
 	consumeFlowClarificationInput,
+	continueFlowGeneration,
+	ensureFlowGenerationPromptModel,
 	handleGenerationEnd,
-	showFlowGenerationStatus,
+	recordFlowPromptSendFailure,
+	rememberFlowGenerationPromptContext,
 	startFromFile,
 	startGeneration,
 } from "./flow/generation.js";
@@ -42,7 +45,11 @@ import {
 	sendOrchestrationPrompt,
 } from "./shared/internal-prompt.js";
 import { liveReportUrl } from "./shared/report-server.js";
-import { installLocalizedUi, localizeUserText } from "./shared/ui-language.js";
+import {
+	installLocalizedUi,
+	localizeUserText,
+	notifyUser,
+} from "./shared/ui-language.js";
 
 let currentApi: ExtensionAPI | undefined;
 let completionListenerRegistered = false;
@@ -65,7 +72,9 @@ export default function flowExtension(pi: ExtensionAPI) {
 	pi.on("agent_end", async (event, ctx) => {
 		const generated = await handleGenerationEnd(pi, ctx, event);
 		if (generated?.autoStart) {
-			await startFlow(pi, generated.startContext, generated.id);
+			if (canAutoStartFlow(generated.startContext))
+				await startFlow(pi, generated.startContext, generated.id);
+			else notifyAutoStartUnavailable(ctx, generated);
 			return;
 		}
 		if (!isWorkerContext(ctx)) await handleGoalCompletionEnd(pi, ctx);
@@ -75,15 +84,19 @@ export default function flowExtension(pi: ExtensionAPI) {
 		const action = consumeFlowClarificationInput(event.text, ctx);
 		if (!action) return;
 		setGoalActivityBox(ctx, action.activityBox);
+		if (action.kind === "handled") return { action: "handled" as const };
 		if (action.showUserInput)
 			appendVisibleUserInput(pi, event.text, {
 				streamingBehavior: event.streamingBehavior,
 			});
+		if (!(await ensureFlowGenerationPromptModel(pi, ctx, action)))
+			return { action: "handled" as const };
 		const sent = await sendOrchestrationPrompt(pi, ctx, action.prompt, {
 			followUp: true,
 			errorPrefix: "Flow 计划澄清提示发送失败",
 		});
-		if (!sent) clearFlowGeneration(ctx);
+		if (sent) rememberFlowGenerationPromptContext(action, ctx);
+		else recordFlowPromptSendFailure(action, ctx);
 		return { action: "handled" as const };
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
@@ -140,7 +153,6 @@ async function handleFlowCommand(
 	if (command === "status") {
 		if (rest.length > 1)
 			return ctx.ui.notify("用法：/flow status [id]", "warning");
-		if (!rest[0] && showFlowGenerationStatus(ctx)) return;
 		return showStatus(ctx, rest[0]);
 	}
 	if (command === "pause") {
@@ -151,13 +163,20 @@ async function handleFlowCommand(
 	if (command === "continue") {
 		if (rest.length > 1)
 			return ctx.ui.notify("用法：/flow continue [id]", "warning");
+		if (await continueFlowGeneration(pi, ctx, rest[0])) return;
 		return continueFlow(pi, ctx, rest[0]);
 	}
 	if (command === "cancel") {
 		if (rest.length > 1)
 			return ctx.ui.notify("用法：/flow cancel [id]", "warning");
-		if (!rest[0] && clearFlowGeneration(ctx))
-			return ctx.ui.notify("Flow 计划生成已取消。", "warning");
+		const cancelled = clearFlowGeneration(ctx, rest[0]);
+		if (cancelled)
+			return notifyUser(
+				ctx,
+				flowGenerationCancelledMessage(cancelled.language),
+				"warning",
+				cancelled.language,
+			);
 		return cancelFlow(ctx, rest[0]);
 	}
 	const options = await generationStartOptions(ctx);
@@ -165,6 +184,33 @@ async function handleFlowCommand(
 	if (tokens.length === 1 && isFile(ctx.cwd, command))
 		return startFromFile(pi, ctx, [command], options);
 	return startGeneration(pi, ctx, args.trim(), "prompt", undefined, options);
+}
+
+function flowGenerationCancelledMessage(language: "zh" | "en") {
+	return language === "en"
+		? "Flow plan generation cancelled."
+		: "Flow 计划生成已取消。";
+}
+
+function canAutoStartFlow(
+	ctx: ExtensionCommandContext | undefined,
+): ctx is ExtensionCommandContext {
+	return typeof ctx?.newSession === "function";
+}
+
+function notifyAutoStartUnavailable(
+	ctx: ExtensionContext,
+	flow: { id: string; language: "zh" | "en" },
+) {
+	const command = `/flow start ${flow.id}`;
+	notifyUser(
+		ctx,
+		flow.language === "en"
+			? `Flow ${flow.id} plan generated; Pi cannot auto-start it from here. Run ${command} to start.`
+			: `Flow ${flow.id} 计划已生成；当前会话不能自动启动。运行 ${command} 启动。`,
+		"warning",
+		flow.language,
+	);
 }
 
 function isFile(cwd: string, path: string) {

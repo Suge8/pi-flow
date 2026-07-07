@@ -87,7 +87,7 @@ try {
 	const englishUiCopy = [
 		["运行质量检查", "Run quality checks"],
 		["等待 AI 提问。", "Waiting for AI to ask."],
-		["已有运行中的 Flow：F1-test", "A Flow is already running: F1-test"],
+		["已有运行中的 Flow：F1", "A Flow is already running: F1"],
 		["Flow 步骤会话启动失败：boom", "Flow step session start failed: boom"],
 	];
 	for (const [source, expected] of englishUiCopy) {
@@ -136,11 +136,11 @@ try {
 		"跳过对齐，直接根据上下文生成计划",
 	]);
 	const localizedValidationNotice = uiLanguage.localizeUserText(
-		"Flow 校验失败：\nschemaVersion 必须为 7\nlanguage 必须是 zh 或 en",
+		"Flow 校验失败：\nschemaVersion 必须为 8\nlanguage 必须是 zh 或 en",
 	);
 	assert(
 		localizedValidationNotice.includes("Flow validation failed") &&
-			localizedValidationNotice.includes("schemaVersion must be 7") &&
+			localizedValidationNotice.includes("schemaVersion must be 8") &&
 			localizedValidationNotice.includes("language must be zh or en") &&
 			!localizedValidationNotice.includes("必须"),
 		"English validation notice leaked Chinese",
@@ -192,6 +192,14 @@ try {
 		originalRequest: "Ship flow",
 		sourceType: "prompt",
 		language: "en",
+		flowPath: "/tmp/F1",
+	});
+	const restoredFlowGenerationPrompt = flowPrompt.generationPrompt({
+		originalRequest: "Ship flow",
+		sourceType: "prompt",
+		language: "en",
+		flowPath: "/tmp/F1",
+		restoredAlignmentContext: [{ question: "Q?", answer: "A." }],
 	});
 	assert(
 		flowGenerationPrompt.includes("flow.semantic.json"),
@@ -211,10 +219,17 @@ try {
 			!flowGenerationPrompt.includes("3–12 small items"),
 		"English flow prompt missing milestone step rules",
 	);
+	assert(
+		!flowGenerationPrompt.includes("Restored alignment Q&A") &&
+			restoredFlowGenerationPrompt.includes("Restored alignment Q&A") &&
+			restoredFlowGenerationPrompt.includes("Q1: Q?") &&
+			restoredFlowGenerationPrompt.includes("A1: A."),
+		"restored Flow prompt Q&A context should be opt-in",
+	);
 	const flowRepairPrompt = flowPrompt.repairPrompt({
 		errors: ["bad draft"],
 		originalRequest: "Ship flow",
-		flowPath: "/tmp/F1-ship",
+		flowPath: "/tmp/F1",
 		language: "en",
 	});
 	assert(
@@ -223,22 +238,22 @@ try {
 			!flowRepairPrompt.includes("3–12 small items"),
 		"English repair prompt missing milestone step rules",
 	);
-	const badFlowDir = join(out, "F1-bad-flow");
+	const badFlowDir = join(out, "F10");
 	mkdirSync(badFlowDir, { recursive: true });
 	writeFileSync(
 		join(badFlowDir, "flow.json"),
-		`${JSON.stringify({ ...sampleFlow(), schemaVersion: 3, id: "F1-bad-flow" })}\n`,
+		`${JSON.stringify({ ...sampleFlow(), schemaVersion: 3, id: "F10" })}\n`,
 	);
 	const badFlow = flowValidator.validateFlowDir(badFlowDir);
 	assert(
-		badFlow.errors.includes("schemaVersion must be 7") &&
+		badFlow.errors.includes("schemaVersion must be 8") &&
 			!badFlow.errors.some((error) => error.includes("必须")),
 		"English Flow validator error leaked Chinese",
 	);
-	const badParallelFlowDir = join(out, "F1-bad-parallel");
+	const badParallelFlowDir = join(out, "F11");
 	mkdirSync(badParallelFlowDir, { recursive: true });
 	const badParallelFlow = sampleFlow();
-	badParallelFlow.id = "F1-bad-parallel";
+	badParallelFlow.id = "F11";
 	badParallelFlow.parallelRun = "bad";
 	badParallelFlow.goals.push({
 		...badParallelFlow.goals[0],
@@ -264,10 +279,10 @@ try {
 			!badParallelFlowResult.errors.some(hasChinese),
 		"English parallel Flow validator error leaked Chinese",
 	);
-	const badFinalRoleDir = join(out, "F1-bad-final-role");
+	const badFinalRoleDir = join(out, "F12");
 	mkdirSync(badFinalRoleDir, { recursive: true });
 	const badFinalRoleFlow = sampleFlow();
-	badFinalRoleFlow.id = "F1-bad-final-role";
+	badFinalRoleFlow.id = "F12";
 	badFinalRoleFlow.goals[0].role = "final_acceptance";
 	badFinalRoleFlow.goals.push({
 		...badFinalRoleFlow.goals[0],
@@ -304,8 +319,8 @@ try {
 		"English Flow HTML chrome missing",
 	);
 	assert(
-		html.includes("/flow start F1") && !html.includes("/flow start F1-ship"),
-		"English Flow HTML command did not use short id",
+		html.includes("/flow start F1"),
+		"English Flow HTML command did not use bare id",
 	);
 	assert(
 		!html.includes("Multi-step plan"),
@@ -323,9 +338,8 @@ try {
 		"English Flow status step label missing",
 	);
 	assert(
-		status.includes("Next: /flow start F1") &&
-			!status.includes("/flow start F1-ship"),
-		"English Flow status next command did not use short id",
+		status.includes("Next: /flow start F1"),
+		"English Flow status next command did not use bare id",
 	);
 
 	process.env = originalEnv;
@@ -466,44 +480,125 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 		pendingManyTurns.alignmentTurns?.length === 10,
 		"alignment Q&A memory should not trim to the old 8-turn limit",
 	);
-	const waiting = generationAlignment.generationAlignmentActivityCopy(
+	const zhAskQ1 = generationAlignment.generationAlignmentActivityCopy(
+		"aligning",
+		"zh",
+		1,
+	);
+	const zhAskQ2 = generationAlignment.generationAlignmentActivityCopy(
+		"aligning",
+		"zh",
+		2,
+	);
+	assert(
+		zhAskQ1.phase === "对齐中" &&
+			zhAskQ1.rows === "等待 AI 提出 Q1" &&
+			zhAskQ2.rows === "等待 AI 提出 Q2",
+		"Chinese Q1/Q2 ask copy missing",
+	);
+	const zhWaitingQ2 = generationAlignment.generationAlignmentActivityCopy(
 		"awaiting_alignment_input",
-		"en",
+		"zh",
+		2,
 	);
 	assert(
-		waiting.phase === "Waiting for reply",
-		"English alignment phase missing",
+		zhWaitingQ2.phase === "等待回复 Q2" &&
+			zhWaitingQ2.rows[0] === "回答 Q2 继续对齐" &&
+			zhWaitingQ2.rows[1] === "回复「开始生成」直接生成计划",
+		"Chinese waiting-reply copy missing",
 	);
-	assert(
-		waiting.rows[0] === "Continue alignment by answering the question" &&
-			waiting.rows[1] ===
-				"Reply “Start generation” to generate the plan directly",
-		"English alignment rows missing",
-	);
-	const final = generationAlignment.generationAlignmentActivityCopy(
+	const zhFinal = generationAlignment.generationAlignmentActivityCopy(
 		"awaiting_final_confirm",
 		"zh",
 	);
 	assert(
-		final.rows[0] === "回复「开始生成」生成计划" &&
-			final.rows[1] === "继续输入则补充对齐",
-		"Chinese alignment rows missing",
+		zhFinal.phase === "等待确认" &&
+			zhFinal.rows[0] === "对齐已就绪" &&
+			zhFinal.rows[1] === "回复「开始生成」生成计划" &&
+			zhFinal.rows[2] === "继续输入则补充对齐",
+		"Chinese ready-confirmation rows missing",
+	);
+	const zhDraft = generationAlignment.generationAlignmentActivityCopy(
+		"generating",
+		"zh",
+		3,
+	);
+	assert(
+		zhDraft.phase === "撰写计划中" && zhDraft.rows.length === 0,
+		"Chinese drafting copy should not depend on Q&A turns",
+	);
+	const enAskQ1 = generationAlignment.generationAlignmentActivityCopy(
+		"aligning",
+		"en",
+		1,
+	);
+	const enAskQ2 = generationAlignment.generationAlignmentActivityCopy(
+		"aligning",
+		"en",
+		2,
+	);
+	assert(
+		enAskQ1.phase === "Aligning" &&
+			enAskQ1.rows === "Waiting for AI to ask Q1" &&
+			enAskQ2.rows === "Waiting for AI to ask Q2",
+		"English Q1/Q2 ask copy missing",
+	);
+	const enWaitingQ1 = generationAlignment.generationAlignmentActivityCopy(
+		"awaiting_alignment_input",
+		"en",
+		1,
+	);
+	assert(
+		enWaitingQ1.phase === "Waiting for Q1 reply" &&
+			enWaitingQ1.rows[0] === "Answer Q1 to continue alignment" &&
+			enWaitingQ1.rows[1] ===
+				"Reply “Start generation” to generate the plan directly",
+		"English waiting-reply rows missing",
+	);
+	const enFinal = generationAlignment.generationAlignmentActivityCopy(
+		"awaiting_final_confirm",
+		"en",
+	);
+	assert(
+		enFinal.phase === "Ready to draft" &&
+			enFinal.rows[0] === "Alignment is ready" &&
+			enFinal.rows[1] === "Reply “Start generation” to generate the plan" &&
+			enFinal.rows[2] === "Any other input continues alignment",
+		"English ready-confirmation rows missing",
+	);
+	const enDraft = generationAlignment.generationAlignmentActivityCopy(
+		"generating",
+		"en",
+		3,
+	);
+	assert(
+		enDraft.phase === "Drafting plan" && enDraft.rows.length === 0,
+		"English drafting copy should not depend on Q&A turns",
 	);
 	assert(
 		generationAlignment.generationAlignmentSummary(
 			"awaiting_alignment_input",
 			"en",
 		) ===
-			"Continue alignment by answering the question, or reply “Start generation” to generate the plan directly.",
-		"English alignment summary missing",
+			"Answer Q1 to continue alignment, or reply “Start generation” to generate the plan directly." &&
+			generationAlignment.generationAlignmentSummary("generating", "zh", 8) ===
+				"正在撰写计划。",
+		"alignment summary copy missing",
+	);
+	const draftBox = generationState.generationDraftBox(
+		"🌊 Flow · Drafting plan",
+	);
+	assert(
+		draftBox.rows.length === 0,
+		"drafting activity box should not render empty Q&A rows",
 	);
 }
 
 function sampleFlow() {
 	return {
-		schemaVersion: 7,
+		schemaVersion: 8,
 		language: "en",
-		id: "F1-ship",
+		id: "F1",
 		title: "Ship feature",
 		status: "draft",
 		source: { type: "prompt", path: null, originalRequest: "Ship feature" },

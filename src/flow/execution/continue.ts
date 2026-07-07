@@ -43,6 +43,7 @@ import { validateFlowDir } from "../validator.js";
 import { closeFlowGoalWatcher } from "../watcher.js";
 import {
 	continueCurrentGoal,
+	flowStatusLabel,
 	flowTargetOrNotify,
 	verifyCurrentSnapshot,
 } from "./shared.js";
@@ -53,8 +54,23 @@ export async function continueFlow(
 	ctx: ExtensionCommandContext,
 	id?: string,
 ) {
-	const location = flowTargetOrNotify(ctx, { id, command: "continue" });
+	const location = flowTargetOrNotify(ctx, {
+		id,
+		command: "continue",
+		requireRunning: false,
+	});
 	if (!location) return;
+	if (location.flow.status === "draft")
+		return startGoalInNewSession(pi, ctx, location.dir, location.flow, 0);
+	if (location.flow.status !== "running") {
+		notifyUser(
+			ctx,
+			flowCannotContinueMessage(location.flow),
+			"warning",
+			location.flow.language,
+		);
+		return;
+	}
 	const activeBatch = activeParallelBatchForDir(location.dir);
 	if (location.flow.parallelRun && activeBatch) {
 		notifyUser(
@@ -285,6 +301,13 @@ function flowGoalCompleteNotice(index: number, title: string, flow: FlowState) {
 	return flow.language === "en"
 		? `Flow ${label} complete.`
 		: `Flow ${label} 已完成。`;
+}
+
+function flowCannotContinueMessage(flow: FlowState) {
+	const status = flowStatusLabel(flow.status, flow.language);
+	return flow.language === "en"
+		? `${flow.id} status: ${status}; cannot continue.`
+		: `${flow.id} 当前状态：${status}，不能继续。`;
 }
 
 function parallelRunStillRunningMessage(flow: FlowState) {
