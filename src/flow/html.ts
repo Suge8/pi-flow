@@ -109,6 +109,12 @@ export function renderFlowHtml(dir: string, flow: FlowState) {
 
 function heroSubtitle(flow: FlowState, total: number) {
 	const t = copy(flow.language);
+	if (flow.status === "aligning")
+		return flow.language === "en"
+			? "Aligning before plan generation"
+			: "生成计划前对齐中";
+	if (flow.status === "generating")
+		return flow.language === "en" ? "Generating plan" : "计划生成中";
 	if (flow.status === "complete") return t.allStepsDone(total);
 	if (flow.status === "cancelled") return t.cancelled;
 	const current = flow.goals[flow.currentGoal];

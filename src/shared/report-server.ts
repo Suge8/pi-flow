@@ -34,8 +34,9 @@ export async function openLiveHtmlOnce(
 ) {
 	const url = await liveReportUrl(ctx, htmlPath, language);
 	const server = reportServerGlobal.__PI_FLOW_REPORT_SERVER__;
-	if (!url || !server || server.opened.has(url)) return url;
-	server.opened.add(url);
+	const openedKey = `${resolve(ctx.cwd)}\0${resolve(htmlPath)}`;
+	if (!url || !server || server.opened.has(openedKey)) return url;
+	server.opened.add(openedKey);
 	await openUrl(pi, url).catch(() => undefined);
 	return url;
 }
