@@ -8,10 +8,11 @@ const EXACT_EN = new Map<string, string>([
 		"Usage: node scripts/validate-draft.mjs <.flow/F1>",
 	],
 	["缺少 flow.json", "Missing flow.json"],
-	["schemaVersion 必须为 8", "schemaVersion must be 8"],
+	["schemaVersion 必须为 9", "schemaVersion must be 9"],
 	["language 必须是 zh 或 en", "language must be zh or en"],
 	["id 必须匹配 F1", "id must match F1"],
 	["title 必须是非空字符串", "title must be a non-empty string"],
+	["Flow 状态不受支持", "Flow status is not supported"],
 	["createdAt 必须是时间戳", "createdAt must be a timestamp"],
 	["updatedAt 必须是时间戳", "updatedAt must be a timestamp"],
 	["repairAttempts 必须是整数", "repairAttempts must be an integer"],
@@ -26,6 +27,16 @@ const EXACT_EN = new Map<string, string>([
 		"startedAt 运行态必须是时间戳",
 		"startedAt must be a timestamp when running",
 	],
+	[
+		"startedAt 已暂停必须为 null 或时间戳",
+		"startedAt must be null or a timestamp when paused",
+	],
+	[
+		"paused Flow parallelRun 必须为 null",
+		"paused Flow parallelRun must be null",
+	],
+	["pausedFrom 不是合法 Flow 字段", "pausedFrom is not a valid Flow field"],
+	["stopped 不是合法 Flow 字段", "stopped is not a valid Flow field"],
 	["source 必须是对象", "source must be an object"],
 	[
 		"source.type 必须是 conversation、prompt 或 file",
@@ -39,6 +50,15 @@ const EXACT_EN = new Map<string, string>([
 	["errors 必须是数组", "errors must be an array"],
 	["errors 必须是字符串数组", "errors must be a string array"],
 	["goals 必须是数组", "goals must be an array"],
+	["pre-draft Flow goals 必须为 []", "pre-draft Flow goals must be []"],
+	[
+		"pre-draft Flow currentGoal 必须为 0",
+		"pre-draft Flow currentGoal must be 0",
+	],
+	[
+		"pre-draft Flow parallelRun 必须为 null",
+		"pre-draft Flow parallelRun must be null",
+	],
 	["至少需要 1 个执行步骤", "At least 1 execution step is required"],
 	[
 		"执行步骤数量超过 10；final acceptance 不占执行步骤名额，必须拆成多个 flow",
@@ -200,6 +220,8 @@ function validationErrorLine(text: string) {
 	if (match) return `${match[1]} must be ${validationTypeText(match[2])}`;
 	match = /^(.+) 必须为 (.+)$/u.exec(text);
 	if (match) return `${match[1]} must be ${validationTypeText(match[2])}`;
+	match = /^status 非法：.+$/u.exec(text);
+	if (match) return "Flow status is not supported";
 	match = /^(.+) 非法：(.+)$/u.exec(text);
 	if (match) return `${match[1]} is invalid: ${match[2]}`;
 	match = /^(.+) 非法$/u.exec(text);

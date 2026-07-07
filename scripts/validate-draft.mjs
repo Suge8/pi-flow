@@ -39,7 +39,7 @@ function validateFlow(root) {
 	const errors = [];
 	const flow = readArtifact(join(root, "flow.json"), "flow.json", errors);
 	if (!flow) return errors;
-	if (flow.schemaVersion !== 8) errors.push("schemaVersion 必须为 8");
+	if (flow.schemaVersion !== 9) errors.push("schemaVersion 必须为 9");
 	validateLanguage(flow.language, errors);
 	if (!FLOW_ID_PATTERN.test(String(flow.id ?? "")))
 		errors.push("id 必须匹配 F1");
@@ -51,8 +51,10 @@ function validateFlow(root) {
 		errors,
 	);
 	if (!nonEmpty(flow.title)) errors.push("title 必须是非空字符串");
-	if (!["draft", "running", "complete", "cancelled"].includes(flow.status))
-		errors.push(`status 非法：${flow.status}`);
+	if (!["draft", "paused", "running", "complete"].includes(flow.status))
+		errors.push("Flow 状态不受支持");
+	for (const field of ["pausedFrom", "stopped"])
+		if (field in flow) errors.push(`${field} 不是合法 Flow 字段`);
 	for (const key of ["createdAt", "updatedAt"])
 		if (!Number.isFinite(flow[key])) errors.push(`${key} 必须是时间戳`);
 	validateFlowStartedAt(flow, errors);
@@ -113,6 +115,13 @@ function flowGoalRole(goal) {
 function validateFlowStartedAt(flow, errors) {
 	if (flow.status === "draft") {
 		if (flow.startedAt !== null) errors.push("startedAt 草稿必须为 null");
+		return;
+	}
+	if (flow.status === "paused") {
+		if (flow.startedAt !== null && !Number.isFinite(flow.startedAt))
+			errors.push("startedAt 已暂停必须为 null 或时间戳");
+		if (flow.parallelRun !== null)
+			errors.push("paused Flow parallelRun 必须为 null");
 		return;
 	}
 	if (!Number.isFinite(flow.startedAt))

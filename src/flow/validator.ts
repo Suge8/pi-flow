@@ -21,15 +21,16 @@ import type {
 	FlowState,
 	FlowStatus,
 } from "./types.js";
+import { FLOW_SCHEMA_VERSION } from "./types.js";
 
 const FLOW_ID_PATTERN = /^F[1-9]\d*$/u;
 const FLOW_STATUSES = new Set<FlowStatus>([
 	"aligning",
 	"generating",
 	"draft",
+	"paused",
 	"running",
 	"complete",
-	"cancelled",
 ]);
 const GOAL_STATUSES = new Set<FlowGoalStatus>([
 	"pending",
@@ -74,19 +75,20 @@ export function validateFlowDir(dir: string, language?: Language) {
 }
 
 export function validateFlowShape(flow: FlowState, errors: string[]) {
-	if (flow.schemaVersion !== 8) errors.push("schemaVersion 必须为 8");
+	if (flow.schemaVersion !== FLOW_SCHEMA_VERSION)
+		errors.push(`schemaVersion 必须为 ${FLOW_SCHEMA_VERSION}`);
 	validateLanguage(flow.language, errors);
 	if (!FLOW_ID_PATTERN.test(String(flow.id ?? "")))
 		errors.push("id 必须匹配 F1");
 	if (!nonEmpty(flow.title)) errors.push("title 必须是非空字符串");
-	if (!FLOW_STATUSES.has(flow.status))
-		errors.push(`status 非法：${flow.status}`);
+	if (!FLOW_STATUSES.has(flow.status)) errors.push("Flow 状态不受支持");
 	if (!Number.isFinite(flow.createdAt)) errors.push("createdAt 必须是时间戳");
 	if (!Number.isFinite(flow.updatedAt)) errors.push("updatedAt 必须是时间戳");
 	if (!Number.isInteger(flow.currentGoal))
 		errors.push("currentGoal 必须是整数");
 	if (!Number.isInteger(flow.repairAttempts))
 		errors.push("repairAttempts 必须是整数");
+	validateForbiddenLifecycleFields(flow, errors);
 	validateSource(flow.source, errors);
 	validateErrorsArray(flow.errors, errors);
 	validateParallelRun(
@@ -99,7 +101,7 @@ export function validateFlowShape(flow: FlowState, errors: string[]) {
 		return;
 	}
 	validateStartedAt(flow, flow.goals.length, errors);
-	if (isPreDraftFlow(flow)) {
+	if (isPreDraftFlow(flow) || isPreDraftOnlyStatus(flow.status)) {
 		validatePreDraftShape(flow, errors);
 		return;
 	}
@@ -120,6 +122,12 @@ function validateFlowDirName(dir: string, flow: FlowState, errors: string[]) {
 	const id = String(flow.id ?? "");
 	if (FLOW_ID_PATTERN.test(id) && basename(dir) !== id)
 		errors.push(`flow 目录名必须等于 id：${id}`);
+}
+
+function validateForbiddenLifecycleFields(flow: unknown, errors: string[]) {
+	if (!isRecord(flow)) return;
+	for (const field of ["pausedFrom", "stopped"])
+		if (field in flow) errors.push(`${field} 不是合法 Flow 字段`);
 }
 
 export function isFinalAcceptance(goal: unknown) {
@@ -158,10 +166,13 @@ function validateFinalAcceptancePlacement(
 
 function isPreDraftFlow(flow: FlowState) {
 	return (
-		flow.status === "aligning" ||
-		flow.status === "generating" ||
-		(flow.status === "cancelled" && flow.goals.length === 0)
+		flow.goals.length === 0 &&
+		(isPreDraftOnlyStatus(flow.status) || flow.status === "paused")
 	);
+}
+
+function isPreDraftOnlyStatus(status: FlowStatus) {
+	return status === "aligning" || status === "generating";
 }
 
 function validatePreDraftShape(flow: FlowState, errors: string[]) {
@@ -181,9 +192,16 @@ function validateStartedAt(
 		flow.status === "aligning" ||
 		flow.status === "generating" ||
 		flow.status === "draft" ||
-		(flow.status === "cancelled" && goalCount === 0)
+		(flow.status === "paused" && goalCount === 0)
 	) {
 		if (flow.startedAt !== null) errors.push("startedAt 计划必须为 null");
+		return;
+	}
+	if (flow.status === "paused") {
+		if (flow.startedAt !== null && !Number.isFinite(flow.startedAt))
+			errors.push("startedAt 已暂停必须为 null 或时间戳");
+		if (flow.parallelRun !== null)
+			errors.push("paused Flow parallelRun 必须为 null");
 		return;
 	}
 	if (!Number.isFinite(flow.startedAt))

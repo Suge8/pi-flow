@@ -3,6 +3,7 @@ import type { GoalChecks } from "../goal/types.js";
 import type { Language } from "../shared/config.js";
 import { tryReadFlow, writeFlow } from "./store.js";
 import type { FlowGoal, FlowGoalRole, FlowSource, FlowState } from "./types.js";
+import { FLOW_SCHEMA_VERSION } from "./types.js";
 
 export interface FlowSemanticInput {
 	title: string;
@@ -30,7 +31,7 @@ export function buildFlowArtifact(
 			? previous.repairAttempts
 			: 0;
 	return writeFlow(dir, {
-		schemaVersion: 8,
+		schemaVersion: FLOW_SCHEMA_VERSION,
 		language,
 		id: basename(dir),
 		title: requiredTitle(input.title),

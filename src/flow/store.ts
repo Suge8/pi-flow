@@ -1,9 +1,15 @@
 import { mkdirSync } from "node:fs";
 import { createArtifactStore } from "../shared/artifact-store.js";
 import type { Language } from "../shared/config.js";
+import { tryReadAlignmentState } from "../shared/generation-state.js";
 import type { FlowLocation, FlowSource, FlowState } from "./types.js";
+import { FLOW_SCHEMA_VERSION } from "./types.js";
 
 const FLOW_ID_PATTERN = /^F[1-9]\d*$/u;
+
+export function isFlowId(id: string) {
+	return FLOW_ID_PATTERN.test(id);
+}
 
 const flowStore = createArtifactStore<FlowState, "flow">({
 	rootDir: ".flow",
@@ -65,13 +71,23 @@ export function runningFlows(cwd: string) {
 	return listFlows(cwd).filter((item) => item.flow.status === "running");
 }
 
-export function activeFlows(cwd: string) {
-	return listFlows(cwd).filter((item) => isActiveFlowStatus(item.flow.status));
+export function advanceableFlows(cwd: string) {
+	return listFlows(cwd).filter((item) => isAdvanceableFlow(item.flow));
 }
 
-function isActiveFlowStatus(status: FlowState["status"]) {
+function isAdvanceableFlow(flow: FlowState) {
+	if (flow.status === "aligning" || flow.status === "generating")
+		return (
+			Array.isArray(flow.goals) &&
+			flow.goals.length === 0 &&
+			flow.currentGoal === 0 &&
+			flow.startedAt === null &&
+			flow.parallelRun === null
+		);
 	return (
-		status === "aligning" || status === "generating" || status === "running"
+		flow.status === "draft" ||
+		flow.status === "paused" ||
+		flow.status === "running"
 	);
 }
 
@@ -100,7 +116,7 @@ export function createPreDraftFlow(
 		}
 		const now = Date.now();
 		const flow = writeFlow(dir, {
-			schemaVersion: 8,
+			schemaVersion: FLOW_SCHEMA_VERSION,
 			language: input.language,
 			id,
 			title: `Flow ${id}`,
@@ -141,19 +157,51 @@ export function flowOwningSession(
 	sessionFile: string | undefined,
 ) {
 	if (!sessionFile) return undefined;
-	return listFlows(cwd).find(
-		({ flow }) => flowCurrentSessionFile(flow) === sessionFile,
+	return listFlows(cwd).find((location) =>
+		flowLocationOwnsSession(location, sessionFile),
 	);
 }
 
+export function flowLocationOwnsSession(
+	location: FlowLocation,
+	sessionFile: string,
+) {
+	if (isPreDraftSessionFlow(location.flow))
+		return tryReadAlignmentState(location.dir)?.sessionFile === sessionFile;
+	return flowOwnsSession(location.flow, sessionFile);
+}
+
+export function flowOwnsSession(flow: FlowState, sessionFile: string) {
+	return runningGoals(flow).some((goal) => goal.sessionFile === sessionFile);
+}
+
 export function flowCurrentSessionFile(flow: FlowState) {
-	if (flow.status !== "running" || !Array.isArray(flow.goals)) return undefined;
+	if (!flowCanOwnSession(flow) || !Array.isArray(flow.goals)) return undefined;
 	const current = currentGoal(flow);
 	if (current?.status === "running") return current.sessionFile ?? undefined;
-	const running = flow.goals.filter((goal) => goal.status === "running");
+	const running = runningGoals(flow);
 	return running.length === 1
 		? (running[0].sessionFile ?? undefined)
 		: undefined;
+}
+
+function runningGoals(flow: FlowState) {
+	if (!flowCanOwnSession(flow) || !Array.isArray(flow.goals)) return [];
+	return flow.goals.filter((goal) => goal?.status === "running");
+}
+
+function isPreDraftSessionFlow(flow: FlowState) {
+	return (
+		Array.isArray(flow.goals) &&
+		flow.goals.length === 0 &&
+		(flow.status === "aligning" ||
+			flow.status === "generating" ||
+			flow.status === "paused")
+	);
+}
+
+function flowCanOwnSession(flow: FlowState) {
+	return flow.status === "running" || flow.status === "paused";
 }
 
 export function currentGoal(flow: FlowState) {

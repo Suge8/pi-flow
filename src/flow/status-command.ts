@@ -45,7 +45,7 @@ function isPreDraftStatus(flow: FlowState) {
 		flow.goals.length === 0 &&
 		(flow.status === "aligning" ||
 			flow.status === "generating" ||
-			flow.status === "cancelled")
+			flow.status === "paused")
 	);
 }
 

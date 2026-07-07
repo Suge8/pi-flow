@@ -7,7 +7,6 @@ export interface UiCopy {
 	draftGoal: string;
 	running: string;
 	completed: string;
-	cancelled: string;
 	paused: string;
 	budgetLimited: string;
 	pending: string;
@@ -61,7 +60,6 @@ const ZH: UiCopy = {
 	draftGoal: "单任务计划",
 	running: "执行中",
 	completed: "已完成",
-	cancelled: "已取消",
 	paused: "已暂停",
 	budgetLimited: "预算受限",
 	pending: "待执行",
@@ -111,7 +109,6 @@ const EN: UiCopy = {
 	draftGoal: "Single-goal plan",
 	running: "Running",
 	completed: "Complete",
-	cancelled: "Cancelled",
 	paused: "Paused",
 	budgetLimited: "Budget limited",
 	pending: "Pending",
