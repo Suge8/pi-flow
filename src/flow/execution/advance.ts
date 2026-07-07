@@ -17,8 +17,11 @@ import {
 	sendResultCard,
 } from "../../shared/result-card.js";
 import { formatDuration } from "../../shared/status.js";
-import { notifyUser } from "../../shared/ui-language.js";
-import { latestGoalCompletion } from "../completion.js";
+import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
+import {
+	completionFactAllowedByBoundary,
+	latestGoalCompletion,
+} from "../completion.js";
 import { completeGoalWithFact } from "../goal-completion.js";
 import { writeFlowHtml } from "../html.js";
 import { flowLockBusyMessage, withFlowLock } from "../lock.js";
@@ -43,30 +46,29 @@ import { validateFlowDir } from "../validator.js";
 import { closeFlowGoalWatcher } from "../watcher.js";
 import {
 	continueCurrentGoal,
+	flowNoActiveStepMessage,
 	flowStatusLabel,
-	flowTargetOrNotify,
+	flowValidationFailedNotice,
 	verifyCurrentSnapshot,
 } from "./shared.js";
 import { startGoalInNewSession } from "./start.js";
 
-export async function continueFlow(
+export async function advanceFlowExecution(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
-	id?: string,
+	location: FlowLocation,
 ) {
-	const location = flowTargetOrNotify(ctx, {
-		id,
-		command: "continue",
-		requireRunning: false,
-	});
-	if (!location) return;
-	if (location.flow.status === "draft")
+	if (canStartFromBeginning(location.flow))
 		return startGoalInNewSession(pi, ctx, location.dir, location.flow, 0);
+	if (location.flow.status === "paused") {
+		const { resumeFlow } = await import("./resume.js");
+		return resumeFlow(pi, ctx, location.id);
+	}
 	if (location.flow.status !== "running") {
 		notifyUser(
 			ctx,
-			flowCannotContinueMessage(location.flow),
-			"warning",
+			flowCannotAdvanceMessage(location.flow),
+			"info",
 			location.flow.language,
 		);
 		return;
@@ -95,7 +97,7 @@ export async function continueFlow(
 		notifyUser(
 			ctx,
 			flowLockBusyMessage(verified.owner, location.flow.language),
-			"warning",
+			"info",
 			location.flow.language,
 		);
 		return;
@@ -108,10 +110,8 @@ export async function continueFlow(
 	if (!plan)
 		return notifyUser(
 			ctx,
-			location.flow.language === "en"
-				? "Flow has no active step."
-				: "Flow 没有进行中的步骤。",
-			"error",
+			flowNoActiveStepMessage(verifiedFlow.language),
+			"info",
 			verifiedFlow.language,
 		);
 	if (plan.sessionFile !== currentSessionFile(ctx)) {
@@ -132,6 +132,10 @@ export async function handleGoalCompletionEnd(
 	const fact =
 		givenFact ?? completionFact(sessionFile) ?? latestGoalCompletion(ctx);
 	if (!fact) return false;
+	if (!completionFactAllowedByBoundary(ctx, fact)) {
+		deleteCompletionFact(fact.sessionFile);
+		return false;
+	}
 	const location =
 		completionFlowLocation(ctx, sessionFile, fact) ??
 		invalidCompletionFlowLocation(ctx);
@@ -145,7 +149,7 @@ export async function handleGoalCompletionEnd(
 		notifyUser(
 			ctx,
 			flowLockBusyMessage(completed.owner, location.flow.language),
-			"warning",
+			"info",
 			location.flow.language,
 		);
 		return true;
@@ -173,14 +177,12 @@ export async function handleGoalCompletionEnd(
 		commandContextForAutoStart(ctx) ??
 		rememberedFlowContext(plan.sessionFile ?? fact.sessionFile ?? sessionFile);
 	if (!flowContext) {
-		const command = `/flow continue ${flowCommandId(saved.id)}`;
+		const command = `/flow go ${flowCommandId(saved.id)}`;
 		sendFlowResumeRequiredCard(pi, ctx, saved);
 		notifyUser(
 			ctx,
-			saved.language === "en"
-				? `Flow updated; run ${command} to continue to the next step.`
-				: `Flow 已更新；运行 ${command} 继续下一步。`,
-			"warning",
+			flowResumeRequiredNotice(saved, command),
+			"info",
 			saved.language,
 		);
 		return true;
@@ -222,16 +224,14 @@ function completeGoalEndTransaction(
 	if (!validation.ok || !validation.flow) {
 		notifyUser(
 			ctx,
-			flow.language === "en"
-				? `Flow validation failed:\n${validation.errors.join("\n")}`
-				: `Flow 校验失败：\n${validation.errors.join("\n")}`,
-			"error",
+			flowValidationFailedNotice(validation.errors, flow.language),
+			"info",
 			flow.language,
 		);
 		return undefined;
 	}
 	const verifiedFlow = verifyCurrentSnapshot(ctx, dir, validation.flow);
-	if (!verifiedFlow) return undefined;
+	if (!verifiedFlow || verifiedFlow.status !== "running") return undefined;
 	const plan = currentGoal(verifiedFlow);
 	if (!plan || plan.status !== "running") return undefined;
 	if (
@@ -263,7 +263,7 @@ async function recoverParallelRun(
 		notifyUser(
 			ctx,
 			flowLockBusyMessage(settled.owner, flow.language),
-			"warning",
+			"info",
 			flow.language,
 		);
 		return;
@@ -277,7 +277,7 @@ async function recoverParallelRun(
 			fanIn.completedIndexes,
 			fanIn.resetIndexes,
 		),
-		fanIn.allSuccess ? "info" : "warning",
+		"info",
 		fanIn.flow.language,
 	);
 	await liveReportUrl(ctx, join(dir, "flow.html"), fanIn.flow.language).catch(
@@ -291,6 +291,13 @@ async function recoverParallelRun(
 	await startGoalInNewSession(pi, ctx, dir, fanIn.flow, fanIn.flow.currentGoal);
 }
 
+function canStartFromBeginning(flow: FlowState) {
+	return (
+		flow.status === "draft" ||
+		(flow.status === "paused" && flow.startedAt === null)
+	);
+}
+
 function flowGoalCompleteNotice(index: number, title: string, flow: FlowState) {
 	const label = flowGoalDisplayLabel(
 		index,
@@ -299,21 +306,43 @@ function flowGoalCompleteNotice(index: number, title: string, flow: FlowState) {
 		flow.language,
 	);
 	return flow.language === "en"
-		? `Flow ${label} complete.`
-		: `Flow ${label} 已完成。`;
+		? formatUserNotice("✅", `Flow ${label} complete`, [
+				`ID: ${flowCommandId(flow.id)}`,
+			])
+		: formatUserNotice("✅", `Flow ${label} 已完成`, [
+				`编号：${flowCommandId(flow.id)}`,
+			]);
 }
 
-function flowCannotContinueMessage(flow: FlowState) {
+function flowResumeRequiredNotice(flow: FlowState, command: string) {
+	return flow.language === "en"
+		? formatUserNotice("⚠️", "Flow updated", [
+				`Run ${command} to advance to the next step`,
+			])
+		: formatUserNotice("⚠️", "Flow 已更新", [`运行 ${command} 推进下一步`]);
+}
+
+function flowCannotAdvanceMessage(flow: FlowState) {
 	const status = flowStatusLabel(flow.status, flow.language);
 	return flow.language === "en"
-		? `${flow.id} status: ${status}; cannot continue.`
-		: `${flow.id} 当前状态：${status}，不能继续。`;
+		? formatUserNotice("⚠️", "Flow cannot advance", [
+				`ID: ${flowCommandId(flow.id)}`,
+				`Status: ${status}`,
+			])
+		: formatUserNotice("⚠️", "Flow 无法推进", [
+				`编号：${flowCommandId(flow.id)}`,
+				`状态：${status}`,
+			]);
 }
 
 function parallelRunStillRunningMessage(flow: FlowState) {
 	return flow.language === "en"
-		? `Flow parallel batch is still running: ${flow.id}`
-		: `Flow 并行批次仍在执行：${flow.id}`;
+		? formatUserNotice("⏳", "Flow parallel batch is still running", [
+				`ID: ${flowCommandId(flow.id)}`,
+			])
+		: formatUserNotice("⏳", "Flow 并行批次仍在执行", [
+				`编号：${flowCommandId(flow.id)}`,
+			]);
 }
 
 function parallelRecoveryMessage(
@@ -325,8 +354,14 @@ function parallelRecoveryMessage(
 	const reset = resetIndexes.map((index) => goalLabel(flow, index));
 	const none = flow.language === "en" ? "none" : "无";
 	return flow.language === "en"
-		? `Parallel recovery: completed ${completed.join(", ") || none}; reset ${reset.join(", ") || none}`
-		: `并行恢复：已收口 ${completed.join("、") || none}；已重置 ${reset.join("、") || none}`;
+		? formatUserNotice("🔁", "Flow parallel recovery", [
+				`Completed ${completed.join(", ") || none}`,
+				`Reset ${reset.join(", ") || none}`,
+			])
+		: formatUserNotice("🔁", "Flow 并行恢复", [
+				`已收口 ${completed.join("、") || none}`,
+				`已重置 ${reset.join("、") || none}`,
+			]);
 }
 
 function goalLabel(flow: FlowState, goalIndex: number) {
@@ -343,7 +378,7 @@ function sendFlowResumeRequiredCard(
 ) {
 	const next = currentGoal(flow);
 	if (!next) return;
-	const command = `/flow continue ${flowCommandId(flow.id)}`;
+	const command = `/flow go ${flowCommandId(flow.id)}`;
 	const label = flowStepLabel(next.index, next.title, flow.language);
 	const title =
 		flow.language === "en" ? `Flow ${label} ready` : `Flow ${label} 已就绪`;
@@ -404,8 +439,8 @@ function flowCompleteSummaryLines(
 ) {
 	if (total === 1)
 		return flow.language === "en"
-			? [`Flow: ${flow.title}`, "Status: complete"]
-			: [`Flow：${flow.title}`, "状态：已完成"];
+			? [`Flow: ${flow.title}`, `Status: ${flowStatusLabel(flow.status, "en")}`]
+			: [`Flow：${flow.title}`, `状态：${flowStatusLabel(flow.status, "zh")}`];
 	return flow.language === "en"
 		? [`Flow: ${flow.title}`, `Completed: ${complete}/${total} steps`]
 		: [`Flow：${flow.title}`, `已完成：${complete}/${total} 步`];

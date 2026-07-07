@@ -5,18 +5,22 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { getGoalState } from "../../goal.js";
 import { runtimeLanguage } from "../../shared/language.js";
-import { notifyUser } from "../../shared/ui-language.js";
-import { latestGoalCompletion } from "../completion.js";
+import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
+import {
+	latestGoalCompletion,
+	recordFlowGoalCompletionBoundary,
+} from "../completion.js";
 import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { currentSessionFile } from "../ownership.js";
-import { rememberFlowContext } from "../runtime.js";
-import { currentGoal, tryReadFlow } from "../store.js";
+import { deleteCompletionFact, rememberFlowContext } from "../runtime.js";
+import { currentGoal, tryReadFlow, writeFlow } from "../store.js";
 import type { FlowState } from "../types.js";
 import { validateFlowDir } from "../validator.js";
-import { handleGoalCompletionEnd } from "./continue.js";
 import {
 	continueCurrentGoal,
+	flowNoActiveStepMessage,
 	flowTargetOrNotify,
+	flowValidationFailedNotice,
 	verifyCurrentSnapshot,
 } from "./shared.js";
 import {
@@ -32,18 +36,26 @@ export async function resumeFlow(
 	ctx: ExtensionCommandContext,
 	id?: string,
 ) {
-	const location = flowTargetOrNotify(ctx, { id, command: "continue" });
+	const location = flowTargetOrNotify(ctx, {
+		id,
+		command: "go",
+		requireRunning: false,
+	});
 	if (!location) return;
 	const verified = await withFlowLock(
 		location.dir,
 		`verify ${location.flow.id}`,
-		() => verifyCurrentSnapshot(ctx, location.dir, location.flow),
+		() =>
+			resumePausedFlowState(
+				verifyCurrentSnapshot(ctx, location.dir, location.flow),
+				location.dir,
+			),
 	);
 	if (!verified.ok) {
 		notifyUser(
 			ctx,
 			flowLockBusyMessage(verified.owner, location.flow.language),
-			"warning",
+			"info",
 			location.flow.language,
 		);
 		return;
@@ -55,17 +67,15 @@ export async function resumeFlow(
 		return notifyUser(
 			ctx,
 			flowNoActiveStepMessage(verifiedFlow.language),
-			"error",
+			"info",
 			verifiedFlow.language,
 		);
 	if (!plan.sessionFile || !existsSync(plan.sessionFile)) {
 		if (plan.status === "complete")
 			return notifyUser(
 				ctx,
-				verifiedFlow.language === "en"
-					? "The step is complete, but no session record exists for handoff."
-					: "步骤已完成，但缺少会话记录，无法交接。",
-				"error",
+				missingHandoffSessionNotice(verifiedFlow.language),
+				"info",
 				verifiedFlow.language,
 			);
 		return startMissingSessionGoal(
@@ -86,6 +96,11 @@ export async function resumeFlow(
 			await resumeInSession(pi, sessionCtx, location.dir);
 		},
 	});
+}
+
+function resumePausedFlowState(flow: FlowState | undefined, dir: string) {
+	if (!flow || flow.status !== "paused" || flow.startedAt === null) return flow;
+	return writeFlow(dir, { ...flow, status: "running" });
 }
 
 function startMissingSessionGoal(
@@ -111,21 +126,22 @@ async function resumeInSession(
 	if (!validation.ok || !validation.flow) {
 		return notifyUser(
 			ctx,
-			language === "en"
-				? `Flow validation failed:\n${validation.errors.join("\n")}`
-				: `Flow 校验失败：\n${validation.errors.join("\n")}`,
-			"error",
+			flowValidationFailedNotice(validation.errors, language),
+			"info",
 			language,
 		);
 	}
 	const verified = await withFlowLock(dir, `verify ${validation.flow.id}`, () =>
-		verifyCurrentSnapshot(ctx, dir, validation.flow),
+		resumePausedFlowState(
+			verifyCurrentSnapshot(ctx, dir, validation.flow),
+			dir,
+		),
 	);
 	if (!verified.ok) {
 		notifyUser(
 			ctx,
 			flowLockBusyMessage(verified.owner, validation.flow.language),
-			"warning",
+			"info",
 			validation.flow.language,
 		);
 		return;
@@ -137,10 +153,9 @@ async function resumeInSession(
 		return notifyUser(
 			ctx,
 			flowNoActiveStepMessage(verifiedFlow.language),
-			"error",
+			"info",
 			verifiedFlow.language,
 		);
-	if (await handleGoalCompletionEnd(pi, ctx)) return;
 	const goal = getGoalState(ctx);
 	if (!goal && plan.status !== "complete") {
 		const prepared = await withFlowLock(
@@ -151,10 +166,11 @@ async function resumeInSession(
 				if (!validation.ok || !validation.flow) {
 					notifyUser(
 						ctx,
-						verifiedFlow.language === "en"
-							? `Flow validation failed:\n${validation.errors.join("\n")}`
-							: `Flow 校验失败：\n${validation.errors.join("\n")}`,
-						"error",
+						flowValidationFailedNotice(
+							validation.errors,
+							verifiedFlow.language,
+						),
+						"info",
 						verifiedFlow.language,
 					);
 					return false;
@@ -179,7 +195,7 @@ async function resumeInSession(
 			notifyUser(
 				ctx,
 				flowLockBusyMessage(prepared.owner, verifiedFlow.language),
-				"warning",
+				"info",
 				verifiedFlow.language,
 			);
 			return;
@@ -190,18 +206,44 @@ async function resumeInSession(
 	if (!goal && plan.status === "complete" && !latestGoalCompletion(ctx)) {
 		return notifyUser(
 			ctx,
-			verifiedFlow.language === "en"
-				? "flow.json marks the step complete, but the session has no completion evidence."
-				: "flow.json 标记步骤已完成，但会话里没有完成证据。",
-			"error",
+			missingCompletionEvidenceNotice(verifiedFlow.language),
+			"info",
 			verifiedFlow.language,
 		);
 	}
-	await continueCurrentGoal(ctx);
+	const result = await continueCurrentGoal(ctx);
+	if (result === "resumed" || result === "continued")
+		recordResumeCompletionBoundary(ctx);
 }
 
-function flowNoActiveStepMessage(language: "zh" | "en") {
+function recordResumeCompletionBoundary(ctx: ExtensionCommandContext) {
+	const goal = getGoalState(ctx);
+	const sessionFile = currentSessionFile(ctx);
+	if (!goal || !sessionFile) return;
+	deleteCompletionFact(sessionFile);
+	recordFlowGoalCompletionBoundary(ctx, {
+		reason: "resume",
+		expectedGoalId: goal.id,
+	});
+}
+
+function missingHandoffSessionNotice(language: "zh" | "en") {
 	return language === "en"
-		? "Flow has no active step."
-		: "Flow 没有进行中的步骤。";
+		? formatUserNotice("⚠️", "Flow cannot hand off", [
+				"The step is complete",
+				"No session record exists for handoff",
+			])
+		: formatUserNotice("⚠️", "Flow 无法交接", ["步骤已完成", "缺少会话记录"]);
+}
+
+function missingCompletionEvidenceNotice(language: "zh" | "en") {
+	return language === "en"
+		? formatUserNotice("⚠️", "Flow cannot resume", [
+				"flow.json marks the step complete",
+				"The session has no completion evidence",
+			])
+		: formatUserNotice("⚠️", "Flow 无法恢复", [
+				"flow.json 标记步骤已完成",
+				"会话里没有完成证据",
+			]);
 }

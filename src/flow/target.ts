@@ -1,12 +1,16 @@
 import type { Language } from "../shared/config.js";
-import { tryReadAlignmentState } from "../shared/generation-state.js";
 import { formatError } from "../shared/guards.js";
 import { currentSessionFile } from "../shared/session.js";
-import { activeFlows, findFlow, flowCurrentSessionFile } from "./store.js";
+import { formatUserNotice } from "../shared/ui-language.js";
+import {
+	advanceableFlows,
+	findFlow,
+	flowLocationOwnsSession,
+} from "./store.js";
 import type { FlowLocation } from "./types.js";
 import { flowCommandId } from "./util.js";
 
-export type FlowTargetSource = "explicit" | "session" | "active";
+export type FlowTargetSource = "explicit" | "session" | "advanceable";
 
 export type FlowTargetResult =
 	| { ok: true; location: FlowLocation; source: FlowTargetSource }
@@ -19,16 +23,16 @@ export function resolveFlowTarget(
 	id?: string,
 ): FlowTargetResult {
 	if (id) return explicitFlowTarget(ctx.cwd, id);
-	const active = activeFlows(ctx.cwd);
-	const owned = flowsOwningSession(active, currentSessionFile(ctx));
+	const advanceable = advanceableFlows(ctx.cwd);
+	const owned = flowsOwningSession(advanceable, currentSessionFile(ctx));
 	if (owned.length === 1)
 		return { ok: true, location: owned[0], source: "session" };
 	if (owned.length > 1)
 		return { ok: false, reason: "ambiguous_active", flows: owned };
-	if (active.length === 1)
-		return { ok: true, location: active[0], source: "active" };
-	if (active.length > 1)
-		return { ok: false, reason: "ambiguous_active", flows: active };
+	if (advanceable.length === 1)
+		return { ok: true, location: advanceable[0], source: "advanceable" };
+	if (advanceable.length > 1)
+		return { ok: false, reason: "ambiguous_active", flows: advanceable };
 	return { ok: false, reason: "none" };
 }
 
@@ -49,26 +53,26 @@ export function flowTargetLookupFailedMessage(
 	language: Language,
 ) {
 	return language === "en"
-		? `flow.json read failed: ${formatError(error)}`
-		: `flow.json 读取失败：${formatError(error)}`;
+		? formatUserNotice("❌", "flow.json read failed", [formatError(error)])
+		: formatUserNotice("❌", "flow.json 读取失败", [formatError(error)]);
 }
 
 export function flowNotFoundMessage(flowId: string, language: Language) {
 	return language === "en"
-		? `Flow not found: ${flowId}`
-		: `未找到 Flow：${flowId}`;
+		? formatUserNotice("⚠️", "Flow not found", [`ID: ${flowId}`])
+		: formatUserNotice("⚠️", "未找到 Flow", [`编号：${flowId}`]);
 }
 
 export function flowTargetRequiredMessage(language: Language) {
 	return language === "en"
-		? "No active Flow in the current directory; specify a Flow id."
-		: "当前目录没有进行中的 Flow；请指定 Flow id。";
+		? formatUserNotice("⚠️", "No Flow can be advanced", ["Specify a Flow id"])
+		: formatUserNotice("⚠️", "没有可推进的 Flow", ["请指定 Flow id"]);
 }
 
 export function flowNotRunningMessage(flowId: string, language: Language) {
 	return language === "en"
-		? `Flow is not running: ${flowId}`
-		: `Flow 未在运行：${flowId}`;
+		? formatUserNotice("⚠️", "Flow is not running", [`ID: ${flowId}`])
+		: formatUserNotice("⚠️", "Flow 未在运行", [`编号：${flowId}`]);
 }
 
 function flowsOwningSession(
@@ -82,11 +86,7 @@ function flowsOwningSession(
 }
 
 function flowBelongsToSession(location: FlowLocation, sessionFile: string) {
-	const { flow } = location;
-	if (flow.status === "running")
-		return flowCurrentSessionFile(flow) === sessionFile;
-	if (flow.status !== "aligning" && flow.status !== "generating") return false;
-	return tryReadAlignmentState(location.dir)?.sessionFile === sessionFile;
+	return flowLocationOwnsSession(location, sessionFile);
 }
 
 function ambiguousActiveFlowsMessage(
@@ -101,8 +101,11 @@ function ambiguousActiveFlowsMessage(
 		})
 		.join("\n");
 	return language === "en"
-		? `Multiple active Flows found. Specify one:\n${choices}`
-		: `当前目录有多个进行中的 Flow，请指定目标：\n${choices}`;
+		? formatUserNotice("⚠️", "Multiple Flows can be advanced", [
+				"Specify one",
+				choices,
+			])
+		: formatUserNotice("⚠️", "多个可推进的 Flow", ["请指定目标", choices]);
 }
 
 function copyableFlowId(flow: FlowLocation, flows: FlowLocation[]) {

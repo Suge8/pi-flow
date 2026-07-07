@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type {
 	ExtensionAPI,
@@ -18,8 +18,6 @@ import {
 	generationAlignmentSummary,
 	hasNeedInput,
 	hasReadyToDraft,
-	isDraftConfirmation,
-	isStartGenerationConfirmation,
 } from "../shared/generation-alignment.js";
 import { sendAlignmentStartCard } from "../shared/generation-card.js";
 import {
@@ -44,7 +42,7 @@ import {
 	currentSessionFile,
 	sessionEntries,
 } from "../shared/session.js";
-import { notifyUser } from "../shared/ui-language.js";
+import { formatUserNotice, notifyUser } from "../shared/ui-language.js";
 import { buildFlowArtifact, type FlowSemanticInput } from "./builder.js";
 import { writeFlowErrorHtml, writeFlowHtml } from "./html.js";
 import { generationPrompt, repairPrompt } from "./prompt.js";
@@ -60,6 +58,7 @@ import {
 } from "./store.js";
 import { resolveFlowTarget } from "./target.js";
 import type { FlowLocation, FlowSource, FlowSourceType } from "./types.js";
+import { FLOW_SCHEMA_VERSION } from "./types.js";
 import { flowCommandId } from "./util.js";
 import { validateFlowDir } from "./validator.js";
 
@@ -163,22 +162,19 @@ export async function startGeneration(
 			throw error;
 		}
 	} catch (error) {
-		ctx.ui.notify(`.flow 目录不可用：${formatError(error)}`, "error");
+		notifyUser(
+			ctx,
+			flowDirUnavailableNotice(formatError(error), language),
+			"info",
+			language,
+		);
 		return false;
 	}
-	notifyUser(
-		ctx,
-		language === "en"
-			? `Flow ${shell.id} created; state saved.`
-			: `Flow ${shell.id} 已创建，状态已保存。`,
-		"info",
-		language,
-	);
+	notifyUser(ctx, flowCreatedNotice(shell.id, language), "info", language);
 	if (!(await switchToRoleModel(pi, ctx, "planner", language))) {
 		cancelPreDraftShell(shell, [
 			language === "en" ? "Planner model unavailable" : "计划模型不可用",
 		]);
-		deleteAlignmentState(shell.dir);
 		generationContexts.delete(generationCacheKey(shell.dir));
 		return false;
 	}
@@ -220,9 +216,7 @@ export async function startGeneration(
 	if (options.mode === "align") {
 		notifyUser(
 			ctx,
-			language === "en"
-				? `Flow ${shell.id} created; alignment started.`
-				: `Flow ${shell.id} 已创建；开始对齐。`,
+			flowAlignmentStartedNotice(shell.id, language),
 			"info",
 			language,
 		);
@@ -230,9 +224,7 @@ export async function startGeneration(
 	}
 	notifyUser(
 		ctx,
-		language === "en"
-			? `Flow ${shell.id} plan drafting started; it will be validated automatically when done.`
-			: `Flow ${shell.id} 计划已开始撰写；完成后会自动校验。`,
+		flowDraftingStartedNotice(shell.id, language),
 		"info",
 		language,
 	);
@@ -246,13 +238,21 @@ export async function startFromFile(
 	options?: GenerationStartOptions,
 ) {
 	if (args.length !== 1)
-		return ctx.ui.notify("用法：/flow <path.md>", "warning");
+		return notifyUser(
+			ctx,
+			formatUserNotice("⚠️", "用法", ["/flow <path.md>"]),
+			"info",
+		);
 	const path = resolve(ctx.cwd, args[0]);
 	let originalRequest: string;
 	try {
 		originalRequest = readFileSync(path, "utf8");
 	} catch (error) {
-		return ctx.ui.notify(`读取失败：${formatError(error)}`, "error");
+		return notifyUser(
+			ctx,
+			formatUserNotice("❌", "读取失败", [formatError(error)]),
+			"info",
+		);
 	}
 	await startGeneration(pi, ctx, originalRequest, "file", path, options);
 }
@@ -275,7 +275,16 @@ export async function handleGenerationEnd(
 			const message = `Flow 计划草稿组装失败（${id}）：${formatError(error)}`;
 			failedSemanticIds.add(id);
 			semanticErrors.push(message);
-			ctx.ui.notify(`${message}；将继续查找已有计划。`, "warning");
+			notifyUser(
+				ctx,
+				flowDraftAssemblyFailedNotice(
+					id,
+					formatError(error),
+					active.location.flow.language,
+				),
+				"info",
+				active.location.flow.language,
+			);
 		});
 		if (!built) {
 			const assistantText = finalAssistantText(event?.messages ?? []);
@@ -287,7 +296,15 @@ export async function handleGenerationEnd(
 		}
 		location = built;
 	} catch (error) {
-		ctx.ui.notify(`flow.json 读取失败：${formatError(error)}`, "error");
+		notifyUser(
+			ctx,
+			flowJsonReadFailedNotice(
+				formatError(error),
+				active.location.flow.language,
+			),
+			"info",
+			active.location.flow.language,
+		);
 		recordGenerationFailure(active, [
 			`flow.json 读取失败：${formatError(error)}`,
 		]);
@@ -299,7 +316,12 @@ export async function handleGenerationEnd(
 		return undefined;
 	}
 	if (active.location.flow.status === "aligning") {
-		ctx.ui.notify("对齐阶段不接受 Flow 计划；请继续对齐后再生成。", "error");
+		notifyUser(
+			ctx,
+			alignmentRejectsFlowPlanNotice(active.location.flow.language),
+			"info",
+			active.location.flow.language,
+		);
 		cancelPreDraftFlow(active, ["对齐阶段不接受 Flow 计划"]);
 		finishGeneration(active, ctx);
 		return undefined;
@@ -396,7 +418,12 @@ function handleMissingFlow(
 		return waitForAlignment(ctx, active, assistantText);
 	if (hasNeedInput(assistantText)) return waitForBlockingInput(ctx, active);
 	if (isGoalFlowRecommendation(assistantText)) return;
-	ctx.ui.notify("AI 未生成有效 Flow 计划。请重试 /flow。", "error");
+	notifyUser(
+		ctx,
+		invalidFlowPlanNotice(active.location.flow.language),
+		"info",
+		active.location.flow.language,
+	);
 	recordGenerationFailure(active, ["AI 未生成有效 Flow 计划"]);
 	finishGeneration(active, ctx);
 }
@@ -434,30 +461,19 @@ function waitForBlockingInput(
 	if (saved) setGoalActivityBox(ctx, flowPendingBox(saved));
 }
 
-export function clearFlowGeneration(
-	ctx: Pick<ExtensionContext, "ui"> & {
-		cwd: string;
-		sessionManager?: unknown;
-	},
-	id?: string,
-) {
-	const active = generationTarget(ctx, id);
-	if (active) {
-		const language = active.location.flow.language;
-		cancelPreDraftFlow(active);
-		finishGeneration(active, ctx);
-		return { language };
-	}
-	const target = preDraftTarget(ctx, id);
-	if (target && cancelOrphanPreDraft(target.location))
-		return { language: target.location.flow.language };
-	return undefined;
-}
-
-export async function continueFlowGeneration(
+export async function goFlowGeneration(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	id?: string,
+) {
+	return recoverFlowGeneration(pi, ctx, id, true);
+}
+
+async function recoverFlowGeneration(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	id: string | undefined,
+	confirmReady: boolean,
 ) {
 	const found = generationTarget(ctx, id);
 	if (!found) return false;
@@ -468,16 +484,34 @@ export async function continueFlowGeneration(
 		return true;
 	const restoresOtherSession =
 		found.alignment.sessionFile !== safeCurrentSessionFile(ctx);
-	const active = rebindGenerationSession(ctx, found);
+	const active = resumePausedGeneration(rebindGenerationSession(ctx, found));
 	if (!active) return true;
 	setFlowActivity("goal", true, generationActivityId(active.location.id));
 	setGoalActivityBox(ctx, flowPendingBox(active));
+	if (confirmReady && active.alignment.stage === "awaiting_final_confirm") {
+		rememberGenerationCache(active, ctx, restoresOtherSession, false);
+		try {
+			const action = confirmFlowDraft(active);
+			return action ? sendFlowGenerationAction(pi, ctx, action) : true;
+		} catch (error) {
+			notifyUser(
+				ctx,
+				flowGenerationStateSaveFailedNotice(
+					formatError(error),
+					active.location.flow.language,
+				),
+				"info",
+				active.location.flow.language,
+			);
+			return true;
+		}
+	}
 	if (!isPromptedRecoveryStage(active.alignment.stage)) {
 		rememberGenerationCache(active, ctx, restoresOtherSession, false);
 		rememberGenerationReplyTarget(active, ctx);
 		notifyUser(
 			ctx,
-			flowPendingSummary(active),
+			flowPendingNotice(active),
 			"info",
 			active.location.flow.language,
 		);
@@ -538,31 +572,21 @@ export function consumeFlowClarificationInput(
 		return { kind: "handled", activityBox: flowPendingBox(active) };
 	setFlowActivity("goal", true, generationActivityId(active.location.id));
 	try {
-		if (active.alignment.stage === "awaiting_final_confirm") {
-			if (isDraftConfirmation(clarification, active.location.flow.language))
-				return confirmFlowDraft(active);
+		if (active.alignment.stage === "awaiting_final_confirm")
 			return continueFlowAlignment(active, clarification);
-		}
-		if (active.alignment.stage === "awaiting_alignment_input") {
-			if (
-				isStartGenerationConfirmation(
-					clarification,
-					active.location.flow.language,
-				)
-			)
-				return confirmFlowDraft(active);
+		if (active.alignment.stage === "awaiting_alignment_input")
 			return continueFlowAlignment(active, clarification);
-		}
 		if (active.alignment.stage === "awaiting_blocking_input")
 			return continueFlowPlanGeneration(active, clarification);
 		return undefined;
 	} catch (error) {
 		notifyUser(
 			ctx,
-			active.location.flow.language === "en"
-				? `Flow generation state save failed: ${formatError(error)}`
-				: `Flow 生成状态保存失败：${formatError(error)}`,
-			"error",
+			flowGenerationStateSaveFailedNotice(
+				formatError(error),
+				active.location.flow.language,
+			),
+			"info",
 			active.location.flow.language,
 		);
 		return { kind: "handled", activityBox: flowPendingBox(active) };
@@ -607,9 +631,25 @@ export function rememberFlowGenerationPromptContext(
 	else refreshGenerationCache(active);
 }
 
+async function sendFlowGenerationAction(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	action: Extract<FlowClarificationAction, { kind: "prompt" }>,
+) {
+	setGoalActivityBox(ctx, action.activityBox);
+	if (!(await ensureFlowGenerationPromptModel(pi, ctx, action))) return true;
+	const sent = await sendOrchestrationPrompt(pi, ctx, action.prompt, {
+		followUp: true,
+		errorPrefix: "Flow 计划提示发送失败",
+	});
+	if (sent) rememberFlowGenerationPromptContext(action, ctx);
+	else recordFlowPromptSendFailure(action, ctx);
+	return true;
+}
+
 function confirmFlowDraft(
 	active: ActiveGeneration,
-): FlowClarificationAction | undefined {
+): Extract<FlowClarificationAction, { kind: "prompt" }> | undefined {
 	const saved = saveGenerationStage(
 		active,
 		{ ...active.alignment, stage: "generating" },
@@ -708,7 +748,7 @@ function continueFlowPlanGeneration(
 function cancelPreDraftShell(location: FlowLocation, errors: string[]) {
 	writeFlow(location.dir, {
 		...location.flow,
-		status: "cancelled",
+		status: "paused",
 		errors,
 	});
 }
@@ -724,27 +764,15 @@ function rollbackAlignmentTmp(flowDir: string) {
 	});
 }
 
-function cancelOrphanPreDraft(location: FlowLocation) {
-	if (!isActivePreDraftFlow(location.flow)) return false;
-	writeFlow(location.dir, {
-		...location.flow,
-		status: "cancelled",
-	});
-	generationContexts.delete(generationCacheKey(location.dir));
-	forgetGenerationPromptTarget(location.dir);
-	forgetGenerationReplyTarget(location.dir);
-	return true;
-}
-
 function cancelPreDraftFlow(active: ActiveGeneration, errors: string[] = []) {
 	const flow = readFlow(active.location.dir);
 	if (!isGenerationOwnedStatus(flow.status)) return;
 	writeFlow(active.location.dir, {
-		schemaVersion: 8,
+		schemaVersion: FLOW_SCHEMA_VERSION,
 		language: flow.language,
 		id: active.location.id,
 		title: safeFlowTitle(flow, active.location.id),
-		status: "cancelled",
+		status: "paused",
 		source: flowSource(active),
 		createdAt: active.cache?.createdAt ?? flow.createdAt,
 		updatedAt: Date.now(),
@@ -758,6 +786,38 @@ function cancelPreDraftFlow(active: ActiveGeneration, errors: string[] = []) {
 	generationContexts.delete(generationCacheKey(active.location.dir));
 	forgetGenerationPromptTarget(active.location.dir);
 	forgetGenerationReplyTarget(active.location.dir);
+}
+
+function resumePausedGeneration(
+	active: ActiveGeneration | undefined,
+): ActiveGeneration | undefined {
+	if (!active || active.location.flow.status !== "paused") return active;
+	const flow = readFlow(active.location.dir);
+	if (!isRecoverablePreDraftFlow(flow)) return undefined;
+	const status = flowStatusForAlignment(active.alignment.stage);
+	if (status === "generating")
+		cleanupPreDraftDraftArtifacts(active.location.dir);
+	const savedFlow = writeFlow(active.location.dir, {
+		...flow,
+		status,
+	});
+	return { ...active, location: { ...active.location, flow: savedFlow } };
+}
+
+function cleanupPreDraftDraftArtifacts(dir: string) {
+	rmSync(join(dir, "flow.semantic.json"), { force: true });
+	for (const name of readdirSync(dir)) {
+		if (/^G[1-9]\d*-.*\.md$/u.test(name))
+			rmSync(join(dir, name), { force: true });
+	}
+}
+
+function flowStatusForAlignment(stage: AlignmentState["stage"]) {
+	return stage === "aligning" ||
+		stage === "awaiting_alignment_input" ||
+		stage === "awaiting_final_confirm"
+		? "aligning"
+		: "generating";
 }
 
 function saveGenerationStage(
@@ -804,6 +864,16 @@ function isActivePreDraftFlow(flow: FlowLocation["flow"]) {
 	);
 }
 
+function isRecoverablePreDraftFlow(flow: FlowLocation["flow"]) {
+	return (
+		Array.isArray(flow.goals) &&
+		flow.goals.length === 0 &&
+		(flow.status === "aligning" ||
+			flow.status === "generating" ||
+			flow.status === "paused")
+	);
+}
+
 async function repairInvalidFlow(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -830,10 +900,11 @@ async function repairInvalidFlow(
 		writeFlow(active.location.dir, active.location.flow);
 		notifyUser(
 			ctx,
-			active.location.flow.language === "en"
-				? `Flow repair state save failed: ${formatError(error)}`
-				: `Flow 计划修复状态保存失败：${formatError(error)}`,
-			"error",
+			flowRepairStateSaveFailedNotice(
+				formatError(error),
+				active.location.flow.language,
+			),
+			"info",
 			active.location.flow.language,
 		);
 		return;
@@ -854,9 +925,11 @@ async function repairInvalidFlow(
 		language,
 	});
 	if (attempts > 3) {
-		ctx.ui.notify(
-			`Flow 校验失败，自动修复已达 3 轮：\n${errors.join("\n")}`,
-			"error",
+		notifyUser(
+			ctx,
+			flowRepairExhaustedNotice(errors, language),
+			"info",
+			language,
 		);
 		finishGeneration(nextActive, ctx);
 		return;
@@ -900,9 +973,9 @@ function writeRecoverablePreDraft(
 	repairAttempts: number,
 ) {
 	const current = readFlow(active.location.dir);
-	if (current.status === "cancelled") return undefined;
+	if (current.status === "paused") return undefined;
 	return writeFlow(active.location.dir, {
-		schemaVersion: 8,
+		schemaVersion: FLOW_SCHEMA_VERSION,
 		language: flow.language ?? active.location.flow.language,
 		id: active.location.id,
 		title: safeFlowTitle(flow, active.location.id),
@@ -946,14 +1019,7 @@ function blockGenerationPromptIfPending(
 		)
 	)
 		return false;
-	notifyUser(
-		ctx,
-		language === "en"
-			? "A Flow plan request is already waiting for AI output in this conversation. Wait for it to finish, or use another conversation before continuing."
-			: "当前对话已有 Flow 计划提示正在等待 AI 返回；请等它收口后再继续，或换一个对话。",
-		"warning",
-		language,
-	);
+	notifyUser(ctx, flowPromptAlreadyWaitingNotice(language), "info", language);
 	return true;
 }
 
@@ -1105,10 +1171,16 @@ function activeGenerationsForSession(ctx: {
 	}
 }
 
-function activeGenerationById(ctx: { cwd: string }, id: string) {
+function activeGenerationById(
+	ctx: { cwd: string },
+	id: string,
+	includePaused = false,
+) {
 	try {
 		const location = findFlow(ctx.cwd, id);
-		return location ? activeGenerationFromLocation(location) : undefined;
+		return location
+			? activeGenerationFromLocation(location, includePaused)
+			: undefined;
 	} catch {
 		return undefined;
 	}
@@ -1133,13 +1205,15 @@ function generationTarget(
 	id?: string,
 ) {
 	if (id) {
-		const active = activeGenerationById(ctx, id);
-		return active && isActivePreDraftFlow(active.location.flow)
+		const active = activeGenerationById(ctx, id, true);
+		return active && isRecoverablePreDraftFlow(active.location.flow)
 			? active
 			: undefined;
 	}
 	const target = preDraftTarget(ctx);
-	return target ? activeGenerationFromLocation(target.location) : undefined;
+	return target
+		? activeGenerationFromLocation(target.location, true)
+		: undefined;
 }
 
 function preDraftTarget(
@@ -1149,7 +1223,7 @@ function preDraftTarget(
 	try {
 		const target = resolveFlowTarget(ctx, id);
 		if (!target.ok) return undefined;
-		return isActivePreDraftFlow(target.location.flow) ? target : undefined;
+		return isRecoverablePreDraftFlow(target.location.flow) ? target : undefined;
 	} catch {
 		return undefined;
 	}
@@ -1157,9 +1231,12 @@ function preDraftTarget(
 
 function activeGenerationFromLocation(
 	location: FlowLocation,
+	includePaused = false,
 ): ActiveGeneration | undefined {
 	const alignment = tryReadAlignmentState(location.dir);
-	if (!alignment || !isGenerationOwnedStatus(location.flow.status))
+	if (!alignment) return undefined;
+	const owned = isGenerationOwnedStatus(location.flow.status);
+	if (!owned && !(includePaused && isRecoverablePreDraftFlow(location.flow)))
 		return undefined;
 	const cache = generationContexts.get(generationCacheKey(location.dir));
 	return {
@@ -1186,10 +1263,11 @@ function rebindGenerationSession(
 	} catch (error) {
 		notifyUser(
 			ctx,
-			active.location.flow.language === "en"
-				? `Flow generation state save failed: ${formatError(error)}`
-				: `Flow 生成状态保存失败：${formatError(error)}`,
-			"error",
+			flowGenerationStateSaveFailedNotice(
+				formatError(error),
+				active.location.flow.language,
+			),
+			"info",
 			active.location.flow.language,
 		);
 		return undefined;
@@ -1352,14 +1430,7 @@ function notifyActiveGeneration(
 	const language = active.location.flow.language;
 	const id = flowCommandId(active.location.id);
 	setGoalActivityBox(ctx, flowPendingBox(active));
-	notifyUser(
-		ctx,
-		language === "en"
-			? `Current session already has unfinished Flow plan generation: ${id}. Run /flow status ${id}, or /flow cancel ${id} to cancel it.`
-			: `当前会话已有未完成的 Flow 计划生成：${id}。运行 /flow status ${id} 查看，或 /flow cancel ${id} 取消。`,
-		"warning",
-		language,
-	);
+	notifyUser(ctx, activeGenerationNotice(id, language), "info", language);
 }
 
 function notifyAmbiguousGeneration(
@@ -1370,15 +1441,13 @@ function notifyAmbiguousGeneration(
 	const choices = items
 		.map((active) => {
 			const id = flowCommandId(active.location.id);
-			return `- ${id} · /flow continue ${id}`;
+			return `- ${id} · /flow go ${id}`;
 		})
 		.join("\n");
 	notifyUser(
 		ctx,
-		language === "en"
-			? `Current session has multiple unfinished Flow generations. Specify one:\n${choices}`
-			: `当前会话有多个未完成的 Flow 计划生成，请指定目标：\n${choices}`,
-		"warning",
+		ambiguousGenerationNotice(choices, language),
+		"info",
 		language,
 	);
 }
@@ -1481,8 +1550,20 @@ function flowPendingBox(active: ActiveGeneration) {
 		active.alignment.stage,
 		active.location.flow.language,
 		questionNumber,
+		`/flow go ${flowCommandId(active.location.id)}`,
 	);
 	return flowDraftBox(copy.phase, copy.rows);
+}
+
+function flowPendingNotice(active: ActiveGeneration) {
+	const language = active.location.flow.language;
+	return language === "en"
+		? formatUserNotice("⏳", "Flow generation is waiting", [
+				flowPendingSummary(active),
+			])
+		: formatUserNotice("⏳", "Flow 计划生成等待继续", [
+				flowPendingSummary(active),
+			]);
 }
 
 function flowPendingSummary(active: ActiveGeneration) {
@@ -1490,11 +1571,150 @@ function flowPendingSummary(active: ActiveGeneration) {
 		active.alignment.stage,
 		active.location.flow.language,
 		active.alignment.alignmentTurns.length + 1,
+		`/flow go ${flowCommandId(active.location.id)}`,
 	);
 }
 
 function flowDraftBox(phase: string, rows: string | string[] = []) {
 	return generationDraftBox(`🌊 Flow · ${phase}`, rows);
+}
+
+function flowDirUnavailableNotice(error: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("❌", ".flow directory unavailable", [error])
+		: formatUserNotice("❌", ".flow 目录不可用", [error]);
+}
+
+function flowCreatedNotice(id: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("✅", "Flow created", [`ID: ${flowCommandId(id)}`])
+		: formatUserNotice("✅", "Flow 已创建", [`编号：${flowCommandId(id)}`]);
+}
+
+function flowAlignmentStartedNotice(id: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("🧭", "Flow alignment started", [
+				`ID: ${flowCommandId(id)}`,
+			])
+		: formatUserNotice("🧭", "Flow 开始对齐", [`编号：${flowCommandId(id)}`]);
+}
+
+function flowDraftingStartedNotice(id: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("📝", "Flow plan drafting started", [
+				`ID: ${flowCommandId(id)}`,
+				"It will be validated automatically when done",
+			])
+		: formatUserNotice("📝", "Flow 计划已开始撰写", [
+				`编号：${flowCommandId(id)}`,
+				"完成后会自动校验",
+			]);
+}
+
+function flowDraftAssemblyFailedNotice(
+	id: string,
+	error: string,
+	language: Language,
+) {
+	return language === "en"
+		? formatUserNotice("⚠️", "Flow draft assembly failed", [
+				`ID: ${id}`,
+				error,
+				"Will keep looking for an existing plan",
+			])
+		: formatUserNotice("⚠️", "Flow 计划草稿组装失败", [
+				`编号：${id}`,
+				error,
+				"将继续查找已有计划",
+			]);
+}
+
+function flowJsonReadFailedNotice(error: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("❌", "flow.json read failed", [error])
+		: formatUserNotice("❌", "flow.json 读取失败", [error]);
+}
+
+function alignmentRejectsFlowPlanNotice(language: Language) {
+	return language === "en"
+		? formatUserNotice("⚠️", "Alignment cannot accept a Flow plan", [
+				"Continue alignment before generating",
+			])
+		: formatUserNotice("⚠️", "对齐阶段不接受 Flow 计划", ["请继续对齐后再生成"]);
+}
+
+function invalidFlowPlanNotice(language: Language) {
+	return language === "en"
+		? formatUserNotice("❌", "AI did not generate a valid Flow plan", [
+				"Retry /flow",
+			])
+		: formatUserNotice("❌", "AI 未生成有效 Flow 计划", ["请重试 /flow"]);
+}
+
+function flowRepairExhaustedNotice(
+	errors: readonly string[],
+	language: Language,
+) {
+	return language === "en"
+		? formatUserNotice("❌", "Flow validation repair exhausted", [
+				"Tried 3 automatic repair rounds",
+				...errors,
+			])
+		: formatUserNotice("❌", "Flow 校验自动修复耗尽", [
+				"已尝试 3 轮",
+				...errors,
+			]);
+}
+
+function flowGenerationStateSaveFailedNotice(
+	error: string,
+	language: Language,
+) {
+	return language === "en"
+		? formatUserNotice("❌", "Flow generation state save failed", [error])
+		: formatUserNotice("❌", "Flow 生成状态保存失败", [error]);
+}
+
+function flowRepairStateSaveFailedNotice(error: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("❌", "Flow repair state save failed", [error])
+		: formatUserNotice("❌", "Flow 计划修复状态保存失败", [error]);
+}
+
+function flowPromptAlreadyWaitingNotice(language: Language) {
+	return language === "en"
+		? formatUserNotice("⏳", "Flow plan request is already waiting", [
+				"Wait for it to finish",
+				"Or use another conversation before continuing",
+			])
+		: formatUserNotice("⏳", "Flow 计划提示正在等待 AI 返回", [
+				"请等它收口后再继续",
+				"或换一个对话",
+			]);
+}
+
+function activeGenerationNotice(id: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("⏳", "Current session has unfinished Flow generation", [
+				`ID: ${id}`,
+				`Run /flow go ${id} to continue`,
+			])
+		: formatUserNotice("⏳", "当前会话已有未完成的 Flow 计划生成", [
+				`编号：${id}`,
+				`运行 /flow go ${id} 继续`,
+			]);
+}
+
+function ambiguousGenerationNotice(choices: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("⚠️", "Multiple unfinished Flow generations", [
+				"Specify one",
+				choices,
+			])
+		: formatUserNotice("⚠️", "多个未完成的 Flow 计划生成", [
+				"请指定目标",
+				choices,
+			]);
 }
 
 function generatedSummary(flow: {
@@ -1503,21 +1723,20 @@ function generatedSummary(flow: {
 	goals: { index: number; title: string }[];
 }) {
 	const id = flowCommandId(flow.id);
-	if (flow.language === "en")
-		return [
-			`Flow plan generated: ${flow.id}`,
-			...flow.goals.map(
-				(goal) => `- ${flowStepLabel(goal.index, goal.title, flow.language)}`,
-			),
-			`Next: /flow start ${id}`,
-		].join("\n");
-	return [
-		`Flow 计划已生成：${flow.id}`,
-		...flow.goals.map(
-			(goal) => `- ${flowStepLabel(goal.index, goal.title, flow.language)}`,
-		),
-		`下一步：/flow start ${id}`,
-	].join("\n");
+	const steps = flow.goals.map(
+		(goal) => `- ${flowStepLabel(goal.index, goal.title, flow.language)}`,
+	);
+	return flow.language === "en"
+		? formatUserNotice("✅", "Flow plan generated", [
+				`ID: ${id}`,
+				...steps,
+				`Next: /flow go ${id}`,
+			])
+		: formatUserNotice("✅", "Flow 计划已生成", [
+				`编号：${id}`,
+				...steps,
+				`下一步：/flow go ${id}`,
+			]);
 }
 
 function sourceLabel(input: {

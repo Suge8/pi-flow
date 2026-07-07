@@ -1,7 +1,4 @@
-import {
-	generationAlignmentSummary,
-	startGenerationLabel,
-} from "../../shared/generation-alignment.js";
+import { generationAlignmentSummary } from "../../shared/generation-alignment.js";
 import type { AlignmentState } from "../../shared/generation-state.js";
 import { flowStepLabel } from "../../shared/progress-labels.js";
 import type { FlowState } from "../types.js";
@@ -10,13 +7,13 @@ import { flowStatusLabel, goalStatusLabel } from "./shared.js";
 
 export function statusText(flow: FlowState, alignment?: AlignmentState) {
 	const label = statusLabels(flow.language);
-	const status = flowStatusLabel(flow.status, flow.language);
+	const status = displayStatus(flow, alignment);
 	const lines = [
 		`Flow: ${flow.id}`,
 		`${label.title}: ${flow.title}`,
 		`${label.state}: ${status}`,
 		`${label.current}: ${currentStatus(flow, alignment, label.none)}`,
-		`${label.next}: ${nextHint(flow, alignment)}`,
+		`${label.next}: ${nextHint(flow)}`,
 	];
 	const question = currentQuestion(flow, alignment);
 	if (question) lines.push(`${label.question}: ${clip(question, 180)}`);
@@ -28,6 +25,26 @@ export function statusText(flow: FlowState, alignment?: AlignmentState) {
 	if (flow.errors.length)
 		lines.push(`${label.errors}:\n${flow.errors.join("\n")}`);
 	return lines.join("\n");
+}
+
+function displayStatus(flow: FlowState, alignment: AlignmentState | undefined) {
+	if (isPreDraftFlow(flow) && flow.status !== "paused" && alignment)
+		return preDraftStatusLabel(alignment.stage, flow.language);
+	return flowStatusLabel(flow.status, flow.language);
+}
+
+function preDraftStatusLabel(
+	stage: AlignmentState["stage"],
+	language: FlowState["language"],
+) {
+	if (stage === "awaiting_alignment_input")
+		return language === "en" ? "Waiting for reply" : "等待回复";
+	if (stage === "awaiting_final_confirm")
+		return language === "en" ? "Ready to draft" : "等待确认";
+	if (stage === "awaiting_blocking_input")
+		return language === "en" ? "Waiting for input" : "等待补充";
+	if (stage === "aligning") return language === "en" ? "Aligning" : "对齐中";
+	return language === "en" ? "Generating" : "生成中";
 }
 
 function currentStatus(
@@ -50,14 +67,13 @@ function preDraftCurrentStatus(
 	flow: FlowState,
 	alignment: AlignmentState | undefined,
 ) {
-	if (flow.status === "cancelled")
-		return flow.language === "en" ? "none" : "无";
 	if (!alignment)
 		return flow.language === "en" ? "generation state missing" : "缺少生成状态";
 	return generationAlignmentSummary(
 		alignment.stage,
 		flow.language,
 		alignment.alignmentTurns.length + 1,
+		`/flow go ${flowCommandId(flow.id)}`,
 	);
 }
 
@@ -65,7 +81,7 @@ function currentQuestion(
 	flow: FlowState,
 	alignment: AlignmentState | undefined,
 ) {
-	if (!isPreDraftFlow(flow) || flow.status === "cancelled") return undefined;
+	if (!isPreDraftFlow(flow)) return undefined;
 	return alignment?.lastAlignmentQuestion ?? undefined;
 }
 
@@ -105,35 +121,18 @@ function statusLabels(language: FlowState["language"]) {
 			};
 }
 
-function nextHint(flow: FlowState, alignment?: AlignmentState) {
+function nextHint(flow: FlowState) {
 	const id = flowCommandId(flow.id);
-	if (flow.status === "draft") return `/flow start ${id}`;
-	if (flow.status === "running") return `/flow continue ${id}`;
+	if (flow.status === "draft") return `/flow go ${id}`;
+	if (flow.status === "paused") return `/flow go ${id}`;
+	if (flow.status === "running") return `/flow go ${id}`;
 	if (flow.status === "aligning" || flow.status === "generating")
-		return preDraftNextHint(flow, alignment, id);
-	return `/flow status ${id}`;
+		return preDraftNextHint(id);
+	return `/flow go ${id}`;
 }
 
-function preDraftNextHint(
-	flow: FlowState,
-	alignment: AlignmentState | undefined,
-	id: string,
-) {
-	if (alignment?.stage === "awaiting_alignment_input")
-		return flow.language === "en"
-			? `reply or /flow continue ${id}`
-			: `直接回复或 /flow continue ${id}`;
-	if (alignment?.stage === "awaiting_final_confirm") {
-		const start = startGenerationLabel(flow.language);
-		return flow.language === "en"
-			? `reply “${start}” or /flow continue ${id}`
-			: `回复「${start}」或 /flow continue ${id}`;
-	}
-	if (alignment?.stage === "awaiting_blocking_input")
-		return flow.language === "en"
-			? `reply with input or /flow continue ${id}`
-			: `直接回复补充信息或 /flow continue ${id}`;
-	return `/flow continue ${id}`;
+function preDraftNextHint(id: string) {
+	return `/flow go ${id}`;
 }
 
 function isPreDraftFlow(flow: FlowState) {
@@ -141,6 +140,6 @@ function isPreDraftFlow(flow: FlowState) {
 		flow.goals.length === 0 &&
 		(flow.status === "aligning" ||
 			flow.status === "generating" ||
-			flow.status === "cancelled")
+			flow.status === "paused")
 	);
 }

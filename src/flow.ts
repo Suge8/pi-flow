@@ -1,5 +1,5 @@
 import { lstatSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -11,18 +11,11 @@ import {
 	registerWorkerRuntime,
 	startPrivateWorkerFromEnv,
 } from "./flow/execution/worker-command.js";
+import { goFlow, handleGoalCompletionEnd, stopFlow } from "./flow/execution.js";
 import {
-	cancelFlow,
-	continueFlow,
-	handleGoalCompletionEnd,
-	pauseFlow,
-	startFlow,
-} from "./flow/execution.js";
-import {
-	clearFlowGeneration,
 	consumeFlowClarificationInput,
-	continueFlowGeneration,
 	ensureFlowGenerationPromptModel,
+	goFlowGeneration,
 	handleGenerationEnd,
 	recordFlowPromptSendFailure,
 	rememberFlowGenerationPromptContext,
@@ -35,6 +28,7 @@ import {
 	rememberedFlowContext,
 } from "./flow/runtime.js";
 import { showStatus } from "./flow/status-command.js";
+import { isFlowId } from "./flow/store.js";
 import { tokenize } from "./flow/util.js";
 import { closeFlowGoalWatcher } from "./flow/watcher.js";
 import { cancelGoalRecoveryAfterUserAction } from "./goal/runtime.js";
@@ -46,6 +40,7 @@ import {
 } from "./shared/internal-prompt.js";
 import { liveReportUrl } from "./shared/report-server.js";
 import {
+	formatUserNotice,
 	installLocalizedUi,
 	localizeUserText,
 	notifyUser,
@@ -73,7 +68,7 @@ export default function flowExtension(pi: ExtensionAPI) {
 		const generated = await handleGenerationEnd(pi, ctx, event);
 		if (generated?.autoStart) {
 			if (canAutoStartFlow(generated.startContext))
-				await startFlow(pi, generated.startContext, generated.id);
+				await goFlow(pi, generated.startContext, generated.id);
 			else notifyAutoStartUnavailable(ctx, generated);
 			return;
 		}
@@ -145,40 +140,14 @@ async function handleFlowCommand(
 		await startGeneration(pi, ctx, "", "conversation", undefined, options);
 		return;
 	}
-	if (command === "start") {
-		if (rest.length > 1)
-			return ctx.ui.notify("用法：/flow start [id]", "warning");
-		return startFlow(pi, ctx, rest[0]);
+	if (command === "go" && isFlowControlInvocation(rest)) {
+		if (await goFlowGeneration(pi, ctx, rest[0])) return;
+		return goFlow(pi, ctx, rest[0]);
 	}
-	if (command === "status") {
-		if (rest.length > 1)
-			return ctx.ui.notify("用法：/flow status [id]", "warning");
+	if (command === "stop" && isFlowControlInvocation(rest))
+		return stopFlow(ctx, rest[0]);
+	if (command === "status" && isFlowControlInvocation(rest))
 		return showStatus(ctx, rest[0]);
-	}
-	if (command === "pause") {
-		if (rest.length > 1)
-			return ctx.ui.notify("用法：/flow pause [id]", "warning");
-		return pauseFlow(ctx, rest[0]);
-	}
-	if (command === "continue") {
-		if (rest.length > 1)
-			return ctx.ui.notify("用法：/flow continue [id]", "warning");
-		if (await continueFlowGeneration(pi, ctx, rest[0])) return;
-		return continueFlow(pi, ctx, rest[0]);
-	}
-	if (command === "cancel") {
-		if (rest.length > 1)
-			return ctx.ui.notify("用法：/flow cancel [id]", "warning");
-		const cancelled = clearFlowGeneration(ctx, rest[0]);
-		if (cancelled)
-			return notifyUser(
-				ctx,
-				flowGenerationCancelledMessage(cancelled.language),
-				"warning",
-				cancelled.language,
-			);
-		return cancelFlow(ctx, rest[0]);
-	}
 	const options = await generationStartOptions(ctx);
 	if (!options) return;
 	if (tokens.length === 1 && isFile(ctx.cwd, command))
@@ -186,10 +155,23 @@ async function handleFlowCommand(
 	return startGeneration(pi, ctx, args.trim(), "prompt", undefined, options);
 }
 
-function flowGenerationCancelledMessage(language: "zh" | "en") {
-	return language === "en"
-		? "Flow plan generation cancelled."
-		: "Flow 计划生成已取消。";
+function isFlowControlInvocation(args: string[]) {
+	return (
+		args.length === 0 || (args.length === 1 && isFlowTargetArgument(args[0]))
+	);
+}
+
+function isFlowTargetArgument(arg: string) {
+	return isFlowId(arg) || /^F\d/iu.test(arg) || isUnsafePathArgument(arg);
+}
+
+function isUnsafePathArgument(arg: string) {
+	return (
+		isAbsolute(arg) ||
+		/^[A-Za-z]:[\\/]/u.test(arg) ||
+		/^\.\.?$/u.test(arg) ||
+		/^\.\.?[\\/]/u.test(arg)
+	);
 }
 
 function canAutoStartFlow(
@@ -202,15 +184,29 @@ function notifyAutoStartUnavailable(
 	ctx: ExtensionContext,
 	flow: { id: string; language: "zh" | "en" },
 ) {
-	const command = `/flow start ${flow.id}`;
+	const command = `/flow go ${flow.id}`;
 	notifyUser(
 		ctx,
-		flow.language === "en"
-			? `Flow ${flow.id} plan generated; Pi cannot auto-start it from here. Run ${command} to start.`
-			: `Flow ${flow.id} 计划已生成；当前会话不能自动启动。运行 ${command} 启动。`,
-		"warning",
+		autoStartUnavailableNotice(flow.id, command, flow.language),
+		"info",
 		flow.language,
 	);
+}
+
+function autoStartUnavailableNotice(
+	id: string,
+	command: string,
+	language: "zh" | "en",
+) {
+	return language === "en"
+		? formatUserNotice("⚠️", `Flow ${id} plan generated`, [
+				"Pi cannot auto-start it from here",
+				`Run ${command} to start`,
+			])
+		: formatUserNotice("⚠️", `Flow ${id} 计划已生成`, [
+				"当前会话不能自动启动",
+				`运行 ${command} 启动`,
+			]);
 }
 
 function isFile(cwd: string, path: string) {

@@ -7,11 +7,10 @@ import type {
 import { objectiveFromPlan } from "../../goal/validator.js";
 import { startGoalFromFlow } from "../../goal.js";
 import { formatError } from "../../shared/guards.js";
-import { runtimeLanguage } from "../../shared/language.js";
 import { flowStepLabel } from "../../shared/progress-labels.js";
 import { liveReportUrl } from "../../shared/report-server.js";
 import { sendResultCard } from "../../shared/result-card.js";
-import { notifyUser } from "../../shared/ui-language.js";
+import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
 import { writeFlowHtml } from "../html.js";
 import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { currentSessionFile } from "../ownership.js";
@@ -20,9 +19,8 @@ import { planGoalPrompt } from "../prompt.js";
 import { rememberFlowContext } from "../runtime.js";
 import { computeReadyBatch } from "../scheduler.js";
 import { planSnapshotHash } from "../snapshot.js";
-import { findFlow, latestFlow, writeFlow } from "../store.js";
-import { flowTargetLookupFailedMessage } from "../target.js";
-import type { FlowGoal, FlowLocation, FlowState } from "../types.js";
+import { writeFlow } from "../store.js";
+import type { FlowGoal, FlowState } from "../types.js";
 import {
 	clip,
 	flowSessionName,
@@ -31,75 +29,7 @@ import {
 } from "../util.js";
 import { validateFlowDir } from "../validator.js";
 import { closeFlowGoalWatcher, watchCurrentFlowGoal } from "../watcher.js";
-import { askRepair } from "./repair.js";
-import {
-	flowNotFoundMessage,
-	flowStatusLabel,
-	verifyCurrentSnapshot,
-} from "./shared.js";
-
-export async function startFlow(
-	pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
-	id: string | undefined,
-) {
-	let location: FlowLocation | undefined;
-	try {
-		location = id
-			? findFlow(ctx.cwd, id)
-			: latestFlow(ctx.cwd, (flow) => flow.status === "draft");
-	} catch (error) {
-		const language = runtimeLanguage();
-		notifyUser(
-			ctx,
-			flowTargetLookupFailedMessage(error, language),
-			"error",
-			language,
-		);
-		return false;
-	}
-	if (!location) {
-		const language = runtimeLanguage();
-		notifyUser(
-			ctx,
-			id
-				? flowNotFoundMessage(id, language)
-				: language === "en"
-					? "No draft Flow to start. Run /flow <request> first."
-					: "没有待启动的 Flow 计划。先运行 /flow <需求> 生成。",
-			"warning",
-			language,
-		);
-		return false;
-	}
-	const validation = validateFlowDir(location.dir, location.flow.language);
-	if (!validation.ok || !validation.flow) {
-		await askRepair(pi, ctx, location, validation.errors);
-		return false;
-	}
-	const flow = validation.flow;
-	if (flow.status !== "draft") {
-		const verified = await withFlowLock(location.dir, `verify ${flow.id}`, () =>
-			verifyCurrentSnapshot(ctx, location.dir, flow),
-		);
-		if (!verified.ok) {
-			notifyUser(
-				ctx,
-				flowLockBusyMessage(verified.owner, flow.language),
-				"warning",
-				flow.language,
-			);
-			return false;
-		}
-		notifyUser(ctx, flowCannotStartMessage(flow), "warning", flow.language);
-		return false;
-	}
-	if (hasActiveFlowExecution(flow)) {
-		notifyUser(ctx, runningFlowMessage(flow), "warning", flow.language);
-		return false;
-	}
-	return startGoalInNewSession(pi, ctx, location.dir, flow, 0);
-}
+import { flowValidationFailedNotice } from "./shared.js";
 
 export async function startGoalInNewSession(
 	pi: ExtensionAPI,
@@ -133,10 +63,8 @@ export async function startSelectedGoalInNewSession(
 	if (typeof ctx.newSession !== "function") {
 		notifyUser(
 			ctx,
-			flow.language === "en"
-				? "The current Pi runtime cannot create a new session, so Flow cannot start."
-				: "当前 Pi 运行环境不支持新建会话，无法启动 Flow。",
-			"error",
+			newSessionUnsupportedMessage(flow.language),
+			"info",
 			flow.language,
 		);
 		return false;
@@ -150,7 +78,7 @@ export async function startSelectedGoalInNewSession(
 		notifyUser(
 			ctx,
 			flowLockBusyMessage(locked.owner, flow.language),
-			"warning",
+			"info",
 			flow.language,
 		);
 		return false;
@@ -171,7 +99,7 @@ async function startSelectedGoalWithLock(
 		notifyUser(
 			ctx,
 			noSchedulableGoalMessage(current),
-			"warning",
+			"info",
 			current.language,
 		);
 		return false;
@@ -202,7 +130,7 @@ async function startSelectedGoalWithLock(
 							formatError(error),
 							current.language,
 						),
-						"error",
+						"info",
 						current.language,
 					);
 				}
@@ -268,7 +196,9 @@ export function prepareGoalStart(
 		snapshotHash: goal.snapshotHash ?? planSnapshotHash(snapshot),
 	});
 	const startedAt =
-		flow.status === "draft" ? Date.now() : requireFlowStartedAt(flow);
+		flow.status === "draft" || flow.startedAt === null
+			? Date.now()
+			: requireFlowStartedAt(flow);
 	const saved = writeFlow(dir, {
 		...flow,
 		status: "running",
@@ -308,7 +238,7 @@ export async function startPreparedGoal(
 	notifyUser(
 		ctx,
 		flowLockBusyMessage(started.owner, saved.language),
-		"warning",
+		"info",
 		saved.language,
 	);
 	return false;
@@ -343,7 +273,7 @@ export async function startPreparedGoalWithLockHeld(
 		notifyUser(
 			ctx,
 			flowStepSessionStartFailedMessage(formatError(error), saved.language),
-			"error",
+			"info",
 			saved.language,
 		);
 		return false;
@@ -384,7 +314,7 @@ export async function rollbackPreparedGoalStart(
 	notifyUser(
 		ctx,
 		flowLockBusyMessage(rolledBack.owner, preparedFlow.language),
-		"warning",
+		"info",
 		preparedFlow.language,
 	);
 	return false;
@@ -473,10 +403,8 @@ function validatedFlowForScheduling(
 	if (validation.ok && validation.flow) return validation.flow;
 	notifyUser(
 		ctx,
-		language === "en"
-			? `Flow validation failed:\n${validation.errors.join("\n")}`
-			: `Flow 校验失败：\n${validation.errors.join("\n")}`,
-		"error",
+		flowValidationFailedNotice(validation.errors, language),
+		"info",
 		language,
 	);
 	return undefined;
@@ -484,7 +412,9 @@ function validatedFlowForScheduling(
 
 function canStartSelectedGoal(flow: FlowState, goalIndex: number) {
 	return (
-		(flow.status === "draft" || flow.status === "running") &&
+		(flow.status === "draft" ||
+			flow.status === "paused" ||
+			flow.status === "running") &&
 		!hasActiveFlowExecution(flow) &&
 		flow.goals[goalIndex]?.status === "pending"
 	);
@@ -496,23 +426,22 @@ function hasActiveFlowExecution(flow: FlowState) {
 	);
 }
 
+function newSessionUnsupportedMessage(language: FlowState["language"]) {
+	return language === "en"
+		? formatUserNotice("⚠️", "Flow cannot start", [
+				"The current Pi runtime cannot create a new session",
+			])
+		: formatUserNotice("⚠️", "Flow 无法启动", [
+				"当前 Pi 运行环境不支持新建会话",
+			]);
+}
+
 function noSchedulableGoalMessage(flow: FlowState) {
 	return flow.language === "en"
-		? "Flow has no pending step ready to start."
-		: "Flow 没有可启动的待执行步骤。";
-}
-
-function flowCannotStartMessage(flow: FlowState) {
-	const status = flowStatusLabel(flow.status, flow.language);
-	return flow.language === "en"
-		? `${flow.id} status: ${status}; cannot start.`
-		: `${flow.id} 当前状态：${status}，不能启动。`;
-}
-
-function runningFlowMessage(flow: FlowState) {
-	return flow.language === "en"
-		? `A Flow is already running: ${flow.id}`
-		: `已有运行中的 Flow：${flow.id}`;
+		? formatUserNotice("⚠️", "Flow cannot start", [
+				"No pending step ready to start",
+			])
+		: formatUserNotice("⚠️", "Flow 无法启动", ["没有可启动的待执行步骤"]);
 }
 
 function notifySessionStartFailed(
@@ -521,7 +450,7 @@ function notifySessionStartFailed(
 	language: FlowState["language"],
 ) {
 	try {
-		notifyUser(ctx, message, "error", language);
+		notifyUser(ctx, message, "info", language);
 		return true;
 	} catch (notifyError) {
 		if (isStaleSessionError(notifyError)) return false;
@@ -534,8 +463,8 @@ function flowStepSessionStartFailedMessage(
 	language: FlowState["language"],
 ) {
 	return language === "en"
-		? `Flow step session start failed: ${error}`
-		: `Flow 步骤会话启动失败：${error}`;
+		? formatUserNotice("❌", "Flow step session start failed", [error])
+		: formatUserNotice("❌", "Flow 步骤会话启动失败", [error]);
 }
 
 function setSessionName(ctx: ExtensionCommandContext, name: string) {

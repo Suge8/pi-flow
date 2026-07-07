@@ -6,7 +6,7 @@ import {
 } from "../../goal.js";
 import type { Language } from "../../shared/config.js";
 import { runtimeLanguage } from "../../shared/language.js";
-import { notifyUser } from "../../shared/ui-language.js";
+import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
 import { writeFlowHtml } from "../html.js";
 import { planSnapshotError } from "../snapshot.js";
 import { currentGoal, latestFlow, writeFlow } from "../store.js";
@@ -23,49 +23,45 @@ import { validateFlowDir } from "../validator.js";
 
 export async function continueCurrentGoal(ctx: ExtensionContext) {
 	const goal = getGoalState(ctx);
-	if (!goal)
-		return notifyUser(
-			ctx,
-			flowContinueNoGoalMessage(runtimeLanguage()),
-			"warning",
-			runtimeLanguage(),
-		);
+	if (!goal) {
+		const language = runtimeLanguage();
+		notifyUser(ctx, flowContinueNoGoalMessage(language), "info", language);
+		return "no_goal";
+	}
 	if (goal.status === "paused" || goal.status === "budget_limited") {
 		const result = await resumePausedGoalFromFlow(ctx);
-		return notifyUser(
+		notifyUser(
 			ctx,
 			continueResultText(result, goal.language),
 			"info",
 			goal.language,
 		);
+		return result;
 	}
 	if (goal.status === "active") {
 		const result = await continueActiveGoalIfIdle(ctx);
-		return notifyUser(
+		notifyUser(
 			ctx,
 			continueResultText(result, goal.language),
 			"info",
 			goal.language,
 		);
+		return result;
 	}
 	notifyUser(
 		ctx,
-		goal.language === "en"
-			? `Current step status: ${goalStatusLabel(goal.status, goal.language)}.`
-			: `当前步骤状态：${goalStatusLabel(goal.status, goal.language)}。`,
+		currentStepStatusNotice(goal.status, goal.language),
 		"info",
 		goal.language,
 	);
+	return "not_resumable";
 }
 
 export function flowCommandLanguage(ctx: ExtensionContext): Language {
 	try {
 		const target = resolveFlowTarget(ctx);
 		if (target.ok) return target.location.flow.language;
-		return (
-			latestFlow(ctx.cwd, (flow) => flow.status !== "cancelled")?.flow
-				.language ?? runtimeLanguage()
-		);
+		return latestFlow(ctx.cwd)?.flow.language ?? runtimeLanguage();
 	} catch {
 		return runtimeLanguage();
 	}
@@ -74,7 +70,7 @@ export function flowCommandLanguage(ctx: ExtensionContext): Language {
 type FlowTargetNotifyOptions = {
 	id?: string;
 	command: string;
-	level?: "info" | "warning";
+	level?: "info";
 	quietNone?: boolean;
 	requireRunning?: boolean;
 };
@@ -91,7 +87,7 @@ export function flowTargetOrNotify(
 		notifyUser(
 			ctx,
 			flowTargetLookupFailedMessage(error, language),
-			"error",
+			"info",
 			language,
 		);
 		return null;
@@ -116,7 +112,7 @@ function notifyMissingTarget(
 	notifyUser(
 		ctx,
 		flowTargetMessage(target, language, options.command),
-		options.level ?? "warning",
+		options.level ?? "info",
 		language,
 	);
 	return null;
@@ -131,10 +127,8 @@ function validatedTarget(
 	if (!validation.ok || !validation.flow) {
 		notifyUser(
 			ctx,
-			location.flow.language === "en"
-				? `Flow validation failed:\n${validation.errors.join("\n")}`
-				: `Flow 校验失败：\n${validation.errors.join("\n")}`,
-			"error",
+			flowValidationFailedNotice(validation.errors, location.flow.language),
+			"info",
 			location.flow.language,
 		);
 		return null;
@@ -143,7 +137,7 @@ function validatedTarget(
 		notifyUser(
 			ctx,
 			flowNotRunningMessage(validation.flow.id, validation.flow.language),
-			"warning",
+			"info",
 			validation.flow.language,
 		);
 		return null;
@@ -171,10 +165,8 @@ export function verifyCurrentSnapshot(
 	if (!validation.ok || !validation.flow) {
 		notifyUser(
 			ctx,
-			flow.language === "en"
-				? `Flow validation failed:\n${validation.errors.join("\n")}`
-				: `Flow 校验失败：\n${validation.errors.join("\n")}`,
-			"error",
+			flowValidationFailedNotice(validation.errors, flow.language),
+			"info",
 			flow.language,
 		);
 		return undefined;
@@ -186,7 +178,12 @@ export function verifyCurrentSnapshot(
 	if (error) {
 		const saved = writeFlow(dir, { ...current, errors: [error] });
 		writeFlowHtml(dir, saved);
-		notifyUser(ctx, error, "error", current.language);
+		notifyUser(
+			ctx,
+			planSnapshotErrorNotice(error, current.language),
+			"info",
+			current.language,
+		);
 		return undefined;
 	}
 	if (current.errors.length === 0) return current;
@@ -196,42 +193,85 @@ export function verifyCurrentSnapshot(
 }
 
 export function flowStatusLabel(status: string, language: Language = "zh") {
-	if (status === "aligning") return language === "en" ? "aligning" : "对齐中";
+	if (status === "aligning")
+		return language === "en" ? "Waiting for confirmation" : "等待确认";
 	if (status === "generating")
-		return language === "en" ? "generating" : "生成中";
-	if (status === "draft") return language === "en" ? "draft" : "计划";
-	if (status === "running") return language === "en" ? "running" : "执行中";
-	if (status === "complete") return language === "en" ? "complete" : "已完成";
-	if (status === "cancelled") return language === "en" ? "cancelled" : "已取消";
+		return language === "en" ? "Generating" : "生成中";
+	if (status === "draft") return language === "en" ? "Ready" : "待执行";
+	if (status === "paused") return language === "en" ? "Paused" : "已暂停";
+	if (status === "running") return language === "en" ? "Running" : "执行中";
+	if (status === "complete") return language === "en" ? "Complete" : "已完成";
 	return status;
 }
 
 export function goalStatusLabel(status: string, language: Language = "zh") {
-	if (status === "pending") return language === "en" ? "pending" : "待执行";
-	if (status === "running") return language === "en" ? "running" : "执行中";
-	if (status === "complete") return language === "en" ? "complete" : "已完成";
+	if (status === "pending") return language === "en" ? "Ready" : "待执行";
+	if (status === "running") return language === "en" ? "Running" : "执行中";
+	if (status === "complete") return language === "en" ? "Complete" : "已完成";
 	return status;
 }
 
 function continueResultText(result: string, language: Language) {
 	if (result === "continued" || result === "resumed")
-		return language === "en" ? "Flow continued." : "Flow 已继续执行。";
+		return language === "en"
+			? formatUserNotice("✅", "Flow resumed", ["Current step resumed"])
+			: formatUserNotice("✅", "Flow 已恢复", ["当前步骤已恢复"]);
 	if (result === "busy")
 		return language === "en"
-			? "AI is running; try again later."
-			: "AI 正在运行，稍后再试。";
+			? formatUserNotice("⏳", "Flow cannot advance yet", [
+					"AI is running",
+					"Try again later",
+				])
+			: formatUserNotice("⏳", "Flow 暂不能推进", ["AI 正在运行", "稍后再试"]);
 	if (result === "no_goal") return flowContinueNoGoalMessage(language);
 	if (result === "not_resumable")
 		return language === "en"
-			? "The current step is not resumable."
-			: "当前步骤不在可恢复状态。";
+			? formatUserNotice("⚠️", "Flow cannot resume", [
+					"The current step is not resumable",
+				])
+			: formatUserNotice("⚠️", "Flow 无法恢复", ["当前步骤不在可恢复状态"]);
 	return language === "en"
-		? `Flow continue result: ${result}.`
-		: `Flow 继续结果：${result}。`;
+		? formatUserNotice("⚠️", "Flow advance result unknown", [
+				`Result: ${result}`,
+			])
+		: formatUserNotice("⚠️", "Flow 推进结果未知", [`结果：${result}`]);
+}
+
+function currentStepStatusNotice(status: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("ℹ️", "Current step status", [
+				`Status: ${goalStatusLabel(status, language)}`,
+			])
+		: formatUserNotice("ℹ️", "当前步骤状态", [
+				`状态：${goalStatusLabel(status, language)}`,
+			]);
+}
+
+function planSnapshotErrorNotice(error: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("❌", "Flow plan snapshot mismatch", [error])
+		: formatUserNotice("❌", "Flow 计划快照不一致", [error]);
+}
+
+export function flowValidationFailedNotice(
+	errors: readonly string[],
+	language: Language,
+) {
+	return language === "en"
+		? formatUserNotice("❌", "Flow validation failed", errors)
+		: formatUserNotice("❌", "Flow 校验失败", errors);
+}
+
+export function flowNoActiveStepMessage(language: Language) {
+	return language === "en"
+		? formatUserNotice("⚠️", "Flow cannot advance", ["No active step"])
+		: formatUserNotice("⚠️", "Flow 无法推进", ["没有进行中的步骤"]);
 }
 
 function flowContinueNoGoalMessage(language: Language) {
 	return language === "en"
-		? "No active Goal in the current session."
-		: "当前会话没有进行中的目标。";
+		? formatUserNotice("⚠️", "Flow cannot advance", [
+				"No active Goal in the current session",
+			])
+		: formatUserNotice("⚠️", "Flow 无法推进", ["当前会话没有进行中的目标"]);
 }
