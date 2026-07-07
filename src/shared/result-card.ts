@@ -11,7 +11,12 @@ import {
 import { notifyCentered } from "./activity-frame.js";
 import type { Language } from "./config.js";
 import { formatError } from "./guards.js";
-import { localizeUserText } from "./ui-language.js";
+import { runtimeLanguage } from "./language.js";
+import {
+	formatUserNotice,
+	localizeUserText,
+	notifyUser,
+} from "./ui-language.js";
 
 export type ResultCardTone =
 	| "goal-review"
@@ -110,8 +115,20 @@ export function sendResultCard(
 			options,
 		);
 	} catch (error) {
-		ctx.ui.notify(`结果卡片发送失败：${formatError(error)}`, "error");
+		const language = details.language ?? runtimeLanguage();
+		notifyUser(
+			ctx,
+			resultCardSendFailedNotice(formatError(error), language),
+			"info",
+			language,
+		);
 	}
+}
+
+function resultCardSendFailedNotice(error: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("❌", "Result card send failed", [error])
+		: formatUserNotice("❌", "结果卡片发送失败", [error]);
 }
 
 export const FINAL_REPLY_INSTRUCTION =

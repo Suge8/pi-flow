@@ -30,6 +30,7 @@ import {
 import { formatReviewResultLines } from "../shared/review-format.js";
 import { reviewerProgressLines, shortModel } from "../shared/reviewer-pool.js";
 import { elapsedSeconds, startElapsedStatus } from "../shared/status.js";
+import { formatUserNotice } from "../shared/ui-language.js";
 import type { ReviewLoop } from "./types.js";
 
 const REVIEW_STATUS_KEY = "review";
@@ -145,7 +146,7 @@ export function reviewErrorContent(loop: ReviewLoop, message: string) {
 	const language = reviewLanguage(loop);
 	const next =
 		loop.options.scope?.kind === "goal"
-			? (loop.options.scope.resumeCommand ?? "/flow continue")
+			? (loop.options.scope.resumeCommand ?? "/flow go")
 			: "/review";
 	return [
 		`[${roundTitle(loop.round, qualityTitle("错误", language), language)}]`,
@@ -220,11 +221,19 @@ export function cancelReview(loop: ReviewLoop) {
 export function cancelNotification(loop: ReviewLoop) {
 	const language = reviewLanguage(loop);
 	if (loop.options.scope?.kind !== "goal")
-		return language === "en" ? "Quality check cancelled." : "质量检查已取消。";
-	const command = loop.options.scope.resumeCommand ?? "/flow continue";
+		return language === "en"
+			? formatUserNotice("🛑", "Quality check cancelled", ["Stopped by user"])
+			: formatUserNotice("🛑", "质量检查已取消", ["已按你的操作停止"]);
+	const command = loop.options.scope.resumeCommand ?? "/flow go";
 	return language === "en"
-		? `Flow step paused. Run ${command} to continue.`
-		: `Flow 步骤已暂停。运行 ${command} 继续。`;
+		? formatUserNotice("⚠️", "Flow step paused", [
+				"Quality check cancelled",
+				`Run ${command} to continue`,
+			])
+		: formatUserNotice("⚠️", "Flow 步骤已暂停", [
+				"质量检查已取消",
+				`运行 ${command} 继续`,
+			]);
 }
 
 function reviewLines(review: string, loop: ReviewLoop, includeTotal: boolean) {

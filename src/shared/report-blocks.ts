@@ -17,6 +17,14 @@ export const TONE_TEXT: Record<Tone, string> = {
 	gray: "text-stone-500",
 };
 
+const TONE_SEAL_BG: Record<Tone, string> = {
+	green: "bg-emerald-50/80",
+	blue: "bg-sky-50/80",
+	amber: "bg-amber-50/80",
+	red: "bg-rose-50/80",
+	gray: "bg-stone-100/80",
+};
+
 export function escapeHtml(value: string) {
 	return cleanReportCopy(value)
 		.replace(/&/g, "&amp;")
@@ -98,7 +106,7 @@ function flowLogoDataUri() {
 }
 
 export function seal(text: string, tone: Tone) {
-	return `<span data-rough-seal data-tone="${tone}" class="inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-semibold ${TONE_TEXT[tone]}">${toneIcon(tone)}${escapeHtml(text)}</span>`;
+	return `<span data-rough-seal data-tone="${tone}" class="inline-flex shrink-0 items-center gap-1 px-2.5 py-0.5 text-xs font-medium ${TONE_SEAL_BG[tone]} ${TONE_TEXT[tone]}">${toneIcon(tone)}${escapeHtml(text)}</span>`;
 }
 
 function toneIcon(tone: Tone) {

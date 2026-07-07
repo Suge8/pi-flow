@@ -16,20 +16,20 @@ export function planSnapshotError(
 	const label = flowStepLabel(goal.index, goal.title, language);
 	if (!goal.snapshot || !goal.snapshotHash)
 		return language === "en"
-			? `${label} is missing a plan snapshot (snapshot/snapshotHash), so it cannot resume.`
-			: `${label} 缺少计划快照（snapshot/snapshotHash），不能恢复。`;
+			? `Missing plan snapshot for ${label}: snapshot/snapshotHash`
+			: `${label} 缺少计划快照（snapshot/snapshotHash），不能恢复`;
 	const path = join(dir, goal.file);
 	if (!existsSync(path))
 		return language === "en"
-			? `Step file does not exist: ${goal.file}`
+			? `Missing step file: ${goal.file}`
 			: `步骤文件不存在：${goal.file}`;
 	const current = readFileSync(path, "utf8");
 	if (planSnapshotHash(current) === goal.snapshotHash) return undefined;
 	return (
 		snapshotChangeDetail(label, goal.file, goal.snapshot, current, language) ??
 		(language === "en"
-			? `${label} plan changed after start: ${goal.file} Objective/Scope/Success Criteria no longer match the start snapshot.`
-			: `${label} 启动后计划被修改：${goal.file} 的 Objective/Scope/Success Criteria 与启动时快照不一致。`)
+			? `${label} plan snapshot mismatch: ${goal.file} Objective/Scope/Success Criteria no longer match the start snapshot`
+			: `${label} 启动后计划被修改：${goal.file} 的 Objective/Scope/Success Criteria 与启动时快照不一致`)
 	);
 }
 
@@ -78,8 +78,8 @@ function checkboxChangeMessage(
 	const from = checkboxMark(before);
 	const to = checkboxMark(after);
 	return language === "en"
-		? `${label} plan changed after start: ${file} ${section} line ${line} changed from ${from} to ${to}. This section is the acceptance contract, not a progress area. Restore it; write completion evidence in Verification/Handoff.`
-		: `${label} 启动后计划被修改：${file} 的 ${section} 第 ${line} 行从 ${from} 改成 ${to}。该区是验收合同，不是进度区。请恢复；完成证据写入 Verification/Handoff。`;
+		? `${label} plan snapshot mismatch: ${file} ${section} line ${line} changed from ${from} to ${to}. This section is the acceptance contract, not a progress area. Restore it; write completion evidence in Verification/Handoff`
+		: `${label} 启动后计划被修改：${file} 的 ${section} 第 ${line} 行从 ${from} 改成 ${to}。该区是验收合同，不是进度区。请恢复；完成证据写入 Verification/Handoff`;
 }
 
 function checkboxMark(mark: string) {

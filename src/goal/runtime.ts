@@ -70,7 +70,11 @@ import {
 	setStatusSafe,
 	startElapsedStatus,
 } from "../shared/status.js";
-import { notifyUser, setStatusText } from "../shared/ui-language.js";
+import {
+	formatUserNotice,
+	notifyUser,
+	setStatusText,
+} from "../shared/ui-language.js";
 import {
 	clearPersistedGoal as clearPersistedGoalEntry,
 	GOAL_STATE_ENTRY_TYPE,
@@ -413,10 +417,8 @@ export default function goal(pi: ExtensionAPI) {
 				scheduleRetryExhaustionWatch(pi, ctx, state.activeGoal, finalAssistant);
 			notifyUser(
 				ctx,
-				state.activeGoal.language === "en"
-					? `${goalScopeLabel(ctx, state.activeGoal.language)} connection interrupted; waiting for Pi to retry automatically.`
-					: `${goalScopeLabel(ctx, state.activeGoal.language)}连接中断，等待 Pi 自动重试。`,
-				"warning",
+				goalRetryWaitingNotice(ctx, state.activeGoal),
+				"info",
 				state.activeGoal.language,
 			);
 			return;
@@ -463,6 +465,28 @@ export default function goal(pi: ExtensionAPI) {
 	});
 }
 
+function flowStepContentEmptyNotice(language: Language) {
+	return language === "en"
+		? formatUserNotice("⚠️", "Flow step content is empty", [
+				"Cannot start an empty step",
+			])
+		: formatUserNotice("⚠️", "Flow 步骤内容为空", ["无法启动空步骤"]);
+}
+
+function goalExtensionNotInitializedNotice(language: Language) {
+	return language === "en"
+		? formatUserNotice("❌", "Goal extension is not initialized", [
+				"Cannot start the Flow step",
+			])
+		: formatUserNotice("❌", "目标扩展尚未初始化", ["无法启动 Flow 步骤"]);
+}
+
+function acceptanceStartFailedNotice(language: Language, error: string) {
+	return language === "en"
+		? formatUserNotice("❌", "Acceptance start failed", [error])
+		: formatUserNotice("❌", "完成验收启动失败", [error]);
+}
+
 export async function startGoalFromFlow(
 	input: string | { objective: string; prompt: string },
 	ctx: StatusContext,
@@ -473,22 +497,15 @@ export async function startGoalFromFlow(
 	const language = flowContext(ctx)?.flow.language ?? runtimeLanguage();
 	const trimmed = objective.trim();
 	if (!trimmed) {
-		notifyUser(
-			ctx,
-			language === "en" ? "Flow step content is empty." : "Flow 步骤内容为空。",
-			"warning",
-			language,
-		);
+		notifyUser(ctx, flowStepContentEmptyNotice(language), "info", language);
 		return false;
 	}
 	const pi = goalRuntimeState.extensionApi;
 	if (!pi) {
 		notifyUser(
 			ctx,
-			language === "en"
-				? "Goal extension is not initialized."
-				: "目标扩展尚未初始化。",
-			"error",
+			goalExtensionNotInitializedNotice(language),
+			"info",
 			language,
 		);
 		return false;
@@ -534,7 +551,9 @@ export async function resumePausedGoalFromFlow(
 	if (!pi) return "busy";
 	cancelGoalRecoveryTimers(state, { resetAutoResumeUse: true });
 	const previousGoal = goal;
-	state.activeGoal = transitionGoal(goal, "active");
+	const resumedGoal =
+		goal.status === "paused" ? { ...goal, id: randomUUID() } : goal;
+	state.activeGoal = transitionGoal(resumedGoal, "active");
 	persistGoal(state.activeGoal, ctx);
 	updateStatus(ctx, state.activeGoal);
 	if (state.activeGoal.status !== "active") return "not_resumable";
@@ -677,10 +696,8 @@ function scheduleGoalStateReview(ctx: ExtensionContext, goal: ActiveGoal) {
 				.catch((error) =>
 					notifyUser(
 						ctx,
-						current.language === "en"
-							? `Acceptance start failed: ${notifyError(error)}`
-							: `完成验收启动失败：${notifyError(error)}`,
-						"error",
+						acceptanceStartFailedNotice(current.language, notifyError(error)),
+						"info",
 						current.language,
 					),
 				)
@@ -863,8 +880,8 @@ function pauseGoalAfterReviewSystemError(
 	updateStatus(ctx, state.activeGoal);
 	notifyUser(
 		ctx,
-		`${audit.feedback} ${pausedContinueMessage(ctx, goal.language)}`,
-		"error",
+		completionErrorPausedNotice(ctx, goal, audit.feedback),
+		"info",
 		goal.language,
 	);
 }
@@ -1315,15 +1332,10 @@ function pauseGoalAfterAgentEnd(
 	persistGoal(state.activeGoal, ctx);
 	updateStatus(ctx, state.activeGoal);
 	closeGoalPlanWatcher();
-	const details = assistant.errorMessage
-		? ` (${truncateNotification(assistant.errorMessage)})`
-		: "";
 	notifyUser(
 		ctx,
-		goal.language === "en"
-			? `${goalScopeLabel(ctx, goal.language)} paused after execution interruption${details}. Run ${goalResumeCommand(ctx)} to continue.`
-			: `${goalScopeLabel(ctx, goal.language)}已因执行中断${details}暂停。运行 ${goalResumeCommand(ctx)} 继续。`,
-		"warning",
+		goalExecutionInterruptedNotice(ctx, goal, assistant.errorMessage),
+		"info",
 		goal.language,
 	);
 }
@@ -1381,7 +1393,7 @@ function pauseGoalAfterRetryExhaustion(
 			errorMessage,
 			willAutoResume,
 		),
-		"warning",
+		"info",
 		state.activeGoal.language,
 	);
 	if (willAutoResume)
@@ -1510,15 +1522,25 @@ function retryExhaustedNotification(
 	willAutoResume: boolean,
 ) {
 	if (goal.language === "en") {
-		const retryText = willAutoResume
-			? "will resume once after 5 minutes without user action;"
-			: "already resumed once; will not resume again;";
-		return `${goalScopeLabel(ctx, goal.language)} paused: Pi automatic retries are exhausted (${truncateNotification(errorMessage)}). ${retryText} run ${goalResumeCommand(ctx)} to continue.`;
+		const autoResumeLine = willAutoResume
+			? "Automatic action: resume once after 5 minutes without user action"
+			: "Automatic action: already resumed once; will not resume again";
+		return formatUserNotice("⚠️", goalNoticeTitle(ctx, goal, "paused"), [
+			"Pi automatic retries are exhausted",
+			`Reason: ${truncateNotification(errorMessage)}`,
+			autoResumeLine,
+			`Run ${goalResumeCommand(ctx)} to continue`,
+		]);
 	}
-	const retryText = willAutoResume
-		? "5 分钟无人操作后自动恢复一次；"
-		: "已自动恢复过一次；";
-	return `${goalScopeLabel(ctx, goal.language)}已暂停：Pi 自动重试耗尽（${truncateNotification(errorMessage)}）。${retryText}运行 ${goalResumeCommand(ctx)} 继续。`;
+	const autoResumeLine = willAutoResume
+		? "自动处理：5 分钟无人操作后自动恢复一次"
+		: "自动处理：已自动恢复过一次，本次不再自动恢复";
+	return formatUserNotice("⚠️", goalNoticeTitle(ctx, goal, "已暂停"), [
+		"Pi 自动重试耗尽",
+		`原因：${truncateNotification(errorMessage)}`,
+		autoResumeLine,
+		`运行 ${goalResumeCommand(ctx)} 继续`,
+	]);
 }
 
 async function recoverWebSocketLimitError(
@@ -1541,10 +1563,8 @@ async function recoverWebSocketLimitError(
 	}
 	notifyUser(
 		ctx,
-		goal.language === "en"
-			? `${goalScopeLabel(ctx, goal.language)} connection reached the 60-minute limit and continued automatically.`
-			: `${goalScopeLabel(ctx, goal.language)}连接到达 60 分钟上限，已自动继续。`,
-		"warning",
+		websocketLimitContinuedNotice(ctx, goal),
+		"info",
 		goal.language,
 	);
 	if (await sendContinuationPrompt(pi, ctx, goal)) {
@@ -1583,10 +1603,8 @@ function pauseGoalAfterWebSocketLimit(
 	closeGoalPlanWatcher();
 	notifyUser(
 		ctx,
-		goal.language === "en"
-			? `${goalScopeLabel(ctx, goal.language)} connection reached the 60-minute limit; ${reason}. Run ${goalResumeCommand(ctx)} to continue.`
-			: `${goalScopeLabel(ctx, goal.language)}连接到达 60 分钟上限，${reason}。运行 ${goalResumeCommand(ctx)} 继续。`,
-		"warning",
+		websocketLimitPausedNotice(ctx, goal, reason),
+		"info",
 		goal.language,
 	);
 }
@@ -1598,20 +1616,140 @@ function isResponsesWebSocketLimitError(message: string | undefined) {
 	);
 }
 
+function goalRetryWaitingNotice(ctx: StatusContext, goal: ActiveGoal) {
+	return goal.language === "en"
+		? formatUserNotice(
+				"⏳",
+				goalNoticeTitle(ctx, goal, "connection interrupted"),
+				["Waiting for Pi to retry automatically"],
+			)
+		: formatUserNotice("⏳", goalNoticeTitle(ctx, goal, "连接中断"), [
+				"等待 Pi 自动重试",
+			]);
+}
+
+function goalExecutionInterruptedNotice(
+	ctx: StatusContext,
+	goal: ActiveGoal,
+	errorMessage: string | undefined,
+) {
+	const reason = errorMessage
+		? truncateNotification(errorMessage)
+		: goal.language === "en"
+			? "execution interrupted"
+			: "执行中断";
+	return goal.language === "en"
+		? formatUserNotice("⚠️", goalNoticeTitle(ctx, goal, "paused"), [
+				`Reason: ${reason}`,
+				`Run ${goalResumeCommand(ctx)} to continue`,
+			])
+		: formatUserNotice("⚠️", goalNoticeTitle(ctx, goal, "已暂停"), [
+				`原因：${reason}`,
+				`运行 ${goalResumeCommand(ctx)} 继续`,
+			]);
+}
+
+function websocketLimitContinuedNotice(ctx: StatusContext, goal: ActiveGoal) {
+	return goal.language === "en"
+		? formatUserNotice(
+				"🔁",
+				goalNoticeTitle(ctx, goal, "continued automatically"),
+				["Connection reached the 60-minute limit"],
+			)
+		: formatUserNotice("🔁", goalNoticeTitle(ctx, goal, "已自动继续"), [
+				"连接到达 60 分钟上限",
+			]);
+}
+
+function websocketLimitPausedNotice(
+	ctx: StatusContext,
+	goal: ActiveGoal,
+	reason: string,
+) {
+	return goal.language === "en"
+		? formatUserNotice("⚠️", goalNoticeTitle(ctx, goal, "paused"), [
+				"Connection reached the 60-minute limit",
+				`Reason: ${reason}`,
+				`Run ${goalResumeCommand(ctx)} to continue`,
+			])
+		: formatUserNotice("⚠️", goalNoticeTitle(ctx, goal, "已暂停"), [
+				"连接到达 60 分钟上限",
+				`原因：${reason}`,
+				`运行 ${goalResumeCommand(ctx)} 继续`,
+			]);
+}
+
+function goalNoticeTitle(ctx: StatusContext, goal: ActiveGoal, suffix: string) {
+	return scopedGoalNoticeTitle(ctx, goal.language, suffix);
+}
+
+function scopedGoalNoticeTitle(
+	ctx: StatusContext,
+	language: Language,
+	suffix: string,
+) {
+	const scope = goalScopeLabel(ctx, language);
+	return language === "en" || scope === "Flow"
+		? `${scope} ${suffix}`
+		: `${scope}${suffix}`;
+}
+
 function goalScopeLabel(ctx: StatusContext, language: Language = "zh") {
 	if (flowContext(ctx)) return "Flow";
 	return language === "en" ? "Goal" : "目标";
 }
 
-function pausedContinueMessage(ctx: StatusContext, language: Language) {
-	const command = goalResumeCommand(ctx);
-	if (flowContext(ctx))
-		return language === "en"
-			? `Flow paused. Run ${command} to continue.`
-			: `Flow 已暂停。运行 ${command} 继续。`;
+function goalTokenBudgetReachedNotice(language: Language, budget: string) {
 	return language === "en"
-		? `Goal paused. Run ${command} to continue.`
-		: `目标已暂停。运行 ${command} 继续。`;
+		? formatUserNotice("⚠️", "Goal token budget reached", [budget])
+		: formatUserNotice("⚠️", "目标令牌预算已达到", [budget]);
+}
+
+function completionStateReadFailedNotice(language: Language, error: string) {
+	return language === "en"
+		? formatUserNotice("❌", "Completion state read failed", [error])
+		: formatUserNotice("❌", "完成状态读取失败", [error]);
+}
+
+function completionStateSaveFailedNotice(language: Language, error: string) {
+	return language === "en"
+		? formatUserNotice("❌", "Completion state save failed", [error])
+		: formatUserNotice("❌", "完成状态保存失败", [error]);
+}
+
+function pausedContinueMessage(ctx: StatusContext, language: Language) {
+	return formatUserNotice(
+		"⚠️",
+		language === "en"
+			? scopedGoalNoticeTitle(ctx, language, "paused")
+			: scopedGoalNoticeTitle(ctx, language, "已暂停"),
+		pausedContinueLines(ctx, language),
+	);
+}
+
+function completionErrorPausedNotice(
+	ctx: StatusContext,
+	goal: ActiveGoal,
+	feedback: string,
+) {
+	return formatUserNotice(
+		"⚠️",
+		goal.language === "en"
+			? goalNoticeTitle(ctx, goal, "paused")
+			: goalNoticeTitle(ctx, goal, "已暂停"),
+		[
+			goal.language === "en" ? "Completion acceptance error" : "完成验收错误",
+			feedback,
+			...pausedContinueLines(ctx, goal.language),
+		],
+	);
+}
+
+function pausedContinueLines(ctx: StatusContext, language: Language) {
+	const command = goalResumeCommand(ctx);
+	return language === "en"
+		? [`Run ${command} to continue`]
+		: [`运行 ${command} 继续`];
 }
 
 function qualityStopMessage(
@@ -1635,11 +1773,11 @@ function qualityStopMessage(
 }
 
 function goalResumeCommand(ctx: StatusContext) {
-	return `/flow continue${flowCommandSuffix(ctx)}`;
+	return `/flow go${flowCommandSuffix(ctx)}`;
 }
 
 function goalClearCommand(ctx: StatusContext) {
-	return `/flow cancel${flowCommandSuffix(ctx)}`;
+	return `/flow go${flowCommandSuffix(ctx)}`;
 }
 
 function flowCommandSuffix(ctx: StatusContext) {
@@ -1660,10 +1798,8 @@ function stopForBudget(ctx: StatusContext, goal: ActiveGoal) {
 	closeGoalPlanWatcher();
 	notifyUser(
 		ctx,
-		goal.language === "en"
-			? `Goal token budget reached: ${formatBudget(state.activeGoal)}`
-			: `目标令牌预算已达到：${formatBudget(state.activeGoal)}`,
-		"warning",
+		goalTokenBudgetReachedNotice(goal.language, formatBudget(state.activeGoal)),
+		"info",
 		goal.language,
 	);
 	return true;
@@ -1905,10 +2041,8 @@ function readCompletionCursor(
 	} catch (error) {
 		notifyUser(
 			ctx,
-			goal.language === "en"
-				? `Completion state read failed: ${notifyError(error)}`
-				: `完成状态读取失败：${notifyError(error)}`,
-			"error",
+			completionStateReadFailedNotice(goal.language, notifyError(error)),
+			"info",
 			goal.language,
 		);
 		return undefined;
@@ -1958,10 +2092,8 @@ function setCompletionCursor(
 	} catch (error) {
 		notifyUser(
 			ctx,
-			goal.language === "en"
-				? `Completion state save failed: ${notifyError(error)}`
-				: `完成状态保存失败：${notifyError(error)}`,
-			"error",
+			completionStateSaveFailedNotice(goal.language, notifyError(error)),
+			"info",
 			goal.language,
 		);
 	}
@@ -2139,10 +2271,14 @@ function pausedGoalActivity(ctx: StatusContext, goal: ActiveGoal) {
 			: goal.language === "en"
 				? "paused"
 				: "已暂停";
-	const next =
-		goal.language === "en"
-			? `Next: ${goalResumeCommand(ctx)} · ${goalClearCommand(ctx)}`
-			: `下一步：${goalResumeCommand(ctx)} · ${goalClearCommand(ctx)}`;
+	const resume = goalResumeCommand(ctx);
+	const next = flow
+		? goal.language === "en"
+			? `Next: ${resume}`
+			: `下一步：${resume}`
+		: goal.language === "en"
+			? `Next: ${resume} · ${goalClearCommand(ctx)}`
+			: `下一步：${resume} · ${goalClearCommand(ctx)}`;
 	const controls =
 		goal.status === "budget_limited"
 			? [

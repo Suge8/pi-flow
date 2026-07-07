@@ -5,7 +5,11 @@ import type {
 import { isRecord } from "../../shared/guards.js";
 import { sendOrchestrationPrompt } from "../../shared/internal-prompt.js";
 import { runtimeLanguage } from "../../shared/language.js";
-import { confirmUser, notifyUser } from "../../shared/ui-language.js";
+import {
+	confirmUser,
+	formatUserNotice,
+	notifyUser,
+} from "../../shared/ui-language.js";
 import { writeFlowErrorHtml } from "../html.js";
 import { repairPrompt } from "../prompt.js";
 import { touchFlowErrors } from "../store.js";
@@ -35,14 +39,7 @@ export async function askRepair(
 		language,
 	);
 	if (!shouldRepair) return;
-	notifyUser(
-		ctx,
-		language === "en"
-			? "Repairing Flow plan; it will be validated automatically when done."
-			: "Flow 计划修复中；完成后会自动校验。",
-		"info",
-		language,
-	);
+	notifyUser(ctx, flowRepairingNotice(language), "info", language);
 	await sendOrchestrationPrompt(
 		pi,
 		ctx,
@@ -61,6 +58,14 @@ export async function askRepair(
 			language,
 		},
 	);
+}
+
+function flowRepairingNotice(language: "zh" | "en") {
+	return language === "en"
+		? formatUserNotice("🛠️", "Flow plan repair in progress", [
+				"It will be validated automatically when done",
+			])
+		: formatUserNotice("🛠️", "Flow 计划修复中", ["完成后会自动校验"]);
 }
 
 function safeFlowTitle(flow: unknown, fallback: string) {

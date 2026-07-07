@@ -28,21 +28,38 @@ const EN_REPLACEMENTS: [string, string][] = [
 		"Plan and run a single- or multi-step task: /flow [request|path.md]",
 	],
 	["运行质量检查", "Run quality checks"],
-	["已有运行中的 Flow：", "A Flow is already running: "],
-	["Flow 步骤会话启动失败：", "Flow step session start failed: "],
+	["⏳ 已有运行中的 Flow\n\n编号：", "⏳ A Flow is already running\n\nID: "],
+	["❌ Flow 步骤会话启动失败", "❌ Flow step session start failed"],
 	["已有活动目标：", "Active Goal already exists: "],
 	["目标计划已生成并启动", "Goal plan generated and started"],
+	["⚠️ 会话名同步失败", "⚠️ Session name sync failed"],
 	["会话名同步失败", "Session name sync failed"],
 	["；已按 ask 处理。", "; handled as ask."],
+	["已按 ask 处理", "Handled as ask"],
+	["⚠️ 生成配置已回退", "⚠️ Generation config fallback"],
 	[
-		"质量检查自动循环已停止：AI 中断或失败。",
-		"Quality check auto loop stopped: AI interrupted or failed.",
+		"⏳ 质量检查自动循环仍在等待\n\n等待 Pi 自动重试\n未停止",
+		"⏳ Quality check auto loop is still waiting\n\nWaiting for Pi to retry automatically\nNot stopped",
 	],
+	[
+		"⚠️ 质量检查自动循环已停止\n\nAI 中断或失败",
+		"⚠️ Quality check auto loop stopped\n\nAI interrupted or failed",
+	],
+	[
+		"⚠️ 质量检查自动循环已停止\n\nPi 自动重试耗尽",
+		"⚠️ Quality check auto loop stopped\n\nPi automatic retries are exhausted",
+	],
+	["❌ 质量检查失败", "❌ Quality check failed"],
 	["质量检查失败", "Quality check failed"],
+	["❌ 目标完成事实写入失败", "❌ Goal completion fact write failed"],
 	["目标完成事实写入失败", "Goal completion fact write failed"],
+	["❌ 目标状态保存失败", "❌ Goal state save failed"],
 	["目标状态保存失败", "Goal state save failed"],
+	["❌ 目标取消保存失败", "❌ Goal cancellation save failed"],
 	["目标取消保存失败", "Goal cancellation save failed"],
+	["⚠️ 目标检查进度同步失败", "⚠️ Goal review sync failed"],
 	["目标校验失败", "Goal validation failed"],
+	["❌ 完成验收启动失败", "❌ Acceptance start failed"],
 	["完成验收启动失败", "Acceptance start failed"],
 	["子进程启动失败", "Child process start failed"],
 	["子进程失败，退出码 ", "Child process failed, exit code "],
@@ -53,23 +70,35 @@ const EN_REPLACEMENTS: [string, string][] = [
 		"; only a paused or budget-limited Goal can be resumed.",
 	],
 	["目标令牌预算仍已达到：", "Goal token budget is still reached: "],
+	["❌ 目标提示发送失败", "❌ Goal prompt send failed"],
 	["目标提示发送失败", "Goal prompt send failed"],
-	["当前步骤状态：", "Current step status: "],
-	["Flow 已更新；运行 ", "Flow updated; run "],
-	[" 继续下一步。", " to continue to the next step."],
-	["Flow 继续结果：", "Flow continue result: "],
-	[".flow 目录不可用：", ".flow directory unavailable: "],
+	["❌ Flow 计划提示发送失败", "❌ Flow plan prompt send failed"],
+	["❌ Flow 计划修复提示发送失败", "❌ Flow plan repair prompt send failed"],
+	[
+		"❌ Flow 计划澄清提示发送失败",
+		"❌ Flow plan clarification prompt send failed",
+	],
+	["🛠️ Flow 计划修复中", "🛠️ Flow plan repair in progress"],
+	["完成后会自动校验", "It will be validated automatically when done"],
+	["ℹ️ 当前步骤状态\n\n状态：", "ℹ️ Current step status\n\nStatus: "],
+	["⚠️ Flow 已更新\n\n运行 ", "⚠️ Flow updated\n\nRun "],
+	[" 推进下一步", " to advance to the next step"],
+	[
+		"⚠️ Flow 推进结果未知\n\n结果：",
+		"⚠️ Flow advance result unknown\n\nResult: ",
+	],
+	["❌ .flow 目录不可用\n\n", "❌ .flow directory unavailable\n\n"],
 	[
 		"对齐阶段不接受目标计划；请继续对齐后再生成。",
 		"Alignment does not accept a Goal plan; continue alignment before generating.",
 	],
 	[
-		"对齐阶段不接受 Flow 计划；请继续对齐后再生成。",
-		"Alignment does not accept a Flow plan; continue alignment before generating.",
+		"⚠️ 对齐阶段不接受 Flow 计划\n\n请继续对齐后再生成",
+		"⚠️ Alignment cannot accept a Flow plan\n\nContinue alignment before generating",
 	],
 	[
-		"AI 未生成有效 Flow 计划。请重试 /flow。",
-		"AI did not generate a valid Flow plan. Retry /flow.",
+		"❌ AI 未生成有效 Flow 计划\n\n请重试 /flow",
+		"❌ AI did not generate a valid Flow plan\n\nRetry /flow",
 	],
 	["当前没有目标。", "No Goal."],
 	["生成计划前先对齐思路？", "Align before generating the plan?"],
@@ -113,7 +142,7 @@ const EN_REPLACEMENTS: [string, string][] = [
 		"Flow plan generation started; it will be validated automatically when done.",
 	],
 	["目标计划生成已取消。", "Goal plan generation cancelled."],
-	["Flow 计划生成已取消。", "Flow plan generation cancelled."],
+	["Flow 计划生成已暂停。", "Flow plan generation paused."],
 	["质量检查通过。", "Quality check passed."],
 	["非修复项：模型系统错误", "Non-fix item: model system error"],
 	["卡点：质量检查未完成", "Blocker: quality check did not complete"],
@@ -149,20 +178,25 @@ const EN_REPLACEMENTS: [string, string][] = [
 	["当前目录没有目标。", "No Goal in the current directory."],
 	["当前目录没有 Flow。", "No Flow in the current directory."],
 	[
-		"没有待启动的 Flow 计划。先运行 /flow <需求> 生成。",
-		"No draft Flow to start. Run /flow <request> first.",
+		"没有待启动的 Flow。先运行 /flow <需求> 生成。",
+		"No ready Flow to start. Run /flow <request> first.",
 	],
 	[
-		"当前 Pi 运行环境不支持新建会话，无法启动 Flow。",
-		"The current Pi runtime cannot create a new session, so Flow cannot start.",
+		"⚠️ Flow 无法启动\n\n当前 Pi 运行环境不支持新建会话",
+		"⚠️ Flow cannot start\n\nThe current Pi runtime cannot create a new session",
 	],
-	["AI 正在运行，稍后再试。", "AI is running; try again later."],
+	["AI 正在运行", "AI is running"],
+	["稍后再试", "Try again later"],
 	["目标已继续执行。", "Goal continued."],
 	["当前目录没有运行中的 Flow。", "No running Flow in the current directory."],
-	["Flow 没有进行中的步骤。", "Flow has no active step."],
-	["Flow 已继续执行。", "Flow continued."],
-	["当前会话没有进行中的目标。", "No active Goal in the current session."],
-	["当前步骤不在可恢复状态。", "The current step is not resumable."],
+	["没有进行中的步骤", "No active step"],
+	["Flow 已恢复", "Flow resumed"],
+	["Flow 暂不能推进", "Flow cannot advance yet"],
+	["Flow 无法推进", "Flow cannot advance"],
+	["Flow 无法恢复", "Flow cannot resume"],
+	["Flow 状态不受支持", "Flow status is not supported"],
+	["当前会话没有进行中的目标", "No active Goal in the current session"],
+	["当前步骤不在可恢复状态", "The current step is not resumable"],
 	[
 		"步骤已完成，但缺少会话记录，无法交接。",
 		"The step is complete, but no session record exists for handoff.",
@@ -174,10 +208,10 @@ const EN_REPLACEMENTS: [string, string][] = [
 	["目标已暂停", "Goal paused"],
 	["目标已恢复", "Goal resumed"],
 	["目标已取消", "Goal cancelled"],
+	["编号", "ID"],
 	["Flow 已完成", "Flow complete"],
 	["Flow 已更新", "Flow updated"],
 	["Flow 已暂停", "Flow paused"],
-	["Flow 已取消", "Flow cancelled"],
 	["网页报告", "Web report"],
 	["结果卡片发送失败", "Result card send failed"],
 	["读取失败", "read failed"],
@@ -185,7 +219,6 @@ const EN_REPLACEMENTS: [string, string][] = [
 	["发送失败", "send failed"],
 	["启动失败", "start failed"],
 	["已暂停", "paused"],
-	["已取消", "cancelled"],
 	["已完成", "complete"],
 	["已启动", "started"],
 	["已生成", "generated"],
@@ -277,6 +310,23 @@ export function notifyUser(
 ) {
 	const notify = originalForLanguage(ctx.ui, originalNotify, language);
 	(notify ?? ctx.ui.notify.bind(ctx.ui))(message, type);
+}
+
+export function formatUserNotice(
+	emoji: string,
+	title: string,
+	lines: readonly string[],
+) {
+	const safeTitle = trimNoticeTerminalPunctuation(title);
+	const body = lines
+		.filter(Boolean)
+		.map(trimNoticeTerminalPunctuation)
+		.join("\n");
+	return body ? `${emoji} ${safeTitle}\n\n${body}` : `${emoji} ${safeTitle}`;
+}
+
+function trimNoticeTerminalPunctuation(value: string) {
+	return value.trim().replace(/(?<!\.)[。.]$/u, "");
 }
 
 export function confirmUser(

@@ -4,7 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Language } from "./config.js";
 import { formatError } from "./guards.js";
-import { notifyUser } from "./ui-language.js";
+import { formatUserNotice, notifyUser } from "./ui-language.js";
 
 const VISIBLE_USER_INPUT_TYPE = "Pi Flow 用户补充";
 const HIDDEN_PROMPT_TYPE = "pi-flow-internal-prompt";
@@ -60,11 +60,10 @@ export async function sendOrchestrationPrompt(
 		);
 		return true;
 	} catch (error) {
-		const separator = input.language === "en" ? ": " : "：";
 		notifyUser(
 			ctx,
-			`${input.errorPrefix}${separator}${formatError(error)}`,
-			"error",
+			formatUserNotice("❌", input.errorPrefix, [formatError(error)]),
+			"info",
 			input.language,
 		);
 		return false;

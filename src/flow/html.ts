@@ -61,7 +61,6 @@ export function writeFlowErrorHtml(
 function flowTone(status: FlowState["status"]): Tone {
 	if (status === "running") return "blue";
 	if (status === "complete") return "green";
-	if (status === "cancelled") return "red";
 	return "gray";
 }
 
@@ -116,7 +115,7 @@ function heroSubtitle(flow: FlowState, total: number) {
 	if (flow.status === "generating")
 		return flow.language === "en" ? "Generating plan" : "计划生成中";
 	if (flow.status === "complete") return t.allStepsDone(total);
-	if (flow.status === "cancelled") return t.cancelled;
+	if (flow.status === "paused") return t.paused;
 	const current = flow.goals[flow.currentGoal];
 	if (flow.status === "running" && current)
 		return t.flowRunningStep(
@@ -173,6 +172,11 @@ function goalNode(goal: FlowGoal, tone: Tone) {
 	return `<span data-rough-node data-tone="${tone}"${fill} class="grid h-9 w-9 place-items-center text-xs font-bold ${TONE_TEXT[tone]}">${glyph}</span>`;
 }
 
+function goalCardNode(goal: FlowGoal, tone: Tone) {
+	const fill = goal.status === "complete" ? ' data-fill="solid"' : "";
+	return `<span data-rough-node data-tone="${tone}"${fill} class="grid h-9 w-9 place-items-center text-xs font-bold ${TONE_TEXT[tone]}">${goal.index + 1}</span>`;
+}
+
 function goalGlyph(goal: FlowGoal) {
 	if (goal.status === "complete") return reportIcon("check", "h-5 w-5");
 	if (goal.role === "final_acceptance") return reportIcon("flag", "h-5 w-5");
@@ -181,6 +185,29 @@ function goalGlyph(goal: FlowGoal) {
 
 function goalTone(goal: FlowGoal, language: FlowState["language"]): Tone {
 	return goalStatus(language)[goal.status]?.tone ?? "gray";
+}
+
+function goalDisplayStatus(
+	goal: FlowGoal,
+	flow: FlowState,
+	isCurrent: boolean,
+) {
+	const t = copy(flow.language);
+	if (isCurrent && goal.status !== "complete" && flow.errors.length > 0)
+		return { label: t.error, tone: "red" as Tone };
+	if (isCurrent && flow.status === "paused")
+		return { label: t.paused, tone: "amber" as Tone };
+	if (isCurrent && flow.status === "running")
+		return {
+			label: flow.language === "en" ? "Current" : "当前",
+			tone: "blue" as Tone,
+		};
+	return (
+		goalStatus(flow.language)[goal.status] ?? {
+			label: goal.status,
+			tone: "gray" as Tone,
+		}
+	);
 }
 
 function currentFlowGoalIndexes(flow: FlowState) {
@@ -201,27 +228,17 @@ function isCurrentGoal(goal: FlowGoal, currentIndexes: Set<number>) {
 
 function goalCard(dir: string, goal: FlowGoal, flow: FlowState) {
 	const isCurrent = isCurrentGoal(goal, currentFlowGoalIndexes(flow));
-	const status = goalStatus(flow.language)[goal.status] ?? {
-		label: goal.status,
-		tone: "gray" as Tone,
-	};
-	const kind =
-		goal.role === "final_acceptance"
-			? flow.language === "en"
-				? "Final acceptance"
-				: "最终验收"
-			: flowStepLabel(goal.index, goal.title, flow.language);
+	const status = goalDisplayStatus(goal, flow, isCurrent);
 	const markdown = readReportText(join(dir, goal.file));
 	return `<article id="goal-${goal.index}" data-rough-card${isCurrent ? ' data-tone="blue"' : ""} class="bg-white p-5">
 <div class="flex items-start justify-between gap-3">
 <div class="flex min-w-0 items-center gap-3">
-${goalNode(goal, status.tone)}
+${goalCardNode(goal, status.tone)}
 <div class="min-w-0">
-<p class="text-[11px] text-stone-400">${kind}${isCurrent ? ` · ${flow.language === "en" ? "Current" : "当前"}` : ""}</p>
 <h2 class="truncate text-base font-semibold text-stone-900">${escapeHtml(goal.title)}</h2>
 </div>
 </div>
-${goal.status === "complete" ? "" : seal(status.label, status.tone)}
+${seal(status.label, status.tone)}
 </div>
 <div class="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px] xl:items-start">
 <div class="min-w-0">
@@ -417,9 +434,6 @@ function sourceTypeLabel(type: string, language: FlowState["language"]) {
 
 function nextCommands(flow: FlowState) {
 	const id = flowCommandId(flow.id);
-	if (flow.status === "draft")
-		return [`/flow start ${id}`, `/flow status ${id}`];
-	if (flow.status === "running")
-		return [`/flow continue ${id}`, `/flow cancel ${id}`];
-	return [`/flow status ${id}`];
+	if (flow.status === "complete") return [];
+	return [`/flow go ${id}`];
 }

@@ -6,16 +6,30 @@ import { writeFlowHtml } from "../flow/html.js";
 import { flowLockBusyMessage, withFlowLockSync } from "../flow/lock.js";
 import { listFlows, readFlow, writeFlow } from "../flow/store.js";
 import { formatError } from "./guards.js";
+import { runtimeLanguage } from "./language.js";
 import { currentSessionFile } from "./session.js";
+import { formatUserNotice, notifyUser } from "./ui-language.js";
 
 export function registerSessionNameSync(pi: ExtensionAPI) {
 	pi.on("session_info_changed", (event, ctx) => {
 		try {
 			syncSessionName(ctx, sessionNameOrNull(event.name));
 		} catch (error) {
-			ctx.ui.notify(`会话名同步失败：${formatError(error)}`, "warning");
+			const language = runtimeLanguage();
+			notifyUser(
+				ctx,
+				sessionNameSyncFailedNotice(formatError(error), language),
+				"info",
+				language,
+			);
 		}
 	});
+}
+
+function sessionNameSyncFailedNotice(error: string, language: "zh" | "en") {
+	return language === "en"
+		? formatUserNotice("⚠️", "Session name sync failed", [error])
+		: formatUserNotice("⚠️", "会话名同步失败", [error]);
 }
 
 function syncSessionName(ctx: ExtensionContext, sessionName: string | null) {

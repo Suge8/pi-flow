@@ -38,7 +38,7 @@ import {
 	elapsedSeconds,
 	formatDuration,
 } from "../shared/status.js";
-import { notifyUser } from "../shared/ui-language.js";
+import { formatUserNotice, notifyUser } from "../shared/ui-language.js";
 import {
 	appendCustomEntry,
 	artifactChecks,
@@ -539,10 +539,11 @@ function recordFlowGoalCompletion(
 	} catch (error) {
 		notifyUser(
 			ctx,
-			goal.language === "en"
-				? `Goal completion fact write failed: ${formatNotifyError(error)}`
-				: `目标完成事实写入失败：${formatNotifyError(error)}`,
-			"error",
+			goalCompletionFactWriteFailedNotice(
+				formatNotifyError(error),
+				goal.language,
+			),
+			"info",
 			goal.language,
 		);
 		return undefined;
@@ -591,16 +592,14 @@ function syncFlowGoalReviews(
 			notifyUser(
 				ctx,
 				flowLockBusyMessage(synced.owner, goal.language),
-				"warning",
+				"info",
 				goal.language,
 			);
 	} catch (error) {
 		notifyUser(
 			ctx,
-			goal.language === "en"
-				? `Goal review sync failed: ${formatNotifyError(error)}`
-				: `目标检查进度同步失败：${formatNotifyError(error)}`,
-			"warning",
+			goalReviewSyncFailedNotice(formatNotifyError(error), goal.language),
+			"info",
 			goal.language,
 		);
 	}
@@ -704,6 +703,21 @@ function isLegacyFlowPromptText(text: string): boolean {
 
 function durationSince(startedAt: number): string {
 	return formatDuration(elapsedSeconds(startedAt));
+}
+
+function goalCompletionFactWriteFailedNotice(
+	error: string,
+	language: "zh" | "en",
+) {
+	return language === "en"
+		? formatUserNotice("❌", "Goal completion fact write failed", [error])
+		: formatUserNotice("❌", "目标完成事实写入失败", [error]);
+}
+
+function goalReviewSyncFailedNotice(error: string, language: "zh" | "en") {
+	return language === "en"
+		? formatUserNotice("⚠️", "Goal review sync failed", [error])
+		: formatUserNotice("⚠️", "目标检查进度同步失败", [error]);
 }
 
 function formatNotifyError(error: unknown): string {

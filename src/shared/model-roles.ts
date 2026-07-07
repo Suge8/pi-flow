@@ -9,7 +9,7 @@ import {
 	readFlowConfig,
 } from "./config.js";
 import { formatError } from "./guards.js";
-import { notifyUser } from "./ui-language.js";
+import { formatUserNotice, notifyUser } from "./ui-language.js";
 
 export type ModelRole = "planner" | "executor";
 
@@ -44,7 +44,7 @@ export async function switchToRoleModel(
 		notifyUser(
 			ctx,
 			roleConfigError(role, formatError(error), language),
-			"error",
+			"info",
 			language,
 		);
 		return false;
@@ -65,7 +65,7 @@ async function applyRoleModel(
 		notifyUser(
 			ctx,
 			roleUnavailable(role, config.model, language),
-			"error",
+			"info",
 			language,
 		);
 		return false;
@@ -75,7 +75,7 @@ async function applyRoleModel(
 		notifyUser(
 			ctx,
 			roleUnavailable(role, config.model, language),
-			"error",
+			"info",
 			language,
 		);
 		return false;
@@ -87,7 +87,7 @@ async function applyRoleModel(
 		notifyUser(
 			ctx,
 			roleUnavailable(role, config.model, language),
-			"error",
+			"info",
 			language,
 		);
 		return false;
@@ -96,7 +96,7 @@ async function applyRoleModel(
 		notifyUser(
 			ctx,
 			roleUnavailable(role, config.model, language),
-			"error",
+			"info",
 			language,
 		);
 		return false;
@@ -119,20 +119,20 @@ function roleStarted(
 	const copy = ROLE_COPY[role][language];
 	const suffix = `${config.model}/${config.thinking}`;
 	return language === "en"
-		? `${copy.icon} ${copy.label} started: ${suffix}`
-		: `${copy.icon} ${copy.label}开工：${suffix}`;
+		? formatUserNotice(copy.icon, `${copy.label} started`, [suffix])
+		: formatUserNotice(copy.icon, `${copy.label}已启动`, [suffix]);
 }
 
 function roleUnavailable(role: ModelRole, model: string, language: Language) {
 	const label = ROLE_COPY[role][language].label;
 	return language === "en"
-		? `${label} is unavailable: ${model}`
-		: `${label}不可用：${model}`;
+		? formatUserNotice("⚠️", `${label} is unavailable`, [model])
+		: formatUserNotice("⚠️", `${label}不可用`, [model]);
 }
 
 function roleConfigError(role: ModelRole, error: string, language: Language) {
 	const label = ROLE_COPY[role][language].label;
 	return language === "en"
-		? `${label} config error: ${error}`
-		: `${label}配置错误：${error}`;
+		? formatUserNotice("❌", `${label} config error`, [error])
+		: formatUserNotice("❌", `${label}配置错误`, [error]);
 }

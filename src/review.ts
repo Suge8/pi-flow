@@ -48,7 +48,11 @@ import {
 	setReviewActivityBox,
 } from "./shared/activity-frame.js";
 import { clipSummary } from "./shared/clip.js";
-import { type ReviewerConfig, readFlowConfig } from "./shared/config.js";
+import {
+	type Language,
+	type ReviewerConfig,
+	readFlowConfig,
+} from "./shared/config.js";
 import { formatError } from "./shared/guards.js";
 import { runtimeLanguage } from "./shared/language.js";
 import { formatPlanEvidence } from "./shared/plan-evidence.js";
@@ -74,6 +78,7 @@ import {
 	formatDuration,
 } from "./shared/status.js";
 import {
+	formatUserNotice,
 	installLocalizedUi,
 	localizeUserText,
 	notifyUser,
@@ -88,6 +93,38 @@ let activeReviewLoop: ReviewLoop | undefined;
 let reviewRetryExhaustionWatch: ReviewRetryExhaustionWatch | undefined;
 let reviewRetryExhaustionGeneration = 0;
 const handledReviewAgentEndEvents = new WeakMap<object, ReviewAgentEndResult>();
+
+function reviewNeedsInteractiveNotice(language: Language) {
+	return language === "en"
+		? formatUserNotice("⚠️", "Quality check cannot start", [
+				"Interactive mode is required",
+			])
+		: formatUserNotice("⚠️", "质量检查无法启动", ["需要交互模式"]);
+}
+
+function reviewWaitForIdleNotice(language: Language) {
+	return language === "en"
+		? formatUserNotice("⏳", "Quality check cannot start yet", [
+				"Wait for the current turn to finish",
+			])
+		: formatUserNotice("⏳", "质量检查暂不能启动", [
+				"请等当前轮次结束后再运行 /review",
+			]);
+}
+
+function reviewBusyNotice(language: Language) {
+	return language === "en"
+		? formatUserNotice("⏳", "Quality check is already running", [
+				"Wait for the result",
+			])
+		: formatUserNotice("⏳", "质量检查循环已在运行", ["请等待结果"]);
+}
+
+function reviewDisabledNotice(language: Language) {
+	return language === "en"
+		? formatUserNotice("⚠️", "Quality check is disabled", [])
+		: formatUserNotice("⚠️", "质量检查已禁用", []);
+}
 
 interface ReviewRetryExhaustionWatch {
 	loop: ReviewLoop;
@@ -126,22 +163,34 @@ export default function reviewExtension(pi: ExtensionAPI) {
 		description: localizeUserText("运行质量检查") ?? "运行质量检查",
 		handler: async (_args, ctx) => {
 			installLocalizedUi(ctx);
-			if (!ctx.hasUI) return ctx.ui.notify("质量检查需要交互模式。", "error");
+			const language = runtimeLanguage();
+			if (!ctx.hasUI)
+				return notifyUser(
+					ctx,
+					reviewNeedsInteractiveNotice(language),
+					"info",
+					language,
+				);
 			if (!ctx.isIdle())
-				return ctx.ui.notify("请等当前轮次结束后再运行 /review。", "error");
+				return notifyUser(
+					ctx,
+					reviewWaitForIdleNotice(language),
+					"info",
+					language,
+				);
 			if (reviewRunning || activeReviewLoop)
-				return ctx.ui.notify("质量检查循环已在运行，请等待结果", "warning");
+				return notifyUser(ctx, reviewBusyNotice(language), "info", language);
 
 			sendReviewStartCard(pi, ctx);
 			const result = await runConfiguredReview(pi, ctx, {
 				scope: { kind: "review" },
 			});
 			if (result.kind === "disabled")
-				ctx.ui.notify("质量检查已禁用", "warning");
+				notifyUser(ctx, reviewDisabledNotice(language), "info", language);
 			if (result.kind === "busy")
-				ctx.ui.notify("质量检查循环已在运行，请等待结果", "warning");
+				notifyUser(ctx, reviewBusyNotice(language), "info", language);
 			if (result.kind === "stopped" && result.message)
-				ctx.ui.notify(result.message, "error");
+				notifyUser(ctx, result.message, "info", language);
 		},
 	});
 }
@@ -156,7 +205,11 @@ export async function runConfiguredReview(
 	try {
 		flowConfig = readFlowConfig();
 	} catch (error) {
-		return { kind: "stopped", message: formatError(error) };
+		const language = reviewLanguageFromOptions(options);
+		return {
+			kind: "stopped",
+			message: reviewConfigReadFailedNotice(formatError(error), language),
+		};
 	}
 	if (!flowConfig.quality.enabled) return { kind: "disabled" };
 
@@ -248,14 +301,7 @@ export async function continueReviewAfterAgentEnd(
 		if (!loop.recoverableTransportNotified) {
 			const language = reviewLanguage(loop);
 			loop.recoverableTransportNotified = true;
-			notifyUser(
-				ctx,
-				language === "en"
-					? "Quality check auto loop is still waiting: waiting for Pi to retry automatically; not stopped."
-					: "质量检查自动循环仍在等待：等待 Pi 自动重试，未停止。",
-				"info",
-				language,
-			);
+			notifyUser(ctx, reviewRetryWaitingNotice(language), "info", language);
 		}
 		return remember("active");
 	}
@@ -265,10 +311,8 @@ export async function continueReviewAfterAgentEnd(
 		await stopReviewLoop(ctx, loop);
 		notifyUser(
 			ctx,
-			language === "en"
-				? "Quality check auto loop stopped: AI interrupted or failed."
-				: "质量检查自动循环已停止：AI 中断或失败。",
-			"warning",
+			reviewStoppedNotice(language, "hard_stop"),
+			"info",
 			language,
 		);
 		return remember("handled");
@@ -303,12 +347,66 @@ async function stopReviewAfterRetryExhaustion(
 	reviewRetryExhaustionWatch = undefined;
 	if (activeReviewLoop !== loop || !loop.awaitingAgent) return;
 	const language = reviewLanguage(loop);
-	const message =
+	await stopReviewLoop(
+		ctx,
+		loop,
+		reviewStoppedReason(language, "retry_exhausted"),
+	);
+	notifyUser(
+		ctx,
+		reviewStoppedNotice(language, "retry_exhausted"),
+		"info",
+		language,
+	);
+}
+
+function reviewConfigReadFailedNotice(error: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("❌", "Quality check config read failed", [error])
+		: formatUserNotice("❌", "质量检查配置读取失败", [error]);
+}
+
+function reviewLanguageFromOptions(options: ReviewLoopOptions): Language {
+	return options.scope?.language ?? runtimeLanguage();
+}
+
+function reviewRetryWaitingNotice(language: Language) {
+	return language === "en"
+		? formatUserNotice("⏳", "Quality check auto loop is still waiting", [
+				"Waiting for Pi to retry automatically",
+				"Not stopped",
+			])
+		: formatUserNotice("⏳", "质量检查自动循环仍在等待", [
+				"等待 Pi 自动重试",
+				"未停止",
+			]);
+}
+
+function reviewStoppedNotice(
+	language: Language,
+	reason: "hard_stop" | "retry_exhausted",
+) {
+	const reasonLine = reviewStoppedReason(language, reason);
+	return formatUserNotice(
+		"⚠️",
 		language === "en"
-			? "Quality check auto loop stopped: Pi automatic retries are exhausted."
-			: "质量检查自动循环已停止：Pi 自动重试耗尽。";
-	await stopReviewLoop(ctx, loop, message);
-	notifyUser(ctx, message, "warning", language);
+			? "Quality check auto loop stopped"
+			: "质量检查自动循环已停止",
+		[reasonLine],
+	);
+}
+
+function reviewStoppedReason(
+	language: Language,
+	reason: "hard_stop" | "retry_exhausted",
+) {
+	return language === "en"
+		? reason === "hard_stop"
+			? "AI interrupted or failed"
+			: "Pi automatic retries are exhausted"
+		: reason === "hard_stop"
+			? "AI 中断或失败"
+			: "Pi 自动重试耗尽";
 }
 
 function cancelReviewRetryExhaustionWatch(loop?: ReviewLoop) {
@@ -342,16 +440,13 @@ async function runReviewRound(
 		outcome = await runReviewWithRetry(ctx, loop);
 	} catch (error) {
 		const language = reviewLanguage(loop);
-		const message =
-			language === "en"
-				? `Quality check failed: ${formatError(error)}`
-				: `质量检查失败：${formatError(error)}`;
+		const message = qualityCheckFailedNotice(language, formatError(error));
 		recordReviewHistory(loop, "error", message, message);
 		sendReviewCard(pi, ctx, loop, "错误", message, {
 			content: reviewErrorContent(loop, message),
 		});
 		await stopReviewLoop(ctx, loop, message);
-		notifyUser(ctx, message, "error", language);
+		notifyUser(ctx, message, "info", language);
 		return { kind: "stopped" };
 	} finally {
 		setReviewActivityBox(ctx, undefined);
@@ -529,6 +624,12 @@ function attemptsSuffix(language: ReturnType<typeof reviewLanguage>) {
 		: `（已尝试 ${REVIEW_ATTEMPTS} 次）`;
 }
 
+function qualityCheckFailedNotice(language: Language, error: string) {
+	return language === "en"
+		? formatUserNotice("❌", "Quality check failed", [error])
+		: formatUserNotice("❌", "质量检查失败", [error]);
+}
+
 function reviewOutcomeStatus(outcome: ReviewOutcome): ReviewerStatus {
 	if (outcome.kind === "pass") return "passed";
 	if (outcome.kind === "needs_changes") return "failed";
@@ -569,17 +670,14 @@ async function handleReviewOutcome(
 		return { kind: "stopped" };
 	}
 	if (outcome.kind === "system_error") {
-		recordReviewHistory(
-			loop,
-			"error",
-			outcome.notification,
-			outcome.notification,
-		);
-		sendReviewCard(pi, ctx, loop, "错误", outcome.notification, {
-			content: reviewErrorContent(loop, outcome.notification),
+		const language = reviewLanguage(loop);
+		const message = qualityCheckFailedNotice(language, outcome.notification);
+		recordReviewHistory(loop, "error", message, message);
+		sendReviewCard(pi, ctx, loop, "错误", message, {
+			content: reviewErrorContent(loop, message),
 		});
-		await stopReviewLoop(ctx, loop, outcome.notification);
-		notifyUser(ctx, outcome.notification, "error", reviewLanguage(loop));
+		await stopReviewLoop(ctx, loop, message);
+		notifyUser(ctx, message, "info", language);
 		return { kind: "stopped" };
 	}
 	if (outcome.kind === "pass") return passReview(pi, ctx, loop, outcome);

@@ -12,7 +12,7 @@ import { reviewToggles } from "../shared/config.js";
 import { formatError, isRecord } from "../shared/guards.js";
 import { settledChecks } from "../shared/report-review.js";
 import type { ReviewerProgress } from "../shared/reviewer-pool.js";
-import { notifyUser } from "../shared/ui-language.js";
+import { formatUserNotice, notifyUser } from "../shared/ui-language.js";
 import type {
 	ActiveGoal,
 	ReviewHistoryEntry,
@@ -148,10 +148,8 @@ export function syncStandaloneGoalArtifact(
 	} catch (error) {
 		notifyUser(
 			ctx,
-			goal.language === "en"
-				? `Goal state save failed: ${notifyError(error)}`
-				: `目标状态保存失败：${notifyError(error)}`,
-			"error",
+			goalStateSaveFailedNotice(notifyError(error), goal.language),
+			"info",
 			goal.language,
 		);
 	}
@@ -172,10 +170,8 @@ export function cancelStandaloneGoalArtifact(
 	} catch (error) {
 		notifyUser(
 			ctx,
-			goal.language === "en"
-				? `Goal cancellation save failed: ${notifyError(error)}`
-				: `目标取消保存失败：${notifyError(error)}`,
-			"error",
+			goalCancellationSaveFailedNotice(notifyError(error), goal.language),
+			"info",
 			goal.language,
 		);
 	}
@@ -255,6 +251,21 @@ function modelSnapshots(progress: ReviewerProgress[]): CheckModelSnapshot[] {
 		status: item.status,
 		...(item.summary ? { summary: item.summary } : {}),
 	}));
+}
+
+function goalStateSaveFailedNotice(error: string, language: "zh" | "en") {
+	return language === "en"
+		? formatUserNotice("❌", "Goal state save failed", [error])
+		: formatUserNotice("❌", "目标状态保存失败", [error]);
+}
+
+function goalCancellationSaveFailedNotice(
+	error: string,
+	language: "zh" | "en",
+) {
+	return language === "en"
+		? formatUserNotice("❌", "Goal cancellation save failed", [error])
+		: formatUserNotice("❌", "目标取消保存失败", [error]);
 }
 
 function notifyError(error: unknown): string {

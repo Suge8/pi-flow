@@ -20,7 +20,7 @@ import { objectiveFromPlan } from "../../goal/validator.js";
 import { startGoalFromFlow } from "../../goal.js";
 import { formatError } from "../../shared/guards.js";
 import { runtimeLanguage } from "../../shared/language.js";
-import { notifyUser } from "../../shared/ui-language.js";
+import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
 import { onFlowGoalCompleted } from "../completion.js";
 import { currentSessionFile } from "../ownership.js";
 import { planGoalPrompt } from "../prompt.js";
@@ -74,7 +74,7 @@ export async function startPrivateWorkerFromEnv(
 		notifyUser(
 			ctx,
 			workerStartFailedMessage(formatError(error), runtimeLanguage()),
-			"error",
+			"info",
 		);
 		return exitPrivateWorker();
 	}
@@ -89,7 +89,7 @@ export async function startPrivateWorkerFromEnv(
 					validation.errors,
 					validation.flow?.language ?? runtimeLanguage(),
 				),
-				"error",
+				"info",
 				validation.flow?.language,
 			);
 			return exitPrivateWorker();
@@ -111,7 +111,7 @@ export async function startPrivateWorkerFromEnv(
 		notifyUser(
 			ctx,
 			workerStartFailedMessage(formatError(error), runtimeLanguage()),
-			"error",
+			"info",
 		);
 		return exitPrivateWorker();
 	}
@@ -126,11 +126,11 @@ async function startWorkerGoal(
 	privateJob?: PrivateWorkerJob,
 	finishPrivateWorker?: () => void,
 ) {
-	if (flow.status === "complete" || flow.status === "cancelled")
+	if (flow.status === "complete" || flow.status === "paused")
 		return notifyUser(
 			ctx,
 			flowNotRunnableMessage(flow, goalIndex),
-			"warning",
+			"info",
 			flow.language,
 		);
 	const goal = flow.goals[goalIndex];
@@ -138,14 +138,14 @@ async function startWorkerGoal(
 		return notifyUser(
 			ctx,
 			goalNotFoundMessage(goalIndex, flow.language),
-			"warning",
+			"info",
 			flow.language,
 		);
 	if (goal.status === "complete")
 		return notifyUser(
 			ctx,
 			goalAlreadyCompleteMessage(goal, flow.language),
-			"warning",
+			"info",
 			flow.language,
 		);
 	const workerId = `G${goalIndex}`;
@@ -402,32 +402,47 @@ function exitPrivateWorker() {
 
 function validationFailedMessage(errors: string[], language: "zh" | "en") {
 	return language === "en"
-		? `Flow validation failed:\n${errors.join("\n")}`
-		: `Flow 校验失败：\n${errors.join("\n")}`;
+		? formatUserNotice("❌", "Flow validation failed", errors)
+		: formatUserNotice("❌", "Flow 校验失败", errors);
 }
 
 function workerStartFailedMessage(error: string, language: "zh" | "en") {
 	return language === "en"
-		? `Flow worker start failed: ${error}`
-		: `Flow worker 启动失败：${error}`;
+		? formatUserNotice("❌", "Flow worker start failed", [error])
+		: formatUserNotice("❌", "Flow worker 启动失败", [error]);
 }
 
 function flowNotRunnableMessage(flow: FlowState, goalIndex: number) {
 	const status = flowStatusLabel(flow.status, flow.language);
 	return flow.language === "en"
-		? `${flow.id} status: ${status}; cannot start worker ${goalIndex}.`
-		: `${flow.id} 当前状态：${status}，不能启动 worker ${goalIndex}。`;
+		? formatUserNotice("⚠️", "Flow worker cannot start", [
+				`ID: ${flow.id}`,
+				`Status: ${status}`,
+				`Worker: ${goalIndex}`,
+			])
+		: formatUserNotice("⚠️", "Flow worker 无法启动", [
+				`编号：${flow.id}`,
+				`状态：${status}`,
+				`worker：${goalIndex}`,
+			]);
 }
 
 function goalNotFoundMessage(goalIndex: number, language: "zh" | "en") {
 	return language === "en"
-		? `Flow step index out of range: ${goalIndex}`
-		: `Flow 步骤下标超出范围：${goalIndex}`;
+		? formatUserNotice("⚠️", "Flow step index out of range", [
+				`Index: ${goalIndex}`,
+			])
+		: formatUserNotice("⚠️", "Flow 步骤下标超出范围", [`下标：${goalIndex}`]);
 }
 
-function goalAlreadyCompleteMessage(goal: FlowGoal, language: "zh" | "en") {
+export function goalAlreadyCompleteMessage(
+	goal: Pick<FlowGoal, "index">,
+	language: "zh" | "en",
+) {
 	const label = goal.index + 1;
 	return language === "en"
-		? `Flow step ${label} is already complete.`
-		: `Flow 第 ${label} 步已完成。`;
+		? formatUserNotice("✅", `Flow step ${label} is already complete`, [
+				"Worker start skipped",
+			])
+		: formatUserNotice("✅", `Flow 第 ${label} 步已完成`, ["无需启动 worker"]);
 }
