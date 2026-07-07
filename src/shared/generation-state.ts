@@ -1,42 +1,131 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { FlowSourceType } from "../flow/types.js";
-import { setFlowActivity, setGoalActivityBox } from "./activity-frame.js";
+import {
+	existsSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 import type { Language } from "./config.js";
 import {
 	type AlignmentTurn,
 	extractAlignmentQuestion,
 	type GenerationStage,
 } from "./generation-alignment.js";
-import { currentSessionFile } from "./session.js";
+import { isRecord } from "./guards.js";
 
-export interface PendingGenerationBase {
-	key: string;
-	cwd: string;
-	originalRequest: string;
-	sourceType: FlowSourceType;
-	sourcePath?: string;
-	language: Language;
-	beforeIds: string[];
-	attempts: number;
+export interface AlignmentState {
+	version: 1;
 	stage: GenerationStage;
-	awaitingClarification: boolean;
-	lastClarification?: string;
-	alignmentTurns?: AlignmentTurn[];
-	lastAlignmentQuestion?: string;
-	autoStart?: boolean;
+	sessionFile: string | null;
+	autoStart: boolean;
+	alignmentTurns: AlignmentTurn[];
+	lastAlignmentQuestion: string | null;
+	createdAt: number;
+	updatedAt: number;
 }
 
-export function generationKey(ctx: { cwd: string; sessionManager?: unknown }) {
-	return currentSessionFile(ctx) ?? `${ctx.cwd}:no-session`;
+export function alignmentJsonPath(flowDir: string) {
+	return join(flowDir, "alignment.json");
 }
 
-export function hasPendingGenerationInCwd<T extends { cwd: string }>(
-	pendingGenerations: Map<string, T>,
-	cwd: string,
+export function createAlignmentState(
+	flowDir: string,
+	input: {
+		stage: GenerationStage;
+		sessionFile: string | null;
+		autoStart: boolean;
+	},
 ) {
-	return [...pendingGenerations.values()].some(
-		(pending) => pending.cwd === cwd,
+	const now = Date.now();
+	return writeAlignmentState(flowDir, {
+		version: 1,
+		stage: input.stage,
+		sessionFile: input.sessionFile,
+		autoStart: input.autoStart,
+		alignmentTurns: [],
+		lastAlignmentQuestion: null,
+		createdAt: now,
+		updatedAt: now,
+	});
+}
+
+export function readAlignmentState(flowDir: string): AlignmentState {
+	return normalizeAlignmentState(
+		JSON.parse(readFileSync(alignmentJsonPath(flowDir), "utf8")) as unknown,
 	);
+}
+
+export function tryReadAlignmentState(flowDir: string) {
+	try {
+		if (!existsSync(alignmentJsonPath(flowDir))) return undefined;
+		return readAlignmentState(flowDir);
+	} catch {
+		return undefined;
+	}
+}
+
+export function writeAlignmentState(
+	flowDir: string,
+	alignment: AlignmentState,
+) {
+	const next = { ...alignment, updatedAt: Date.now() };
+	const tmp = join(flowDir, "alignment.json.tmp");
+	writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
+	renameSync(tmp, alignmentJsonPath(flowDir));
+	return next;
+}
+
+export function updateAlignmentState(
+	flowDir: string,
+	update: (alignment: AlignmentState) => AlignmentState,
+) {
+	return writeAlignmentState(flowDir, update(readAlignmentState(flowDir)));
+}
+
+export function deleteAlignmentState(flowDir: string) {
+	rmSync(alignmentJsonPath(flowDir), { force: true });
+}
+
+function normalizeAlignmentState(value: unknown): AlignmentState {
+	if (!isRecord(value)) throw new Error("alignment.json 必须是对象");
+	const turns = Array.isArray(value.alignmentTurns)
+		? value.alignmentTurns.map(normalizeAlignmentTurn)
+		: [];
+	return {
+		version: 1,
+		stage: normalizeStage(value.stage),
+		sessionFile:
+			typeof value.sessionFile === "string" ? value.sessionFile : null,
+		autoStart: value.autoStart === true,
+		alignmentTurns: turns,
+		lastAlignmentQuestion:
+			typeof value.lastAlignmentQuestion === "string"
+				? value.lastAlignmentQuestion
+				: null,
+		createdAt: Number.isFinite(value.createdAt) ? Number(value.createdAt) : 0,
+		updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : 0,
+	};
+}
+
+function normalizeAlignmentTurn(value: unknown): AlignmentTurn {
+	if (!isRecord(value)) return { question: "", answer: "" };
+	return {
+		question: typeof value.question === "string" ? value.question : "",
+		answer: typeof value.answer === "string" ? value.answer : "",
+	};
+}
+
+function normalizeStage(value: unknown): GenerationStage {
+	if (
+		value === "aligning" ||
+		value === "awaiting_alignment_input" ||
+		value === "awaiting_final_confirm" ||
+		value === "generating" ||
+		value === "awaiting_blocking_input"
+	)
+		return value;
+	return "generating";
 }
 
 export function appendGenerationClarification(
@@ -56,7 +145,7 @@ export function appendGenerationClarification(
 }
 
 export function rememberAlignmentQuestion(
-	pending: PendingGenerationBase,
+	pending: { lastAlignmentQuestion?: string | null },
 	assistantText: string,
 ) {
 	const question = extractAlignmentQuestion(assistantText);
@@ -64,7 +153,11 @@ export function rememberAlignmentQuestion(
 }
 
 export function appendAlignmentAnswer(
-	pending: PendingGenerationBase,
+	pending: {
+		language: Language;
+		alignmentTurns?: AlignmentTurn[];
+		lastAlignmentQuestion?: string | null;
+	},
 	answer: string,
 ) {
 	const question =
@@ -90,20 +183,14 @@ export function generationDraftBox(
 }
 
 function separateRows(rows: string[]) {
-	return rows.flatMap((row, index) => (index === 0 ? [row] : ["", row]));
-}
-
-export function finishPendingGeneration<T extends { key: string }>(input: {
-	pendingGenerations: Map<string, T>;
-	pending: T | undefined;
-	activityId: string;
-	ctx?: Pick<ExtensionContext, "ui">;
-	clearActivityBox?: boolean;
-}) {
-	if (input.pending) input.pendingGenerations.delete(input.pending.key);
-	if (input.pendingGenerations.size === 0) {
-		setFlowActivity("goal", false, input.activityId);
-		if (input.ctx && input.clearActivityBox !== false)
-			setGoalActivityBox(input.ctx, undefined);
+	const separated: string[] = [];
+	for (const row of rows) {
+		if (row === "") {
+			if (separated.at(-1) !== "") separated.push("");
+			continue;
+		}
+		if (separated.length > 0 && separated.at(-1) !== "") separated.push("");
+		separated.push(row);
 	}
+	return separated;
 }

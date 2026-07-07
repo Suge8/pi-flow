@@ -124,21 +124,23 @@ export function startGenerationLabel(language: Language) {
 export function generationAlignmentActivityCopy(
 	stage: GenerationStage,
 	language: Language,
-	hasAlignmentTurns = false,
+	questionNumber = 1,
 ) {
 	const start = startGenerationLabel(language);
 	if (language === "en")
-		return englishAlignmentActivityCopy(stage, start, hasAlignmentTurns);
-	return chineseAlignmentActivityCopy(stage, start, hasAlignmentTurns);
+		return englishAlignmentActivityCopy(stage, start, questionNumber);
+	return chineseAlignmentActivityCopy(stage, start, questionNumber);
 }
 
 export function generationAlignmentSummary(
 	stage: GenerationStage,
 	language: Language,
+	questionNumber = 1,
 ) {
 	const start = startGenerationLabel(language);
-	if (language === "en") return englishAlignmentSummary(stage, start);
-	return chineseAlignmentSummary(stage, start);
+	if (language === "en")
+		return englishAlignmentSummary(stage, start, questionNumber);
+	return chineseAlignmentSummary(stage, start, questionNumber);
 }
 
 export function isDraftConfirmation(text: string, language?: Language) {
@@ -168,52 +170,54 @@ export function isStartGenerationConfirmation(
 function chineseAlignmentActivityCopy(
 	stage: GenerationStage,
 	start: string,
-	hasAlignmentTurns: boolean,
+	questionNumber: number,
 ) {
 	if (stage === "aligning")
 		return {
 			phase: "对齐中",
-			rows: hasAlignmentTurns ? "等待 AI 追问" : "等待 AI 提问",
+			rows: `等待 AI 提出 Q${questionNumber}`,
 		};
 	if (stage === "awaiting_alignment_input")
 		return {
-			phase: "等待回复",
-			rows: ["回答问题继续对齐", `回复「${start}」直接生成计划`],
+			phase: `等待回复 Q${questionNumber}`,
+			rows: [
+				`回答 Q${questionNumber} 继续对齐`,
+				`回复「${start}」直接生成计划`,
+			],
 		};
 	if (stage === "awaiting_final_confirm")
 		return {
 			phase: "等待确认",
-			rows: [`回复「${start}」生成计划`, "继续输入则补充对齐"],
+			rows: ["对齐已就绪", `回复「${start}」生成计划`, "继续输入则补充对齐"],
 		};
 	if (stage === "awaiting_blocking_input")
 		return { phase: "等待补充", rows: "回答当前问题后继续生成" };
-	return { phase: "计划生成中", rows: [] };
+	return { phase: "撰写计划中", rows: [] };
 }
 
 function englishAlignmentActivityCopy(
 	stage: GenerationStage,
 	start: string,
-	hasAlignmentTurns: boolean,
+	questionNumber: number,
 ) {
 	if (stage === "aligning")
 		return {
 			phase: "Aligning",
-			rows: hasAlignmentTurns
-				? "Waiting for AI follow-up"
-				: "Waiting for AI to ask",
+			rows: `Waiting for AI to ask Q${questionNumber}`,
 		};
 	if (stage === "awaiting_alignment_input")
 		return {
-			phase: "Waiting for reply",
+			phase: `Waiting for Q${questionNumber} reply`,
 			rows: [
-				"Continue alignment by answering the question",
+				`Answer Q${questionNumber} to continue alignment`,
 				`Reply “${start}” to generate the plan directly`,
 			],
 		};
 	if (stage === "awaiting_final_confirm")
 		return {
-			phase: "Waiting for confirmation",
+			phase: "Ready to draft",
 			rows: [
+				"Alignment is ready",
 				`Reply “${start}” to generate the plan`,
 				"Any other input continues alignment",
 			],
@@ -223,29 +227,39 @@ function englishAlignmentActivityCopy(
 			phase: "Waiting for input",
 			rows: "Answer the current question to continue generation",
 		};
-	return { phase: "Generating plan", rows: [] };
+	return { phase: "Drafting plan", rows: [] };
 }
 
-function chineseAlignmentSummary(stage: GenerationStage, start: string) {
+function chineseAlignmentSummary(
+	stage: GenerationStage,
+	start: string,
+	questionNumber: number,
+) {
 	if (stage === "awaiting_alignment_input")
-		return `回答问题继续对齐，或回复「${start}」直接生成计划。`;
-	if (stage === "aligning") return "正在对齐，等待 AI 提问。";
+		return `回答 Q${questionNumber} 继续对齐，或回复「${start}」直接生成计划。`;
+	if (stage === "aligning")
+		return `正在对齐，等待 AI 提出 Q${questionNumber}。`;
 	if (stage === "awaiting_final_confirm")
-		return `对齐已完成，回复「${start}」生成计划；继续输入则补充对齐。`;
+		return `对齐已就绪，回复「${start}」生成计划；继续输入则补充对齐。`;
 	if (stage === "awaiting_blocking_input")
 		return "生成被阻塞，回答当前问题后继续生成。";
-	return "计划生成中。";
+	return "正在撰写计划。";
 }
 
-function englishAlignmentSummary(stage: GenerationStage, start: string) {
+function englishAlignmentSummary(
+	stage: GenerationStage,
+	start: string,
+	questionNumber: number,
+) {
 	if (stage === "awaiting_alignment_input")
-		return `Continue alignment by answering the question, or reply “${start}” to generate the plan directly.`;
-	if (stage === "aligning") return "Aligning; waiting for AI to ask.";
+		return `Answer Q${questionNumber} to continue alignment, or reply “${start}” to generate the plan directly.`;
+	if (stage === "aligning")
+		return `Aligning; waiting for AI to ask Q${questionNumber}.`;
 	if (stage === "awaiting_final_confirm")
 		return `Alignment is ready. Reply “${start}” to generate the plan; any other input continues alignment.`;
 	if (stage === "awaiting_blocking_input")
 		return "Generation is blocked. Answer the current question to continue generation.";
-	return "Generating plan.";
+	return "Drafting plan.";
 }
 
 function normalizeConfirmation(text: string) {
