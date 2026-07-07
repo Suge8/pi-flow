@@ -164,7 +164,7 @@ Continue, cancel, status:
 /flow continue | cancel | status
 ```
 
-Target a Flow by id (short id preferred; full id also works):
+Target a Flow by its bare `F<N>` id:
 
 ```text
 /flow status F4
@@ -172,7 +172,7 @@ Target a Flow by id (short id preferred; full id also works):
 /flow continue F4
 ```
 
-Multiple Flows can run in one project. Bare `continue` / `cancel` / `status` targets the current Flow or the only running Flow; otherwise Pi asks for a short id.
+Multiple Flows can be in progress in one project, including alignment, plan generation, and execution. Bare `continue` / `cancel` / `status` targets the Flow owned by the current conversation or the only in-progress Flow; otherwise Pi asks for an explicit Flow id. During alignment or plan generation, replying in the current conversation continues the same Flow.
 
 </details>
 
@@ -346,7 +346,7 @@ cp config.template.json config.json
 /flow continue | cancel | status
 ```
 
-按 id 指定 Flow（优先使用短 id，完整 id 仍可用）：
+按 id 指定 Flow（使用裸 `F<N>` id）：
 
 ```text
 /flow status F4
@@ -354,7 +354,7 @@ cp config.template.json config.json
 /flow continue F4
 ```
 
-同一项目可同时运行多个 Flow。裸 `continue` / `cancel` / `status` 会路由到当前 Flow 或唯一运行中的 Flow；多义时 Pi 会要求指定短 id。
+同一项目可同时有多个进行中的 Flow，包括对齐、计划生成和执行中。裸 `continue` / `cancel` / `status` 会路由到当前对话所属 Flow 或唯一进行中的 Flow；多义时 Pi 会要求指定 id。对齐或计划生成期间，直接在当前对话回复会继续同一个 Flow。
 
 </details>
 

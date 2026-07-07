@@ -4,8 +4,12 @@
 
 ## 状态
 
-- `flow.json` 是唯一规范状态源，当前 `schemaVersion: 7`。
-- 模型只写 `flow.semantic.json` 和计划 Markdown；builder 组装规范状态。
+- `flow.json` 是唯一规范状态源，当前 `schemaVersion: 8`；canonical 目录只允许 `.flow/F<N>/`，`flow.id` 必须是裸 `F<N>`。
+- 旧 `.flow/F<N>-slug/` 不再是合法 Flow，扫描、定位和校验都不会把它当作规范运行目录。
+- 进入 `/flow` 生成或对齐流程时，插件先分配 `.flow/F<N>/` 并写入可恢复的 pre-draft `flow.json` 与同目录 `alignment.json`；模型只写该目录内的 `flow.semantic.json` 和计划 Markdown，builder 组装规范状态。
+- pre-draft 顶层状态允许 `aligning` / `generating`，以及用户取消后的 `cancelled`；此时必须是 `goals: []`、`currentGoal: 0`、`startedAt: null`、`parallelRun: null`。顶层生命周期只看 `flow.json.status`。
+- `alignment.json` 只用于生成前子阶段，字段为 `version/stage/sessionFile/autoStart/alignmentTurns/lastAlignmentQuestion/createdAt/updatedAt`；Q&A 只写这里，禁止进入 `flow.json`。生成成功后删除 `alignment.json`；发送失败或校验失败保留 `generating + errors` 和 `alignment.json`，供后续恢复入口继续；用户取消 pre-draft 时写 `flow.status = "cancelled"` 并保留 `alignment.json` 作为恢复事实记录。
+- 生成完成后的 auto-start 只使用创建或 `/flow continue F<N>` 时记录、且支持 `newSession` 的 command context；重启后或只有 `agent_end` 事件 context 时保持 `draft`，提示用户运行 `/flow start F<N>`，禁止回退到旧事件 session 启动。
 - `flow.semantic.json` 的 `goals[]` 可声明 `dependsOn`（先序 0-based index；缺省等同依赖前一步，`[]` 表示无前置）和 `writeScope`（模块/目录 glob；缺省视为未知写入范围）。
 - Flow 最多 10 个 `normal` 执行步骤；单步 Flow 只含 1 个 `normal` 且不写 `final_acceptance`；多步 Flow 最后必须且只能有 1 个 `final_acceptance`，最终验收不占 10 个执行步骤名额。
 - `flow.json.parallelRun` 是落盘并行运行门闩：`null` 表示无活动并行运行；非空时必须为 `{ id, goalIndexes, startedAt }`，表示这些 Goal 已进入同一个并行运行。
@@ -16,12 +20,15 @@
 - 模型不写 `parallelRun`、`checks`、`completionCursor`、`flow.html`。
 - `checks.acceptance` = 完成验收；`checks.quality` = 质量检查；两者结构都是 `enabled / rounds / active`。
 - `completionCursor` 只用于内部恢复路由，用户界面不展示。
-- Flow 总用时只读 `startedAt`：草稿为 `null`，运行态必须是时间戳；不能用 `createdAt` 兜底。
+- Flow 总用时只读 `startedAt`：pre-draft 和草稿为 `null`，运行态必须是时间戳；不能用 `createdAt` 兜底。
 
-## 同 cwd 多 Flow 运行
+## 同 cwd 多 active Flow
 
-- 同一 cwd 下可同时存在多个 `status: "running"` 的 Flow；每个 `.flow/F<N>-slug/flow.json` 仍是各自唯一状态源。
-- 用户命令先按显式 id（短 id 或完整 id）定位；无 id 时按当前 session 所属 Flow，其次唯一 running Flow；多个 running 且无归属时必须提示用户指定短 id，不得默认选第一个。
+- 同一 cwd 下可同时存在多个 active Flow：`status` 为 `aligning`、`generating` 或 `running`；每个 `.flow/F<N>/flow.json` 仍是各自唯一状态源。
+- 用户命令先按显式裸 id 定位；无 id 时按当前 session 所属 active Flow，其次唯一 active Flow；多个 active 且无归属时必须提示用户指定 id，不得默认选第一个。
+- pre-draft 归属看 `alignment.json.sessionFile`；running 归属看当前 running Goal 的 `sessionFile`。`/flow continue F<N>` 可跨 session 接管 pre-draft：`aligning/generating` 会重发对应隐藏 prompt，等待输入阶段只恢复活动卡和直接回复目标；接管成功后旧 session 的 late reply / `agent_end` 被忽略。
+- 当前 session 直接输入非命令文本时，若有显式 `/flow continue F<N>` 记住的 pre-draft 回复目标，优先继续该 Flow，直到完成、取消、失效或被其他 session 接管；无记忆目标时，只有当前 session 归属的 `aligning/generating` Flow 恰好一个，才继续对齐或回答 need-input；多义时不猜测。
+- pre-draft `/flow status` 只输出文本状态、当前问题/下一步和错误，不生成或打开 `flow.html`；draft/running/complete 沿用 HTML 报告逻辑。
 - Goal runtime、完成事实、检查进度同步都按 `sessionFile` 找所属 Flow；`completion fact` 只写回该 session 所属的 `flow.json`。
 - 写锁、`parallelRun` 活动批次和 `flow.html` live watcher 都以 Flow dir 为作用域；禁止回到 cwd 级单例。
 
@@ -70,6 +77,8 @@
 - 插件生成的编排 prompt 默认隐藏投递：`sendOrchestrationPrompt()`。
 - 用户输入和澄清补充必须可见：`appendVisibleUserInput()`。
 - 每个隐藏 prompt 必须有可见锚点：状态卡、活动卡或结果卡。
+- 普通对齐中间轮 prompt 保持轻量，不注入完整拷问协议、原始需求、Q&A、用户刚才回答、摘要或 `<aligned-request>`；普通生成 prompt 只指向当前 `.flow/F<N>/`，不要求模型创建 F 目录，也不注入 Q&A；只有跨会话恢复到撰写计划时才可注入结构化 Q&A。
+- 每次隐藏生成 / 对齐 / follow-up / repair prompt 都带 `<!-- pi-flow:prompt:<token> -->` marker，并按 session 记录 live target；同一 session 有 live target 时禁止覆盖式发送新生成 prompt。完成、取消或跨 session 接管会把旧 target 降为 stale tombstone，用于吞掉 late `agent_end`，但 stale 不阻塞后续 prompt。
 - 用户可见文案只用：`目标进行中`、`完成验收`、`验收补完中`、`等待质量检查收口`、`质量检查`、`质量修复中`。
 - 实时卡片和 status 隐藏第一轮；第二轮起显示 `第 N 轮...`。HTML 多轮历史从 `第 1 轮...` 开始展示。
 - Flow 前缀格式：`🌊 flow/第 N 步 · 标题/...`。
