@@ -499,7 +499,7 @@ function runValidateDraft(dir) {
 
 function baseFlow(id, goals, overrides = {}) {
 	return {
-		schemaVersion: 8,
+		schemaVersion: 9,
 		language: "zh",
 		id,
 		title: "Flow CLI",
