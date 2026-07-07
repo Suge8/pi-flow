@@ -6,7 +6,9 @@ import { fileURLToPath } from "node:url";
 // 1. src 字符串字面量（剥离 ${...} 插值后）：含中文则禁止大写 `Goal`（schema 字段 currentGoal 除外）
 //    及内部词组合黑名单。
 // 2. src 全部行（含无中文）：禁裸 `Goal ${...}` 插值（schema 引用写 goals[...]）。
-// 3. 用户文档（README）：禁内部词组合。
+// 3. 用户文档（README）：禁内部词组合，并禁止公开隐藏 status。
+// 4. README / AGENTS / runtime contracts / prompts：禁旧 Flow 控制命令回流。
+// 5. src Flow execution 模块路径：禁旧控制命令文件名回流。
 // 豁免：模型协议文件、历史协议文本检测行（.includes(）、非法值回显（非法：）。
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const EXCLUDED_FILES = new Set([
@@ -29,6 +31,11 @@ const ANY_LINE_BLACKLIST = [
 	/`Goal \$\{/u,
 	/\$\{[a-zA-Z.]*\.status\}[^非]/u,
 	/kindLabel: "Goal"/u,
+	/command:\s*"continue"/u,
+	/Flow (?:已取消|cancelled)/u,
+];
+const SOURCE_PATH_BLACKLIST = [
+	/^src\/flow\/execution\/(?:cancel|continue)\.ts$/u,
 ];
 const DOC_BLACKLIST = [
 	/session Goal/u,
@@ -42,8 +49,27 @@ const DOC_BLACKLIST = [
 	/Goal 计划/u,
 	/\bsession\b/iu,
 	/\bdraft\b/iu,
+	/\/flow\s+status\b/u,
 ];
+const FLOW_MODEL_COPY_BLACKLIST = [
+	/\/flow\s+(?:start|continue|pause|cancel)\b/u,
+	/回复[「"]?开始生成[」"]?/u,
+];
+const FLOW_STATE_COPY_BLACKLIST = [/\bcancelled\b/u, /已取消/u];
 const DOC_FILES = ["README.md"];
+const FLOW_MODEL_COPY_FILES = [
+	"README.md",
+	"AGENTS.md",
+	"docs/runtime-contracts.md",
+	...promptMarkdownFiles().map((file) => relative(root, file)),
+];
+const FLOW_PROTOCOL_FILES = [
+	"README.md",
+	"prompts/en/flow-plan.md",
+	"prompts/en/flow-repair.md",
+	"prompts/zh/flow-plan.md",
+	"prompts/zh/flow-repair.md",
+];
 const DOC_REVIEWER_THINKING =
 	/`off`.*`minimal`.*`low`.*`medium`.*`high`.*`xhigh`/u;
 const STRING_LITERAL =
@@ -53,15 +79,26 @@ const violations = [];
 for (const file of walk(join(root, "src"))) {
 	const path = relative(root, file);
 	if (EXCLUDED_FILES.has(path)) continue;
+	scanSourcePath(path);
 	scanSource(path, file);
 }
 for (const doc of DOC_FILES) scanDoc(doc, join(root, doc));
+for (const file of FLOW_MODEL_COPY_FILES)
+	scanFlowModelCopy(file, join(root, file), FLOW_MODEL_COPY_BLACKLIST);
+for (const file of FLOW_PROTOCOL_FILES)
+	scanFlowModelCopy(file, join(root, file), FLOW_STATE_COPY_BLACKLIST);
 
 if (violations.length) {
 	console.error(`用户文案残留内部词：\n${violations.join("\n")}`);
 	process.exit(1);
 }
 console.log("copy lint smoke ok");
+
+function scanSourcePath(path) {
+	for (const pattern of SOURCE_PATH_BLACKLIST) {
+		if (pattern.test(path)) violations.push(`${path} [${pattern}] banned path`);
+	}
+}
 
 function scanSource(path, file) {
 	const lines = readFileSync(file, "utf8").split("\n");
@@ -124,6 +161,24 @@ function scanDoc(path, file) {
 				`${path}:${index + 1} [reviewer thinking values] ${line.trim()}`,
 			);
 		}
+	});
+}
+
+function scanFlowModelCopy(path, file, patterns) {
+	const lines = readFileSync(file, "utf8").split("\n");
+	lines.forEach((line, index) => {
+		for (const pattern of patterns) {
+			if (pattern.test(line))
+				violations.push(`${path}:${index + 1} [${pattern}] ${line.trim()}`);
+		}
+	});
+}
+
+function promptMarkdownFiles(dir = join(root, "prompts")) {
+	return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+		const path = join(dir, entry.name);
+		if (entry.isDirectory()) return promptMarkdownFiles(path);
+		return entry.name.endsWith(".md") ? [path] : [];
 	});
 }
 

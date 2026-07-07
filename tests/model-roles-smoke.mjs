@@ -116,7 +116,7 @@ try {
 		["find", "provider", "model-a"],
 		["setModel", "provider", "model-a"],
 		["setThinkingLevel", "high"],
-		["notify", "🧭 计划模型开工：provider/model-a/high", "info"],
+		["notify", "🧭 计划模型已启动\n\nprovider/model-a/high", "info"],
 	]);
 
 	writeConfig({
@@ -136,7 +136,10 @@ try {
 	);
 	assert(
 		missingCalls.some(
-			(call) => call[0] === "notify" && call[1].includes("执行模型不可用"),
+			(call) =>
+				call[0] === "notify" &&
+				call[1].startsWith("⚠️ 执行模型不可用\n\n") &&
+				call[2] === "info",
 		),
 		"missing executor model was not reported",
 	);
