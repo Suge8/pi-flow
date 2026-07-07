@@ -21,6 +21,7 @@ Rules:
 - Only multi-step Flow must have a final acceptance Goal, reading all Handoffs, reviewing `criteriaChanged`, running global verification, and closing out; single-step Flow must not write final acceptance.
 - Do not generate or test `flow.html`; the extension renders HTML after validation.
 - After fixing `flow.semantic.json` and Goal markdown, stop. The extension will reassemble and run structural validation (`{{validateCommand}} {{flowPath}}`). Do not manually simulate validation results.
+- If you need to write the user's next step after completion, use `/flow go F<N>`; if stopping is needed, use `/flow stop F<N>`. Do not invent another control entry.
 - If an error mentions canonical `flow.json` or runtime state fields, do not fill those fields manually; fix the semantic draft and Goal markdown so the extension can process them again.
 
 Current validation errors:

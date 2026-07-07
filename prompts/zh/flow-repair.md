@@ -21,6 +21,7 @@
 - 只有多步 Flow 才必须有 final acceptance Goal，用于读取所有 Handoff、复核 criteriaChanged、跑全局验证并收口；单步 Flow 不写 final acceptance。
 - 不要生成或测试 `flow.html`；插件会在结构校验通过后渲染 HTML。
 - 修完 `flow.semantic.json` 和 Goal markdown 后即可结束；插件会重新组装并运行结构校验（`{{validateCommand}} {{flowPath}}`）。不要手动模拟校验结果。
+- 若需要写完成后的用户下一步，统一写 `/flow go F<N>`；需要停止时写 `/flow stop F<N>`，不要创造其它控制入口。
 - 如果错误来自 canonical `flow.json` 或运行态字段，不要手动补字段；优先修复语义草稿和 Goal markdown，让插件重新组装。
 
 当前校验错误：

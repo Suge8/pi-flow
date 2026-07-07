@@ -47,6 +47,7 @@ Rules:
   - [ ] **Doc close-out**: check docs / AGENTS.md for affected module descriptions; update if needed
   - [ ] **Confirm no loose ends**: no open issues, no unresolved TODO/FIXME
 - After writing `flow.semantic.json` and all Goal markdown files, stop. The extension will assemble the complete Flow state and run structural validation (`{{validateCommand}} {{flowPath}}`). Do not replace real tool output with "self-check", and do not manually simulate extension validation.
+- If you need to write the user's next step after completion, use `/flow go F<N>`; if stopping is needed, use `/flow stop F<N>`. Do not invent another control entry.
 - Do not do deep alignment now; generate directly from current context and user input.
 - Ask one blocking question only when the target is missing, requirements conflict, or an irreversible decision cannot be reasonably assumed. End the question with `<!-- pi-flow:need-input -->` on its own line.
 - If a question can be answered by reading the codebase, docs, or existing `.flow` files, inspect them instead of asking the user.
