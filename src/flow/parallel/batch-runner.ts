@@ -8,9 +8,9 @@ import {
 	setFlowCancelHandler,
 	setFlowEditorInputHidden,
 } from "../../shared/activity-frame.js";
-import { settledChecks } from "../../shared/report-review.js";
 import { sendResultCard } from "../../shared/result-card.js";
 import { notifyUser } from "../../shared/ui-language.js";
+import { flowValidationFailedNotice } from "../execution/shared.js";
 import { writeFlowHtml } from "../html.js";
 import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { computeReadyBatch } from "../scheduler.js";
@@ -28,6 +28,7 @@ import {
 import { showParallelLaneBoard } from "./lane-ui.js";
 import { readCompletionFact, watchBatchResults } from "./result-watcher.js";
 import { spawnWorker, type WorkerHandle } from "./spawner.js";
+import { stopParallelRunFlow } from "./stop-state.js";
 
 export interface WorkerResult extends ParallelWorkerResult {}
 
@@ -96,7 +97,7 @@ export async function runParallelBatch(
 		notifyUser(
 			ctx,
 			flowLockBusyMessage(started.owner, flow.language),
-			"warning",
+			"info",
 			flow.language,
 		);
 		return { allSuccess: false, cancelled: false, flow, results: [] };
@@ -191,7 +192,7 @@ async function cancelParallelRun(
 	notifyUser(
 		ctx,
 		flowLockBusyMessage(locked.owner, run.prepared.language),
-		"warning",
+		"info",
 		run.prepared.language,
 	);
 	return run.prepared;
@@ -215,7 +216,7 @@ async function fanInParallelRun(
 	notifyUser(
 		ctx,
 		flowLockBusyMessage(locked.owner, run.prepared.language),
-		"warning",
+		"info",
 		run.prepared.language,
 	);
 	return settledByOtherTransaction(run.prepared, results);
@@ -242,10 +243,8 @@ function validatedFlowForParallelStart(
 	if (validation.ok && validation.flow) return validation.flow;
 	notifyUser(
 		ctx,
-		flow.language === "en"
-			? `Flow validation failed:\n${validation.errors.join("\n")}`
-			: `Flow 校验失败：\n${validation.errors.join("\n")}`,
-		"error",
+		flowValidationFailedNotice(validation.errors, flow.language),
+		"info",
 		flow.language,
 	);
 	return undefined;
@@ -291,7 +290,9 @@ function prepareParallelBatchStart(
 	}
 	const parallelStartedAt = Date.now();
 	const startedAt =
-		flow.status === "draft" ? parallelStartedAt : requireFlowStartedAt(flow);
+		flow.status === "draft" || flow.startedAt === null
+			? parallelStartedAt
+			: requireFlowStartedAt(flow);
 	return {
 		...flow,
 		status: "running" as const,
@@ -428,15 +429,7 @@ function sendParallelFailureCard(
 }
 
 function cancelBatch(dir: string, flow: FlowState) {
-	const saved = writeFlow(dir, {
-		...flow,
-		status: "cancelled",
-		parallelRun: null,
-		goals: flow.goals.map((goal) => ({
-			...goal,
-			checks: settledChecks(goal.checks),
-		})),
-	});
+	const saved = writeFlow(dir, stopParallelRunFlow(dir, flow));
 	writeFlowHtml(dir, saved);
 	return saved;
 }

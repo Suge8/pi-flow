@@ -9,6 +9,7 @@ import {
 import { join } from "node:path";
 import type { Language } from "../shared/config.js";
 import { isRecord } from "../shared/guards.js";
+import { formatUserNotice } from "../shared/ui-language.js";
 
 export interface FlowLockOwner {
 	action: string;
@@ -89,12 +90,24 @@ export function flowLockBusyMessage(
 ) {
 	if (!owner)
 		return language === "en"
-			? "Flow is already processing. Try again after it finishes."
-			: "Flow 正在处理，请稍后再试。";
+			? formatUserNotice("⏳", "Flow is already processing", [
+					"Try again after it finishes",
+				])
+			: formatUserNotice("⏳", "Flow 正在处理", ["请稍后再试"]);
 	const started = new Date(owner.startedAt).toISOString();
 	return language === "en"
-		? `Flow is already processing: ${owner.action} (pid ${owner.pid}, since ${started}). Try again after it finishes.`
-		: `Flow 正在处理：${owner.action}（pid ${owner.pid}，开始 ${started}）。请稍后再试。`;
+		? formatUserNotice("⏳", "Flow is already processing", [
+				`Action: ${owner.action}`,
+				`PID: ${owner.pid}`,
+				`Started: ${started}`,
+				"Try again after it finishes",
+			])
+		: formatUserNotice("⏳", "Flow 正在处理", [
+				`动作：${owner.action}`,
+				`PID：${owner.pid}`,
+				`开始：${started}`,
+				"请稍后再试",
+			]);
 }
 
 function flowLockPath(dir: string) {
