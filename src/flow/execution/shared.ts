@@ -154,7 +154,7 @@ function validatedTarget(
 function targetResultLanguage(
 	target: Exclude<FlowTargetResult, { ok: true }>,
 ): Language {
-	if (target.reason !== "ambiguous_running") return runtimeLanguage();
+	if (target.reason !== "ambiguous_active") return runtimeLanguage();
 	const language = target.flows[0]?.flow.language;
 	return language &&
 		target.flows.every((item) => item.flow.language === language)
@@ -196,6 +196,9 @@ export function verifyCurrentSnapshot(
 }
 
 export function flowStatusLabel(status: string, language: Language = "zh") {
+	if (status === "aligning") return language === "en" ? "aligning" : "对齐中";
+	if (status === "generating")
+		return language === "en" ? "generating" : "生成中";
 	if (status === "draft") return language === "en" ? "draft" : "计划";
 	if (status === "running") return language === "en" ? "running" : "执行中";
 	if (status === "complete") return language === "en" ? "complete" : "已完成";

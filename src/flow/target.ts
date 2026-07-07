@@ -1,30 +1,34 @@
 import type { Language } from "../shared/config.js";
+import { tryReadAlignmentState } from "../shared/generation-state.js";
 import { formatError } from "../shared/guards.js";
 import { currentSessionFile } from "../shared/session.js";
-import { findFlow, runningFlows } from "./store.js";
+import { activeFlows, findFlow, flowCurrentSessionFile } from "./store.js";
 import type { FlowLocation } from "./types.js";
 import { flowCommandId } from "./util.js";
 
-export type FlowTargetSource = "explicit" | "session" | "running";
+export type FlowTargetSource = "explicit" | "session" | "active";
 
 export type FlowTargetResult =
 	| { ok: true; location: FlowLocation; source: FlowTargetSource }
 	| { ok: false; reason: "not_found"; id: string }
 	| { ok: false; reason: "none" }
-	| { ok: false; reason: "ambiguous_running"; flows: FlowLocation[] };
+	| { ok: false; reason: "ambiguous_active"; flows: FlowLocation[] };
 
 export function resolveFlowTarget(
 	ctx: { cwd: string; sessionManager?: unknown },
 	id?: string,
 ): FlowTargetResult {
 	if (id) return explicitFlowTarget(ctx.cwd, id);
-	const running = runningFlows(ctx.cwd);
-	const owned = flowOwningSession(running, currentSessionFile(ctx));
-	if (owned) return { ok: true, location: owned, source: "session" };
-	if (running.length === 1)
-		return { ok: true, location: running[0], source: "running" };
-	if (running.length > 1)
-		return { ok: false, reason: "ambiguous_running", flows: running };
+	const active = activeFlows(ctx.cwd);
+	const owned = flowsOwningSession(active, currentSessionFile(ctx));
+	if (owned.length === 1)
+		return { ok: true, location: owned[0], source: "session" };
+	if (owned.length > 1)
+		return { ok: false, reason: "ambiguous_active", flows: owned };
+	if (active.length === 1)
+		return { ok: true, location: active[0], source: "active" };
+	if (active.length > 1)
+		return { ok: false, reason: "ambiguous_active", flows: active };
 	return { ok: false, reason: "none" };
 }
 
@@ -35,8 +39,8 @@ export function flowTargetMessage(
 ) {
 	if (result.reason === "not_found")
 		return flowNotFoundMessage(result.id, language);
-	if (result.reason === "ambiguous_running")
-		return ambiguousRunningFlowsMessage(result.flows, command, language);
+	if (result.reason === "ambiguous_active")
+		return ambiguousActiveFlowsMessage(result.flows, command, language);
 	return flowTargetRequiredMessage(language);
 }
 
@@ -57,8 +61,8 @@ export function flowNotFoundMessage(flowId: string, language: Language) {
 
 export function flowTargetRequiredMessage(language: Language) {
 	return language === "en"
-		? "No running Flow in the current directory; specify a Flow id."
-		: "当前目录没有运行中的 Flow；请指定 Flow id。";
+		? "No active Flow in the current directory; specify a Flow id."
+		: "当前目录没有进行中的 Flow；请指定 Flow id。";
 }
 
 export function flowNotRunningMessage(flowId: string, language: Language) {
@@ -67,19 +71,25 @@ export function flowNotRunningMessage(flowId: string, language: Language) {
 		: `Flow 未在运行：${flowId}`;
 }
 
-function flowOwningSession(
+function flowsOwningSession(
 	flows: FlowLocation[],
 	sessionFile: string | undefined,
 ) {
-	if (!sessionFile) return undefined;
-	return flows.find(
-		({ flow }) =>
-			Array.isArray(flow.goals) &&
-			flow.goals.some((goal) => goal.sessionFile === sessionFile),
+	if (!sessionFile) return [];
+	return flows.filter((location) =>
+		flowBelongsToSession(location, sessionFile),
 	);
 }
 
-function ambiguousRunningFlowsMessage(
+function flowBelongsToSession(location: FlowLocation, sessionFile: string) {
+	const { flow } = location;
+	if (flow.status === "running")
+		return flowCurrentSessionFile(flow) === sessionFile;
+	if (flow.status !== "aligning" && flow.status !== "generating") return false;
+	return tryReadAlignmentState(location.dir)?.sessionFile === sessionFile;
+}
+
+function ambiguousActiveFlowsMessage(
 	flows: FlowLocation[],
 	command: string,
 	language: Language,
@@ -91,16 +101,13 @@ function ambiguousRunningFlowsMessage(
 		})
 		.join("\n");
 	return language === "en"
-		? `Multiple running Flows found. Specify one:\n${choices}`
-		: `当前目录有多个运行中的 Flow，请指定目标：\n${choices}`;
+		? `Multiple active Flows found. Specify one:\n${choices}`
+		: `当前目录有多个进行中的 Flow，请指定目标：\n${choices}`;
 }
 
 function copyableFlowId(flow: FlowLocation, flows: FlowLocation[]) {
-	const shortId = flowCommandId(flow.id);
-	const duplicateShortId = flows.some(
-		(item) => item.id !== flow.id && flowCommandId(item.id) === shortId,
-	);
-	return duplicateShortId ? flow.id : shortId;
+	void flows;
+	return flowCommandId(flow.id);
 }
 
 function explicitFlowTarget(cwd: string, id: string): FlowTargetResult {

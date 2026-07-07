@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { tryReadAlignmentState } from "../shared/generation-state.js";
 import { liveReportUrl } from "../shared/report-server.js";
 import { notifyUser } from "../shared/ui-language.js";
 import { flowTargetOrNotify } from "./execution/shared.js";
@@ -19,6 +20,15 @@ export async function showStatus(
 		requireRunning: false,
 	});
 	if (!location) return;
+	if (isPreDraftStatus(location.flow)) {
+		notifyUser(
+			ctx,
+			statusText(location.flow, tryReadAlignmentState(location.dir)),
+			"info",
+			location.flow.language,
+		);
+		return;
+	}
 	const activeBatch = activeParallelBatchForDir(location.dir);
 	if (activeBatch)
 		return notifyStatus(
@@ -28,6 +38,15 @@ export async function showStatus(
 		);
 	const htmlPath = writeFlowHtml(location.dir, location.flow);
 	return notifyStatus(ctx, location.flow, htmlPath);
+}
+
+function isPreDraftStatus(flow: FlowState) {
+	return (
+		flow.goals.length === 0 &&
+		(flow.status === "aligning" ||
+			flow.status === "generating" ||
+			flow.status === "cancelled")
+	);
 }
 
 async function notifyStatus(

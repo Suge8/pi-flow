@@ -155,7 +155,7 @@ async function flowAcceptancePromptIncludesPlanScenario() {
 	assert(args.includes("相关文件线索："), args);
 	assert(args.includes("修改文件:"), args);
 	assert(args.includes("引用文件:"), args);
-	assert(args.includes(".flow/F1-login/G1-login.md"), args);
+	assert(args.includes(".flow/F1/G1-login.md"), args);
 	assert(args.includes("## Success Criteria\n- Flow plan proof."), args);
 	const flow = readFlow(cwd);
 	assert(
@@ -194,7 +194,7 @@ async function flowRuntimeWritesRespectFlowLockScenario() {
 	const { handlers, module } = await loadGoalExtension(state);
 	const ctx = mockContext(state, cwd, sessionFile);
 	await module.startGoalFromFlow("Flow objective", ctx);
-	const flowDir = join(cwd, ".flow", "F1-login");
+	const flowDir = join(cwd, ".flow", "F1");
 	const lock = acquireFlowLock(flowDir, "active scheduling transaction");
 	assert(lock.ok, "runtime write lock was not acquired");
 	try {
@@ -234,7 +234,7 @@ async function flowLiveReviewsSyncScenario() {
 		{ messages: [{ role: "assistant", stopReason: "stop" }] },
 		ctx,
 	);
-	const flowJson = join(cwd, ".flow", "F1-login", "flow.json");
+	const flowJson = join(cwd, ".flow", "F1", "flow.json");
 	const live = await waitFor(
 		() =>
 			JSON.parse(readFileSync(flowJson, "utf8")).goals[0].checks?.acceptance
@@ -252,10 +252,7 @@ async function flowLiveReviewsSyncScenario() {
 		settled.acceptance.active === null,
 		`shutdown left live review in flow.json: ${JSON.stringify(settled.acceptance.active)}`,
 	);
-	const html = readFileSync(
-		join(cwd, ".flow", "F1-login", "flow.html"),
-		"utf8",
-	);
+	const html = readFileSync(join(cwd, ".flow", "F1", "flow.html"), "utf8");
 	assert(
 		!html.includes("检查中"),
 		"flow.html kept stale 检查中 after shutdown",
@@ -278,7 +275,7 @@ async function flowLiveReviewLockBusyNotifiesScenario() {
 	const { handlers, module } = await loadGoalExtension(state);
 	const ctx = mockContext(state, cwd, sessionFile);
 	await module.startGoalFromFlow("Flow live objective", ctx);
-	const flowDir = join(cwd, ".flow", "F1-login");
+	const flowDir = join(cwd, ".flow", "F1");
 	const lock = acquireFlowLock(flowDir, "active scheduling transaction");
 	assert(lock.ok, "live review sync lock was not acquired");
 	try {
@@ -550,7 +547,7 @@ function mockContext(state, cwd = defaultCwd, sessionFile = undefined) {
 }
 
 function writeFlow(cwd, sessionFile) {
-	const dir = join(cwd, ".flow", "F1-login");
+	const dir = join(cwd, ".flow", "F1");
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(
 		join(dir, "G1-login.md"),
@@ -560,9 +557,9 @@ function writeFlow(cwd, sessionFile) {
 		join(dir, "flow.json"),
 		`${JSON.stringify(
 			{
-				schemaVersion: 7,
+				schemaVersion: 8,
 				language: "zh",
-				id: "F1-login",
+				id: "F1",
 				title: "Login",
 				status: "running",
 				source: { type: "prompt", path: null, originalRequest: "login" },
@@ -604,7 +601,7 @@ function writeFlow(cwd, sessionFile) {
 
 function readFlow(cwd) {
 	return JSON.parse(
-		readFileSync(join(cwd, ".flow", "F1-login", "flow.json"), "utf8"),
+		readFileSync(join(cwd, ".flow", "F1", "flow.json"), "utf8"),
 	);
 }
 
