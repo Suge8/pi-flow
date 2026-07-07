@@ -96,8 +96,8 @@ try {
 	);
 	const compactBox = new ActivityBox({
 		activity: "goal",
-		title: "🎯 目标 · 等待回复",
-		rows: ["回答问题继续对齐", "", "回复「开始生成」直接生成计划"],
+		title: "🎯 目标 · 等待确认",
+		rows: ["对齐已就绪", "", "运行 /flow go F1 生成计划"],
 		compact: true,
 	});
 	const compactLines = compactBox.render(60).map(stripAnsi);
@@ -107,8 +107,8 @@ try {
 	assert(compactLines[2].trim() === "", compactLines.join("\n"));
 	assert(compactLines[4].trim() === "", compactLines.join("\n"));
 	assert(
-		compactLines.some((line) => line.includes("回答问题继续对齐")) &&
-			compactLines.some((line) => line.includes("开始生成")),
+		compactLines.some((line) => line.includes("对齐已就绪")) &&
+			compactLines.some((line) => line.includes("/flow go F1")),
 		compactLines.join("\n"),
 	);
 	assert(

@@ -35,7 +35,9 @@ try {
 	await runScenario(goalScopePromptScenario);
 	await runScenario(currentTaskReviewPromptScenario);
 	await runScenario(englishCurrentTaskReviewPromptScenario);
+	await runScenario(configReadFailureNoticeScenario);
 	await runScenario(autoFailureScenario);
+	await runScenario(cancelledReviewDoesNotTriggerAiScenario);
 	await runScenario(recoverableTransportErrorKeepsAutoLoopScenario);
 	await runScenario(piRetryableErrorKeepsAutoLoopScenario);
 	await runScenario(piRetryableErrorStopsAfterGuardScenario);
@@ -238,6 +240,18 @@ async function englishCurrentTaskReviewPromptScenario() {
 	assert(!args.includes("未检测到"), args);
 }
 
+async function configReadFailureNoticeScenario() {
+	writeFileSync(join(out, "config.json"), "{");
+	const state = createState();
+	const { commands } = await loadExtension(state);
+	await commands.get("review").handler("", mockContext(state));
+	const notice = state.notifications.find((item) =>
+		item.includes("质量检查配置读取失败"),
+	);
+	assertNoticeFormat(notice, "❌", "config.json 不是合法 JSON");
+	writeReviewConfig("manual", reviewCommand(["PASS\n质量 OK\n"]));
+}
+
 async function autoFailureScenario() {
 	writeReviewConfig(
 		"autoFix",
@@ -289,6 +303,29 @@ async function autoFailureScenario() {
 	);
 }
 
+async function cancelledReviewDoesNotTriggerAiScenario() {
+	writeReviewConfig("autoFix", script("sleep 30"));
+	const state = createState();
+	const { commands, events } = await loadExtension(state);
+	const ctx = mockContext(state);
+	await events.get("session_start")?.at(-1)?.({}, ctx);
+	const running = commands.get("review").handler("", ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	const { cancelActiveFlowActivity } = await import(
+		`file://${join(srcOut, "shared/activity-frame.js")}`
+	);
+	cancelActiveFlowActivity();
+	await running;
+	const card = state.messages.at(-1);
+	assert(
+		card.message.details.title === "质量检查错误",
+		card.message.details.title,
+	);
+	assert(!card.options.triggerTurn, JSON.stringify(card.options));
+	assert(!card.options.deliverAs, JSON.stringify(card.options));
+	assert(state.sentMessages.length === 0, state.sentMessages.join("\n"));
+}
+
 async function recoverableTransportErrorKeepsAutoLoopScenario() {
 	const command = reviewCommand([
 		"FAIL\n\n## 质量检查未通过\n- 问题: transient\n",
@@ -302,12 +339,10 @@ async function recoverableTransportErrorKeepsAutoLoopScenario() {
 	await commands.get("review").handler("", ctx);
 	await emitAll(events, "agent_end", recoverableWebSocketEndEvent(), ctx);
 	assert(reviewRunCount(command) === 1, "transient websocket reran review");
-	assert(
-		state.notifications.some((item) =>
-			item.includes("等待 Pi 自动重试，未停止"),
-		),
-		state.notifications.join("\n"),
+	const retryNotice = state.notifications.find((item) =>
+		item.includes("质量检查自动循环仍在等待"),
 	);
+	assertNoticeFormat(retryNotice, "⏳", "等待 Pi 自动重试\n未停止");
 	assert(
 		!state.notifications.some((item) => item.includes("自动循环已停止")),
 		state.notifications.join("\n"),
@@ -338,12 +373,10 @@ async function piRetryableErrorKeepsAutoLoopScenario() {
 	await commands.get("review").handler("", ctx);
 	await emitAll(events, "agent_end", piRetryableRateLimitEndEvent(), ctx);
 	assert(reviewRunCount(command) === 1, "Pi retryable error reran review");
-	assert(
-		state.notifications.some((item) =>
-			item.includes("等待 Pi 自动重试，未停止"),
-		),
-		state.notifications.join("\n"),
+	const retryNotice = state.notifications.find((item) =>
+		item.includes("质量检查自动循环仍在等待"),
 	);
+	assertNoticeFormat(retryNotice, "⏳", "等待 Pi 自动重试\n未停止");
 	assert(
 		!state.notifications.some((item) => item.includes("自动循环已停止")),
 		state.notifications.join("\n"),
@@ -382,14 +415,10 @@ async function piRetryableErrorStopsAfterGuardScenario() {
 		await fireTimer(guard);
 	});
 	assert(reviewRunCount(command) === 1, "retry exhaustion reran review");
-	assert(
-		state.notifications.some((item) => item.includes("Pi 自动重试耗尽")),
-		state.notifications.join("\n"),
+	const stoppedNotice = state.notifications.find((item) =>
+		item.includes("质量检查自动循环已停止"),
 	);
-	assert(
-		state.notifications.some((item) => item.includes("自动循环已停止")),
-		state.notifications.join("\n"),
-	);
+	assertNoticeFormat(stoppedNotice, "⚠️", "Pi 自动重试耗尽");
 	await emitAll(
 		events,
 		"agent_end",
@@ -790,17 +819,31 @@ async function goalScopeCancelNotificationUsesResumeCommandScenario() {
 			scope: {
 				kind: "goal",
 				goalText: "Flow goal",
-				resumeCommand: "/flow continue",
+				resumeCommand: "/flow go",
 			},
 		},
 	});
-	assert(flowMessage.includes("/flow continue"), flowMessage);
+	assertNoticeMessageFormat(
+		flowMessage,
+		"⚠️",
+		"质量检查已取消\n运行 /flow go 继续",
+	);
 	assert(!flowMessage.includes("/goal continue"), flowMessage);
 	const goalMessage = cancelNotification({
 		options: { scope: { kind: "goal", goalText: "Goal" } },
 	});
-	assert(goalMessage.includes("/flow continue"), goalMessage);
+	assertNoticeMessageFormat(
+		goalMessage,
+		"⚠️",
+		"质量检查已取消\n运行 /flow go 继续",
+	);
 	assert(!goalMessage.includes("/goal continue"), goalMessage);
+	const reviewMessage = cancelNotification({ options: {} });
+	assertNoticeMessageFormat(reviewMessage, "🛑", "已按你的操作停止");
+	const englishMessage = cancelNotification({
+		options: { scope: { kind: "review", language: "en" } },
+	});
+	assertNoticeMessageFormat(englishMessage, "🛑", "Stopped by user");
 }
 
 async function passAndErrorReviewerStopsScenario() {
@@ -1080,6 +1123,24 @@ function assertFooterLayout(lines, footerPrefix) {
 			lines[index - 1] === "",
 		`footer separator missing: ${lines.join("|")}`,
 	);
+}
+
+function assertNoticeFormat(notification, emoji, body, level = "info") {
+	assert(notification, "notice missing");
+	assert(notification.endsWith(`:${level}`), notification);
+	assertNoticeMessageFormat(
+		notification.replace(/:(info|warning|error)$/u, ""),
+		emoji,
+		body,
+	);
+}
+
+function assertNoticeMessageFormat(message, emoji, body) {
+	assert(message.startsWith(`${emoji} `), message);
+	const bodyIndex = message.indexOf("\n\n");
+	assert(bodyIndex > 0, message);
+	assert(message.slice(bodyIndex + 2).includes(body), message);
+	assert(!/[。.]$/u.test(message), message);
 }
 
 function assert(condition, message) {

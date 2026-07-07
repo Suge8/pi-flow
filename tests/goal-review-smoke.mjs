@@ -31,6 +31,10 @@ try {
 	await runScenario(reviewFormatScenario);
 	await runScenario(checksValidationScenario);
 	await runScenario(flowAcceptancePromptIncludesPlanScenario);
+	await runScenario(flowConnectionNoticeFormatScenario);
+	await runScenario(goalConnectionNoticeFormatScenario);
+	await runScenario(goalArtifactSaveFailureNoticeFormatScenario);
+	await runScenario(flowAcceptanceSystemErrorNoticeFormatScenario);
 	await runScenario(flowLiveReviewsSyncScenario);
 	await runScenario(flowLiveReviewLockBusyNotifiesScenario);
 	await runScenario(flowGoalCompleteWithQualityReviewScenario);
@@ -176,6 +180,87 @@ async function flowAcceptancePromptIncludesPlanScenario() {
 	);
 	assert(acceptanceCard, "acceptance pass card missing");
 	assertFooterLayout(acceptanceCard.message.details.lines, "⏱ 用时：");
+}
+
+async function flowConnectionNoticeFormatScenario() {
+	writeConfig({ acceptance: false, quality: false });
+	const cwd = join(out, "flow-connection-notice");
+	const sessionFile = join(cwd, "goal-session.jsonl");
+	writeFlow(cwd, sessionFile);
+	const state = createState();
+	const { handlers, module } = await loadGoalExtension(state);
+	const ctx = mockContext(state, cwd, sessionFile);
+	await module.startGoalFromFlow("Flow objective", ctx);
+	await handlers.get("agent_end")(recoverableWebSocketEndEvent(), ctx);
+	const notice = state.notifications.find((item) =>
+		item.includes("Flow 连接中断"),
+	);
+	assertNoticeFormat(notice, "⏳", "等待 Pi 自动重试");
+}
+
+async function goalConnectionNoticeFormatScenario() {
+	writeConfig({ acceptance: false, quality: false });
+	const cwd = join(out, "goal-connection-notice");
+	const sessionFile = join(cwd, "goal-session.jsonl");
+	const state = createState();
+	const { handlers, module } = await loadGoalExtension(state);
+	const ctx = mockContext(state, cwd, sessionFile);
+	await module.startGoalFromFlow("Standalone objective", ctx);
+	await handlers.get("agent_end")(recoverableWebSocketEndEvent(), ctx);
+	const notice = state.notifications.find((item) =>
+		item.includes("目标连接中断"),
+	);
+	assertNoticeFormat(notice, "⏳", "等待 Pi 自动重试");
+	assert(
+		!state.notifications.some((item) => item.includes("目标 连接中断")),
+		state.notifications.join("\n"),
+	);
+}
+
+async function goalArtifactSaveFailureNoticeFormatScenario() {
+	const { syncStandaloneGoalArtifact } = await import(
+		`file://${join(srcOut, "goal/persistence.js")}?artifact-save-${Date.now()}`
+	);
+	const state = createState();
+	const ctx = mockContext(state);
+	const goal = {
+		id: "goal-artifact-save-failure",
+		language: "zh",
+		status: "active",
+		artifactDir: join(out, "missing-goal-artifact"),
+		stateReviewHistory: [],
+		qualityReviewHistory: [],
+	};
+	syncStandaloneGoalArtifact(ctx, goal, undefined);
+	const notice = state.notifications.find((item) =>
+		item.includes("目标状态保存失败"),
+	);
+	assertNoticeFormat(notice, "❌", "missing-goal-artifact");
+}
+
+async function flowAcceptanceSystemErrorNoticeFormatScenario() {
+	writeConfig({
+		acceptance: true,
+		quality: false,
+		command: script("not-valid"),
+	});
+	const cwd = join(out, "flow-acceptance-system-error-notice");
+	const sessionFile = join(cwd, "goal-session.jsonl");
+	writeFlow(cwd, sessionFile);
+	const state = createState();
+	const { handlers, module } = await loadGoalExtension(state);
+	const ctx = mockContext(state, cwd, sessionFile);
+	await module.startGoalFromFlow("Flow objective", ctx);
+	await handlers.get("agent_end")(
+		{ messages: [{ role: "assistant", stopReason: "stop" }] },
+		ctx,
+	);
+	const notice = state.notifications.find((item) =>
+		item.includes("Flow 已暂停"),
+	);
+	assertNoticeFormat(notice, "⚠️", "运行 /flow go F1 继续");
+	assert(notice.includes("完成验收错误"), notice);
+	assert(!notice.includes("Flow 已暂停。"), notice);
 }
 
 async function flowRuntimeWritesRespectFlowLockScenario() {
@@ -386,6 +471,28 @@ async function flowQualityReviewFailureUsesFlowContinueScenario() {
 	);
 }
 
+function recoverableWebSocketEndEvent() {
+	return {
+		messages: [
+			{
+				role: "assistant",
+				stopReason: "error",
+				errorMessage: "WebSocket closed 1006 Connection ended",
+				diagnostics: [
+					{
+						type: "provider_transport_failure",
+						error: { code: 1006 },
+						details: {
+							eventsEmitted: true,
+							phase: "after_message_stream_start",
+						},
+					},
+				],
+			},
+		],
+	};
+}
+
 function writeConfig({ acceptance = false, quality = false, command }) {
 	mkdirSync(out, { recursive: true });
 	const runnerCommand = command ?? script("PASS\nOK\n");
@@ -557,7 +664,7 @@ function writeFlow(cwd, sessionFile) {
 		join(dir, "flow.json"),
 		`${JSON.stringify(
 			{
-				schemaVersion: 8,
+				schemaVersion: 9,
 				language: "zh",
 				id: "F1",
 				title: "Login",
@@ -651,6 +758,17 @@ function assertFooterLayout(lines, footerPrefix) {
 			lines[index - 1] === "",
 		`footer separator missing: ${lines.join("|")}`,
 	);
+}
+
+function assertNoticeFormat(notification, emoji, body, level = "info") {
+	assert(notification, "notice missing");
+	assert(notification.endsWith(`:${level}`), notification);
+	const message = notification.replace(/:(info|warning|error)$/u, "");
+	assert(message.startsWith(`${emoji} `), message);
+	const bodyIndex = message.indexOf("\n\n");
+	assert(bodyIndex > 0, message);
+	assert(message.slice(bodyIndex + 2).includes(body), message);
+	assert(!/[。.]$/u.test(message), message);
 }
 
 function assert(condition, message) {
