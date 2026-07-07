@@ -1,9 +1,10 @@
 You are generating a recoverable multi-session Pi Flow Goal queue. Only write `.flow` draft files; do not modify product code.
 
-Goal: from the current conversation, user input, or markdown file, create a draft Flow:
+Goal: from the current conversation, user input, or markdown file, complete a draft Flow semantic artifact inside the extension-created directory:
 
 ```text
-.flow/<id>/
+{{flowPath}}/
+  flow.json  # created by the extension; do not modify it
   flow.semantic.json
   flow.html  # rendered by the extension; do not write it
   G1-*.md
@@ -14,11 +15,11 @@ Goal: from the current conversation, user input, or markdown file, create a draf
 Rules:
 - You may read code, docs, and run read-only checks to confirm facts.
 - During generation, do not modify product code, config, tests, README, or docs; only write `.flow` files.
-- Only write `flow.semantic.json` and `G<N>-*.md`; do not create, handwrite, or fill canonical `flow.json` / runtime state fields. The extension assembles and validates the complete Flow state artifact.
+- Only write `flow.semantic.json` and `G<N>-*.md` inside `{{flowPath}}`; do not create, handwrite, or fill canonical `flow.json` / runtime state fields. The extension assembles and validates the complete Flow state artifact.
 - Do not write or test `flow.html`; the extension renders it after validation with its built-in renderer. Do not copy HTML report templates or candidate structures into Flow goal files.
 - Output language must use current language: `{{language}}`. Use English for `en`; use Chinese for `zh`.
 - `title`, each Goal title, and the first sentence of each `Objective` are user-facing: plainly state what the user gets when done. Put technical details in `Steps` / `Verification`.
-- Flow directory names use the next max F number under `.flow`, format `F1-xxx`; use `task` when no English/numeric slug exists.
+- The Flow directory has already been allocated by the extension as bare `F<N>`; do not create another Flow directory and do not use `F<N>-slug`.
 - Generate 1–11 Goals (at most 10 execution Goals plus the final acceptance Goal for multi-step Flow); prefer 1–7. More than 10 execution Goals is invalid; ask the user to split into multiple flows.
 - A single-step Flow generates exactly 1 `normal` Goal and no final acceptance Goal.
 - A multi-step Flow must close with final acceptance: the last Goal filename uses the actual sequence plus `final-acceptance`, role `final_acceptance`, e.g. `G3-final-acceptance.md`. 
@@ -45,7 +46,7 @@ Rules:
   - [ ] **Global verification**: run global verification command, confirm end-to-end flow exits 0
   - [ ] **Doc close-out**: check docs / AGENTS.md for affected module descriptions; update if needed
   - [ ] **Confirm no loose ends**: no open issues, no unresolved TODO/FIXME
-- After writing `flow.semantic.json` and all Goal markdown files, stop. The extension will assemble the complete Flow state and run structural validation (`{{validateCommand}} <Flow directory>`). Do not replace real tool output with "self-check", and do not manually simulate extension validation.
+- After writing `flow.semantic.json` and all Goal markdown files, stop. The extension will assemble the complete Flow state and run structural validation (`{{validateCommand}} {{flowPath}}`). Do not replace real tool output with "self-check", and do not manually simulate extension validation.
 - Do not do deep alignment now; generate directly from current context and user input.
 - Ask one blocking question only when the target is missing, requirements conflict, or an irreversible decision cannot be reasonably assumed. End the question with `<!-- pi-flow:need-input -->` on its own line.
 - If a question can be answered by reading the codebase, docs, or existing `.flow` files, inspect them instead of asking the user.
@@ -63,11 +64,16 @@ Minimal `flow.semantic.json` skeleton with optional parallel fields:
 }
 ```
 
+Flow directory:
+{{flowPath}}
+
 Original user request:
 {{originalRequest}}
 
 Source:
 {{source}}
+
+{{restoredAlignmentContext}}
 
 Current language:
 {{language}}

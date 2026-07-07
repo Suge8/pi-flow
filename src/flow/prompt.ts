@@ -9,6 +9,8 @@ export function generationPrompt(input: {
 	sourceType: FlowSourceType;
 	sourcePath?: string;
 	language: Language;
+	flowPath: string;
+	restoredAlignmentContext?: { question: string; answer: string }[];
 }) {
 	return readPrompt("flow-plan", input.language)
 		.replace(
@@ -21,7 +23,15 @@ export function generationPrompt(input: {
 				? `${input.sourceType}: ${input.sourcePath}`
 				: input.sourceType,
 		)
+		.replace(
+			"{{restoredAlignmentContext}}",
+			restoredAlignmentContext(
+				input.restoredAlignmentContext ?? [],
+				input.language,
+			),
+		)
 		.replaceAll("{{validateCommand}}", validateDraftCommand())
+		.replaceAll("{{flowPath}}", input.flowPath)
 		.replaceAll("{{language}}", input.language);
 }
 
@@ -44,6 +54,20 @@ export function repairPrompt(input: {
 		.replaceAll("{{flowPath}}", input.flowPath)
 		.replaceAll("{{validateCommand}}", validateDraftCommand())
 		.replaceAll("{{language}}", input.language);
+}
+
+function restoredAlignmentContext(
+	turns: { question: string; answer: string }[],
+	language: Language,
+) {
+	if (turns.length === 0) return "";
+	const lines = turns.flatMap((turn, index) => [
+		`Q${index + 1}: ${turn.question}`,
+		`A${index + 1}: ${turn.answer}`,
+	]);
+	if (language === "en")
+		return `Restored alignment Q&A (use these decisions only for cross-session recovery; do not copy them verbatim into every Goal):\n${lines.join("\n")}`;
+	return `恢复的对齐问答（仅用于跨会话恢复；不要逐字复制进每个 Goal）：\n${lines.join("\n")}`;
 }
 
 function defaultOriginalRequest(language: Language) {
