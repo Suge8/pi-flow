@@ -137,8 +137,10 @@ cp config.template.json config.json
 ### 5 seconds to start
 
 ```text
-/flow          # Plan → execute → accept → quality check; single-step or multi-step automatically
-/review        # Quality-check AI operations
+/flow [request|path.md]  # Plan → execute → accept → quality check
+/flow go [F1]            # advance or resume a Flow
+/flow stop [F1]          # stop a Flow; resume with go
+/review                  # Quality-check AI operations
 ```
 
 <details>
@@ -158,21 +160,15 @@ Markdown request file:
 /flow plan.md
 ```
 
-Continue, cancel, status:
+Advance or stop an existing Flow:
 
 ```text
-/flow continue | cancel | status
+/flow go        # current conversation's Flow, or the only active Flow
+/flow go F1     # explicit Flow id
+/flow stop F1   # stop and keep it resumable with go
 ```
 
-Target a Flow by its bare `F<N>` id:
-
-```text
-/flow status F4
-/flow start F4
-/flow continue F4
-```
-
-Multiple Flows can be in progress in one project, including alignment, plan generation, and execution. Bare `continue` / `cancel` / `status` targets the Flow owned by the current conversation or the only in-progress Flow; otherwise Pi asks for an explicit Flow id. During alignment or plan generation, replying in the current conversation continues the same Flow.
+Multiple Flows can be in progress in one project, including alignment, plan generation, and execution. Bare `go` targets the Flow owned by the current conversation or the only in-progress Flow; otherwise Pi asks for an explicit Flow id. During alignment or plan generation, replying in the current conversation continues the same Flow.
 
 </details>
 
@@ -319,8 +315,10 @@ cp config.template.json config.json
 ### 5 秒开始
 
 ```text
-/flow          # 计划 → 执行 → 验收 → 质量检查；自动判断单步或多步
-/review        # 对 AI 操作做质量检查
+/flow [需求|path.md]  # 计划 → 执行 → 验收 → 质量检查
+/flow go [F1]         # 推进或恢复 Flow
+/flow stop [F1]       # 停止 Flow，之后用 go 恢复
+/review               # 对 AI 操作做质量检查
 ```
 
 <details>
@@ -340,21 +338,15 @@ cp config.template.json config.json
 /flow plan.md
 ```
 
-继续、取消、状态：
+推进或停止已有 Flow：
 
 ```text
-/flow continue | cancel | status
+/flow go        # 当前对话所属 Flow，或唯一活跃 Flow
+/flow go F1     # 显式指定 Flow id
+/flow stop F1   # 停止，之后仍可用 go 恢复
 ```
 
-按 id 指定 Flow（使用裸 `F<N>` id）：
-
-```text
-/flow status F4
-/flow start F4
-/flow continue F4
-```
-
-同一项目可同时有多个进行中的 Flow，包括对齐、计划生成和执行中。裸 `continue` / `cancel` / `status` 会路由到当前对话所属 Flow 或唯一进行中的 Flow；多义时 Pi 会要求指定 id。对齐或计划生成期间，直接在当前对话回复会继续同一个 Flow。
+同一项目可同时有多个进行中的 Flow，包括对齐、计划生成和执行中。裸 `go` 会路由到当前对话所属 Flow 或唯一进行中的 Flow；多义时 Pi 会要求指定 id。对齐或计划生成期间，直接在当前对话回复会继续同一个 Flow。
 
 </details>
 
