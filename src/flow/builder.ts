@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import type { GoalChecks } from "../goal/types.js";
 import type { Language } from "../shared/config.js";
-import { writeFlow } from "./store.js";
+import { tryReadFlow, writeFlow } from "./store.js";
 import type { FlowGoal, FlowGoalRole, FlowSource, FlowState } from "./types.js";
 
 export interface FlowSemanticInput {
@@ -22,19 +22,26 @@ export function buildFlowArtifact(
 	source: FlowSource,
 ): FlowState {
 	const now = Date.now();
+	const previous = tryReadFlow(dir);
+	const createdAt =
+		previous && Number.isFinite(previous.createdAt) ? previous.createdAt : now;
+	const repairAttempts =
+		previous && Number.isInteger(previous.repairAttempts)
+			? previous.repairAttempts
+			: 0;
 	return writeFlow(dir, {
-		schemaVersion: 7,
+		schemaVersion: 8,
 		language,
 		id: basename(dir),
 		title: requiredTitle(input.title),
 		status: "draft",
 		source,
-		createdAt: now,
+		createdAt,
 		updatedAt: now,
 		startedAt: null,
 		currentGoal: 0,
 		parallelRun: null,
-		repairAttempts: 0,
+		repairAttempts,
 		errors: [],
 		goals: input.goals.map(flowGoal),
 	});

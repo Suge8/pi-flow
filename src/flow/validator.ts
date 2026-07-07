@@ -22,8 +22,10 @@ import type {
 	FlowStatus,
 } from "./types.js";
 
-const FLOW_ID_PATTERN = /^F[1-9]\d*-[a-z0-9-]+$/u;
+const FLOW_ID_PATTERN = /^F[1-9]\d*$/u;
 const FLOW_STATUSES = new Set<FlowStatus>([
+	"aligning",
+	"generating",
 	"draft",
 	"running",
 	"complete",
@@ -72,16 +74,15 @@ export function validateFlowDir(dir: string, language?: Language) {
 }
 
 export function validateFlowShape(flow: FlowState, errors: string[]) {
-	if (flow.schemaVersion !== 7) errors.push("schemaVersion 必须为 7");
+	if (flow.schemaVersion !== 8) errors.push("schemaVersion 必须为 8");
 	validateLanguage(flow.language, errors);
 	if (!FLOW_ID_PATTERN.test(String(flow.id ?? "")))
-		errors.push("id 必须匹配 F1-xxx");
+		errors.push("id 必须匹配 F1");
 	if (!nonEmpty(flow.title)) errors.push("title 必须是非空字符串");
 	if (!FLOW_STATUSES.has(flow.status))
 		errors.push(`status 非法：${flow.status}`);
 	if (!Number.isFinite(flow.createdAt)) errors.push("createdAt 必须是时间戳");
 	if (!Number.isFinite(flow.updatedAt)) errors.push("updatedAt 必须是时间戳");
-	validateStartedAt(flow, errors);
 	if (!Number.isInteger(flow.currentGoal))
 		errors.push("currentGoal 必须是整数");
 	if (!Number.isInteger(flow.repairAttempts))
@@ -95,6 +96,11 @@ export function validateFlowShape(flow: FlowState, errors: string[]) {
 	);
 	if (!Array.isArray(flow.goals)) {
 		errors.push("goals 必须是数组");
+		return;
+	}
+	validateStartedAt(flow, flow.goals.length, errors);
+	if (isPreDraftFlow(flow)) {
+		validatePreDraftShape(flow, errors);
 		return;
 	}
 	const executionGoals = executionGoalCount(flow.goals);
@@ -150,8 +156,33 @@ function validateFinalAcceptancePlacement(
 	}
 }
 
-function validateStartedAt(flow: FlowState, errors: string[]) {
-	if (flow.status === "draft") {
+function isPreDraftFlow(flow: FlowState) {
+	return (
+		flow.status === "aligning" ||
+		flow.status === "generating" ||
+		(flow.status === "cancelled" && flow.goals.length === 0)
+	);
+}
+
+function validatePreDraftShape(flow: FlowState, errors: string[]) {
+	if (flow.goals.length !== 0) errors.push("pre-draft Flow goals 必须为 []");
+	if (flow.currentGoal !== 0)
+		errors.push("pre-draft Flow currentGoal 必须为 0");
+	if (flow.parallelRun !== null)
+		errors.push("pre-draft Flow parallelRun 必须为 null");
+}
+
+function validateStartedAt(
+	flow: FlowState,
+	goalCount: number,
+	errors: string[],
+) {
+	if (
+		flow.status === "aligning" ||
+		flow.status === "generating" ||
+		flow.status === "draft" ||
+		(flow.status === "cancelled" && goalCount === 0)
+	) {
 		if (flow.startedAt !== null) errors.push("startedAt 计划必须为 null");
 		return;
 	}

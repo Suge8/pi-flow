@@ -1,7 +1,13 @@
 import type { CompletionCursor, GoalChecks } from "../goal/types.js";
 import type { Language } from "../shared/config.js";
 
-export type FlowStatus = "draft" | "running" | "complete" | "cancelled";
+export type FlowStatus =
+	| "aligning"
+	| "generating"
+	| "draft"
+	| "running"
+	| "complete"
+	| "cancelled";
 export type FlowGoalStatus = "pending" | "running" | "complete";
 export type FlowGoalRole = "normal" | "final_acceptance";
 export type FlowSourceType = "conversation" | "prompt" | "file";
@@ -44,7 +50,7 @@ export interface FlowParallelRun {
 }
 
 export interface FlowState {
-	schemaVersion: 7;
+	schemaVersion: 8;
 	language: Language;
 	id: string;
 	title: string;

@@ -9,7 +9,7 @@ import {
 	nonEmpty,
 } from "../src/shared/guards.ts";
 
-const FLOW_ID_PATTERN = /^F[1-9]\d*-[a-z0-9-]+$/u;
+const FLOW_ID_PATTERN = /^F[1-9]\d*$/u;
 const MODEL_STATUSES = new Set(["running", "passed", "failed", "error"]);
 const CHECK_RESULTS = new Set(["passed", "failed", "error"]);
 const COMPLETION_CURSORS = new Set([
@@ -25,7 +25,7 @@ const TASK_LIST_ITEM = /^\s*[-*+]\s*\[[ xX~!]\]/mu;
 const MAX_EXECUTION_GOALS = 10;
 
 const dir = process.argv[2];
-if (!dir) fail(["用法：node scripts/validate-draft.mjs <.flow/F1-id>"]);
+if (!dir) fail(["用法：node scripts/validate-draft.mjs <.flow/F1>"]);
 
 const root = resolve(dir);
 const errors = existsSync(join(root, "flow.json"))
@@ -39,10 +39,10 @@ function validateFlow(root) {
 	const errors = [];
 	const flow = readArtifact(join(root, "flow.json"), "flow.json", errors);
 	if (!flow) return errors;
-	if (flow.schemaVersion !== 7) errors.push("schemaVersion 必须为 7");
+	if (flow.schemaVersion !== 8) errors.push("schemaVersion 必须为 8");
 	validateLanguage(flow.language, errors);
 	if (!FLOW_ID_PATTERN.test(String(flow.id ?? "")))
-		errors.push("id 必须匹配 F1-xxx");
+		errors.push("id 必须匹配 F1");
 	validateArtifactDirName(
 		root,
 		flow.id,

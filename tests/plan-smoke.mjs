@@ -105,8 +105,8 @@ async function validatorScenario() {
 }
 
 function validateDraftCliScenario() {
-	const dir = join(out, "F1-cli");
-	writeFlowDraft(dir, baseFlow("F1-cli", [baseFlowGoal(0, "step-1.md")]));
+	const dir = join(out, "F1");
+	writeFlowDraft(dir, baseFlow("F1", [baseFlowGoal(0, "step-1.md")]));
 	execFileSync("node", [join(root, "scripts", "validate-draft.mjs"), dir]);
 }
 
@@ -118,7 +118,7 @@ async function validateDraftConsistencyScenario() {
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
-					baseFlow("F1-check-error", [
+					baseFlow("F1", [
 						baseFlowGoal(0, "step-1.md", { checks: validChecks("error") }),
 					]),
 				),
@@ -128,7 +128,7 @@ async function validateDraftConsistencyScenario() {
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
-					baseFlow("F2-indented-headings", [baseFlowGoal(0, "step-1.md")]),
+					baseFlow("F2", [baseFlowGoal(0, "step-1.md")]),
 					indentedMarkdown(),
 				),
 		},
@@ -137,7 +137,7 @@ async function validateDraftConsistencyScenario() {
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
-					baseFlow("F3-todo-states", [baseFlowGoal(0, "step-1.md")]),
+					baseFlow("F3", [baseFlowGoal(0, "step-1.md")]),
 					markdown()
 						.replace("- [ ] Implement.", "- [~] Implement.")
 						.replace("- [ ] npm test", "- [!] npm test"),
@@ -148,26 +148,24 @@ async function validateDraftConsistencyScenario() {
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
-					baseFlow("F3-criteria-checkbox", [baseFlowGoal(0, "step-1.md")]),
+					baseFlow("F4", [baseFlowGoal(0, "step-1.md")]),
 					markdown().replace("- Done.", "+ [ ] Done."),
 				),
 		},
 		{
 			name: "flow accepts eleven goals",
-			write: (dir) =>
-				writeFlowDraft(dir, baseFlow("F3-eleven-goals", baseFlowGoals(11))),
+			write: (dir) => writeFlowDraft(dir, baseFlow("F5", baseFlowGoals(11))),
 		},
 		{
 			name: "flow rejects twelve goals",
-			write: (dir) =>
-				writeFlowDraft(dir, baseFlow("F3-twelve-goals", baseFlowGoals(12))),
+			write: (dir) => writeFlowDraft(dir, baseFlow("F6", baseFlowGoals(12))),
 		},
 		{
 			name: "flow rejects invalid current goal",
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
-					baseFlow("F3-invalid-current", [baseFlowGoal(0, "step-1.md")], {
+					baseFlow("F7", [baseFlowGoal(0, "step-1.md")], {
 						currentGoal: 9,
 					}),
 				),
@@ -177,7 +175,7 @@ async function validateDraftConsistencyScenario() {
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
-					baseFlow("F3-invalid-cursor", [
+					baseFlow("F8", [
 						baseFlowGoal(0, "step-1.md", { completionCursor: "done" }),
 					]),
 				),
@@ -188,17 +186,14 @@ async function validateDraftConsistencyScenario() {
 				mkdirSync(dir, { recursive: true });
 				writeJson(
 					join(dir, "flow.json"),
-					baseFlow("F3-missing-step", [baseFlowGoal(0, "missing.md")]),
+					baseFlow("F9", [baseFlowGoal(0, "missing.md")]),
 				);
 			},
 		},
 		{
 			name: "flow rejects step directory",
 			write: (dir) => {
-				writeFlowDraft(
-					dir,
-					baseFlow("F4-step-directory", [baseFlowGoal(0, "step-1.md")]),
-				);
+				writeFlowDraft(dir, baseFlow("F10", [baseFlowGoal(0, "step-1.md")]));
 				rmSync(join(dir, "step-1.md"));
 				mkdirSync(join(dir, "step-1.md"));
 			},
@@ -209,7 +204,7 @@ async function validateDraftConsistencyScenario() {
 				mkdirSync(dir, { recursive: true });
 				writeJson(
 					join(dir, "flow.json"),
-					baseFlow("F5-short-circuit", [baseFlowGoal(0, "missing.md")], {
+					baseFlow("F11", [baseFlowGoal(0, "missing.md")], {
 						currentGoal: 9,
 					}),
 				);
@@ -242,13 +237,29 @@ async function validateDraftConsistencyScenario() {
 				`${testCase.name}: CLI errors differed\nCLI:\n${cli.output}\nsource:\n${sourceOutput}`,
 			);
 	}
+	const preDraftDir = join(out, "F40");
+	mkdirSync(preDraftDir, { recursive: true });
+	writeJson(join(preDraftDir, "flow.json"), {
+		...baseFlow("F40", []),
+		title: "Flow F40",
+		status: "generating",
+		currentGoal: 0,
+		goals: [],
+	});
+	const preDraftSource = validateFlowDir(preDraftDir);
+	assert(
+		preDraftSource.ok,
+		`pre-draft Flow rejected: ${preDraftSource.errors.join("\n")}`,
+	);
+	const preDraftCli = runValidateDraft(preDraftDir);
+	assert(!preDraftCli.ok, "validate-draft CLI accepted empty pre-draft");
 	assertElevenGoalFlowValid(validateFlowDir);
 	assertDuplicateFinalRejected(validateFlowDir);
 }
 
 function assertElevenGoalFlowValid(validateFlowDir) {
-	const dir = join(out, "F6-eleven-direct");
-	writeFlowDraft(dir, baseFlow("F6-eleven-direct", baseFlowGoals(11)));
+	const dir = join(out, "F6");
+	writeFlowDraft(dir, baseFlow("F6", baseFlowGoals(11)));
 	const source = validateFlowDir(dir);
 	assert(source.ok, `11-goal flow rejected: ${source.errors.join("\n")}`);
 	const cli = runValidateDraft(dir);
@@ -256,10 +267,10 @@ function assertElevenGoalFlowValid(validateFlowDir) {
 }
 
 function assertDuplicateFinalRejected(validateFlowDir) {
-	const dir = join(out, "F7-duplicate-final");
+	const dir = join(out, "F7");
 	writeFlowDraft(
 		dir,
-		baseFlow("F7-duplicate-final", [
+		baseFlow("F7", [
 			baseFlowGoal(0, "step-1.md"),
 			baseFlowGoal(1, "step-2.md"),
 			baseFlowGoal(2, "step-final-a.md", { role: "final_acceptance" }),
@@ -282,7 +293,7 @@ async function flowBuilderScenario() {
 	const { buildFlowArtifact } = await importModule("flow/builder.js");
 	const { computeReadyBatch } = await importModule("flow/scheduler.js");
 	const { validateFlowDir } = await importModule("flow/validator.js");
-	const dir = join(out, "F4-semantic-builder");
+	const dir = join(out, "F4");
 	const semantic = {
 		title: "Semantic Flow",
 		goals: [
@@ -349,7 +360,7 @@ async function flowBuilderScenario() {
 		assert(field in flow, `flow builder missing ${field}`);
 	const persisted = readJson(join(dir, "flow.json"));
 	assert(
-		persisted.id === "F4-semantic-builder" &&
+		persisted.id === "F4" &&
 			persisted.title === "Semantic Flow" &&
 			persisted.goals.length === 4,
 		"flow builder did not persist semantic title/goals",
@@ -380,16 +391,16 @@ async function flowBuilderScenario() {
 
 async function directoryIdMismatchScenario() {
 	const { validateFlowDir } = await importModule("flow/validator.js");
-	const flowDir = join(out, "F9-dir");
-	writeFlowDraft(flowDir, baseFlow("F9-json", [baseFlowGoal(0, "step-1.md")]));
+	const flowDir = join(out, "F30");
+	writeFlowDraft(flowDir, baseFlow("F31", [baseFlowGoal(0, "step-1.md")]));
 	assertValidationError(
 		validateFlowDir(flowDir),
-		"flow 目录名必须等于 id：F9-json",
+		"flow 目录名必须等于 id：F31",
 		"flow directory id mismatch",
 	);
 	const flowCli = runValidateDraft(flowDir);
 	assert(
-		!flowCli.ok && flowCli.output.includes("flow 目录名必须等于 id：F9-json"),
+		!flowCli.ok && flowCli.output.includes("flow 目录名必须等于 id：F31"),
 		`flow CLI mismatch accepted: ${flowCli.output}`,
 	);
 }
@@ -398,7 +409,10 @@ function artifactDirFromStaging(dir) {
 	const id = artifactId(dir);
 	if (!id) return dir;
 	const target = join(dirname(dir), id);
-	if (target !== dir) renameSync(dir, target);
+	if (target !== dir) {
+		rmSync(target, { recursive: true, force: true });
+		renameSync(dir, target);
+	}
 	return target;
 }
 
@@ -485,7 +499,7 @@ function runValidateDraft(dir) {
 
 function baseFlow(id, goals, overrides = {}) {
 	return {
-		schemaVersion: 7,
+		schemaVersion: 8,
 		language: "zh",
 		id,
 		title: "Flow CLI",

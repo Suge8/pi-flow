@@ -32,7 +32,7 @@ export function replaceGoal(flow: FlowState, index: number, goal: FlowGoal) {
 }
 
 export function flowCommandId(id: string) {
-	return /^F[1-9]\d*/u.exec(id)?.[0] ?? id;
+	return id;
 }
 
 export function flowSessionName(flow: FlowState, goal: FlowGoal) {

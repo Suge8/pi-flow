@@ -4,13 +4,13 @@ const LANGUAGES = new Set(["zh", "en"]);
 
 const EXACT_EN = new Map<string, string>([
 	[
-		"用法：node scripts/validate-draft.mjs <.flow/F1-id>",
-		"Usage: node scripts/validate-draft.mjs <.flow/F1-id>",
+		"用法：node scripts/validate-draft.mjs <.flow/F1>",
+		"Usage: node scripts/validate-draft.mjs <.flow/F1>",
 	],
 	["缺少 flow.json", "Missing flow.json"],
-	["schemaVersion 必须为 7", "schemaVersion must be 7"],
+	["schemaVersion 必须为 8", "schemaVersion must be 8"],
 	["language 必须是 zh 或 en", "language must be zh or en"],
-	["id 必须匹配 F1-xxx", "id must match F1-xxx"],
+	["id 必须匹配 F1", "id must match F1"],
 	["title 必须是非空字符串", "title must be a non-empty string"],
 	["createdAt 必须是时间戳", "createdAt must be a timestamp"],
 	["updatedAt 必须是时间戳", "updatedAt must be a timestamp"],

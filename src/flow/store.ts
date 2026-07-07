@@ -1,8 +1,9 @@
+import { mkdirSync } from "node:fs";
 import { createArtifactStore } from "../shared/artifact-store.js";
-import type { FlowLocation, FlowState } from "./types.js";
+import type { Language } from "../shared/config.js";
+import type { FlowLocation, FlowSource, FlowState } from "./types.js";
 
-const FLOW_ID_PATTERN = /^F[1-9]\d*-[a-z0-9-]+$/u;
-const FLOW_SHORT_ID_PATTERN = /^F[1-9]\d*$/u;
+const FLOW_ID_PATTERN = /^F[1-9]\d*$/u;
 
 const flowStore = createArtifactStore<FlowState, "flow">({
 	rootDir: ".flow",
@@ -50,8 +51,7 @@ export function listFlows(cwd: string): FlowLocation[] {
 }
 
 export function findFlow(cwd: string, id: string) {
-	const resolvedId = resolveFlowId(cwd, id);
-	return resolvedId ? flowStore.find(cwd, resolvedId) : undefined;
+	return flowStore.find(cwd, id);
 }
 
 export function latestFlow(
@@ -65,12 +65,75 @@ export function runningFlows(cwd: string) {
 	return listFlows(cwd).filter((item) => item.flow.status === "running");
 }
 
-function resolveFlowId(cwd: string, id: string) {
-	if (!FLOW_SHORT_ID_PATTERN.test(id)) return id;
-	const matches = listFlowIds(cwd).filter((item) => item.startsWith(`${id}-`));
-	if (matches.length === 1) return matches[0];
-	if (matches.length === 0) return undefined;
-	throw new Error(`Flow 短 id 不唯一：${id}（${matches.join(", ")}）`);
+export function activeFlows(cwd: string) {
+	return listFlows(cwd).filter((item) => isActiveFlowStatus(item.flow.status));
+}
+
+function isActiveFlowStatus(status: FlowState["status"]) {
+	return (
+		status === "aligning" || status === "generating" || status === "running"
+	);
+}
+
+export function createPreDraftFlow(
+	cwd: string,
+	input: {
+		language: Language;
+		status: "aligning" | "generating";
+		source: FlowSource;
+	},
+): FlowLocation {
+	const existingIds = listFlowIds(cwd);
+	mkdirSync(flowRoot(cwd), { recursive: true });
+	let nextNumber = maxFlowNumber(existingIds) + 1;
+	for (;;) {
+		const id = `F${nextNumber}`;
+		const dir = flowDir(cwd, id);
+		try {
+			mkdirSync(dir);
+		} catch (error) {
+			if (isAlreadyExists(error)) {
+				nextNumber += 1;
+				continue;
+			}
+			throw error;
+		}
+		const now = Date.now();
+		const flow = writeFlow(dir, {
+			schemaVersion: 8,
+			language: input.language,
+			id,
+			title: `Flow ${id}`,
+			status: input.status,
+			source: input.source,
+			createdAt: now,
+			updatedAt: now,
+			startedAt: null,
+			currentGoal: 0,
+			parallelRun: null,
+			repairAttempts: 0,
+			errors: [],
+			goals: [],
+		});
+		return { id, dir, jsonPath: flowJsonPath(dir), flow };
+	}
+}
+
+function maxFlowNumber(ids: string[]) {
+	return ids.reduce((max, id) => Math.max(max, flowNumber(id)), 0);
+}
+
+function flowNumber(id: string) {
+	return Number(/^F([1-9]\d*)$/u.exec(id)?.[1] ?? 0);
+}
+
+function isAlreadyExists(error: unknown) {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		error.code === "EEXIST"
+	);
 }
 
 export function flowOwningSession(
@@ -79,11 +142,18 @@ export function flowOwningSession(
 ) {
 	if (!sessionFile) return undefined;
 	return listFlows(cwd).find(
-		({ flow }) =>
-			flow.status === "running" &&
-			Array.isArray(flow.goals) &&
-			flow.goals.some((goal) => goal.sessionFile === sessionFile),
+		({ flow }) => flowCurrentSessionFile(flow) === sessionFile,
 	);
+}
+
+export function flowCurrentSessionFile(flow: FlowState) {
+	if (flow.status !== "running" || !Array.isArray(flow.goals)) return undefined;
+	const current = currentGoal(flow);
+	if (current?.status === "running") return current.sessionFile ?? undefined;
+	const running = flow.goals.filter((goal) => goal.status === "running");
+	return running.length === 1
+		? (running[0].sessionFile ?? undefined)
+		: undefined;
 }
 
 export function currentGoal(flow: FlowState) {
