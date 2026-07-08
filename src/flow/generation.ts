@@ -108,9 +108,11 @@ export interface FlowGenerationReady {
 
 const FLOW_DRAFT_ACTIVITY = "flow-draft";
 const PROMPT_TOKEN_PATTERN = /<!--\s*pi-flow:prompt:([a-z0-9_-]+)\s*-->/iu;
+const PROMPT_TOKEN_STRIP_PATTERN = /<!--\s*pi-flow:prompt:[a-z0-9_-]+\s*-->/giu;
 const generationContexts = new Map<string, GenerationCache>();
 const generationPromptTargets = new Map<string, GenerationPromptTarget[]>();
 const generationReplyTargets = new Map<string, string>();
+const generationPromptResultTokens = new Map<string, string[]>();
 let generationPromptSequence = 0;
 
 export async function startGeneration(
@@ -488,7 +490,7 @@ async function recoverFlowGeneration(
 	if (!active) return true;
 	setFlowActivity("goal", true, generationActivityId(active.location.id));
 	setGoalActivityBox(ctx, flowPendingBox(active));
-	if (confirmReady && active.alignment.stage === "awaiting_final_confirm") {
+	if (confirmReady && shouldDraftFromAlignment(active, restoresOtherSession)) {
 		rememberGenerationCache(active, ctx, restoresOtherSession, false);
 		try {
 			const action = confirmFlowDraft(active);
@@ -1041,7 +1043,11 @@ function consumeGenerationPromptTarget(
 			forgetPromptTargetAt(sessionFile, normalized, liveIndex);
 			return null;
 		}
-		if (liveIndex === 0 || livePromptHasResult(active, target, event)) {
+		if (
+			liveIndex === 0 ||
+			livePromptHasResult(active, target, sessionFile, event)
+		) {
+			consumePromptResultToken(sessionFile, target.token);
 			forgetPromptTargetAt(sessionFile, normalized, liveIndex);
 			return active;
 		}
@@ -1067,16 +1073,44 @@ function activePromptTarget(
 function livePromptHasResult(
 	active: ActiveGeneration,
 	target: GenerationPromptTarget,
+	sessionFile: string,
 	event?: { messages?: unknown[] },
 ) {
 	if (existsSync(join(active.location.dir, "flow.semantic.json"))) return true;
 	const assistantText = finalAssistantText(event?.messages ?? []);
 	if (!assistantText.trim()) return false;
-	return promptTokenInText(assistantText) === target.token;
+	return (
+		promptTokenInText(assistantText) === target.token ||
+		consumePromptResultToken(sessionFile, target.token)
+	);
 }
 
 function promptTokenInText(text: string) {
 	return PROMPT_TOKEN_PATTERN.exec(text)?.[1];
+}
+
+function rememberPromptResultToken(
+	ctx: { sessionManager?: unknown },
+	token: string,
+) {
+	const sessionFile = safeCurrentSessionFile(ctx);
+	if (!sessionFile) return;
+	const tokens = [
+		...(generationPromptResultTokens.get(sessionFile) ?? []),
+		token,
+	];
+	generationPromptResultTokens.set(sessionFile, tokens.slice(-8));
+}
+
+function consumePromptResultToken(sessionFile: string, token: string) {
+	const tokens = generationPromptResultTokens.get(sessionFile);
+	const index = tokens?.indexOf(token) ?? -1;
+	if (!tokens || index < 0) return false;
+	const remaining = tokens.filter((_item, offset) => offset !== index);
+	if (remaining.length)
+		generationPromptResultTokens.set(sessionFile, remaining);
+	else generationPromptResultTokens.delete(sessionFile);
+	return true;
 }
 
 function normalizePromptTargets(
@@ -1358,6 +1392,17 @@ function shouldRepairOnContinue(active: ActiveGeneration) {
 	return active.location.flow.repairAttempts > 0;
 }
 
+function shouldDraftFromAlignment(
+	active: ActiveGeneration,
+	restoresOtherSession: boolean,
+) {
+	return (
+		active.alignment.stage === "awaiting_final_confirm" ||
+		(active.alignment.stage === "awaiting_alignment_input" &&
+			!restoresOtherSession)
+	);
+}
+
 function needsPlannerSwitch(
 	active: ActiveGeneration,
 	ctx: { sessionManager?: unknown },
@@ -1489,8 +1534,36 @@ function promptWithToken(prompt: string, token: string) {
 	return `${prompt}\n\n<!-- pi-flow:prompt:${token} -->\nWhen your final response asks for more input or continues alignment, include the exact marker above once. Do not write this marker into files.`;
 }
 
+export function stripGenerationPromptMarkerFromMessage<
+	T extends { message: unknown },
+>(
+	event: T,
+	ctx: { sessionManager?: unknown },
+): { message: T["message"] } | undefined {
+	const message = event.message;
+	if (!isRecord(message) || message.role !== "assistant") return undefined;
+	const token = promptTokenInText(messageText(message.content));
+	if (!token) return undefined;
+	rememberPromptResultToken(ctx, token);
+	return {
+		message: {
+			...message,
+			content: stripPromptTokenContent(message.content),
+		} as T["message"],
+	};
+}
+
+function stripPromptTokenContent(content: unknown) {
+	if (typeof content === "string") return stripPromptTokens(content);
+	if (!Array.isArray(content)) return content;
+	return content.map((item) => {
+		if (!isRecord(item) || typeof item.text !== "string") return item;
+		return { ...item, text: stripPromptTokens(item.text) };
+	});
+}
+
 function stripPromptTokens(text: string) {
-	return text.replace(PROMPT_TOKEN_PATTERN, "").trim();
+	return text.replace(PROMPT_TOKEN_STRIP_PATTERN, "").trim();
 }
 
 function isGoalFlowRecommendation(text: string) {

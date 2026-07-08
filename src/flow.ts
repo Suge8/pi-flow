@@ -21,6 +21,7 @@ import {
 	rememberFlowGenerationPromptContext,
 	startFromFile,
 	startGeneration,
+	stripGenerationPromptMarkerFromMessage,
 } from "./flow/generation.js";
 import { flowOwnerForSession } from "./flow/ownership.js";
 import {
@@ -64,6 +65,9 @@ export default function flowExtension(pi: ExtensionAPI) {
 		await bindOwnedFlowReportStatus(ctx);
 		await startPrivateWorkerFromEnv(pi, ctx);
 	});
+	pi.on("message_end", (event, ctx) =>
+		stripGenerationPromptMarkerFromMessage(event, ctx),
+	);
 	pi.on("agent_end", async (event, ctx) => {
 		const generated = await handleGenerationEnd(pi, ctx, event);
 		if (generated?.autoStart) {

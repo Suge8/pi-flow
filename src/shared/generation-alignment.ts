@@ -155,27 +155,30 @@ export function generationAlignmentSummary(
 
 function chineseAlignmentActivityCopy(
 	stage: GenerationStage,
-	goCommand: string,
+	_goCommand: string,
 	questionNumber: number,
 ) {
 	if (stage === "aligning")
 		return {
-			phase: "对齐中",
-			rows: `等待 AI 提出 Q${questionNumber}`,
+			phase: `Q${questionNumber}`,
+			rows: "思考中",
 		};
 	if (stage === "awaiting_alignment_input")
 		return {
-			phase: "等待回复",
-			rows: `回答 Q${questionNumber} 继续对齐`,
+			phase: `Q${questionNumber}`,
+			rows: "回复对齐需求 ｜「/flow go」 直接生成计划",
 		};
 	if (stage === "awaiting_final_confirm")
 		return {
-			phase: "等待确认",
-			rows: ["对齐已就绪", `运行 ${goCommand} 生成计划`, "继续输入则补充对齐"],
+			phase: "已对齐",
+			rows: "「/flow go」生成计划 ｜继续回复则补充信息",
 		};
 	if (stage === "awaiting_blocking_input")
 		return { phase: "等待补充", rows: "回答当前问题后继续生成" };
-	return { phase: "撰写计划中", rows: [] };
+	return {
+		phase: "撰写中",
+		rows: `基于 ${completedQuestionCount(questionNumber)} 轮问答生成全面计划`,
+	};
 }
 
 function englishAlignmentActivityCopy(
@@ -212,18 +215,21 @@ function englishAlignmentActivityCopy(
 
 function chineseAlignmentSummary(
 	stage: GenerationStage,
-	goCommand: string,
+	_goCommand: string,
 	questionNumber: number,
 ) {
 	if (stage === "awaiting_alignment_input")
-		return `回答 Q${questionNumber} 继续对齐。`;
-	if (stage === "aligning")
-		return `正在对齐，等待 AI 提出 Q${questionNumber}。`;
+		return "回复对齐需求；/flow go 直接生成计划。";
+	if (stage === "aligning") return `Q${questionNumber} 思考中。`;
 	if (stage === "awaiting_final_confirm")
-		return `对齐已就绪，运行 ${goCommand} 生成计划；继续输入则补充对齐。`;
+		return "已对齐，/flow go 生成计划；继续回复则补充信息。";
 	if (stage === "awaiting_blocking_input")
 		return "生成被阻塞，回答当前问题后继续生成。";
-	return "正在撰写计划。";
+	return `基于 ${completedQuestionCount(questionNumber)} 轮问答生成全面计划。`;
+}
+
+function completedQuestionCount(questionNumber: number) {
+	return Math.max(0, questionNumber - 1);
 }
 
 function englishAlignmentSummary(
