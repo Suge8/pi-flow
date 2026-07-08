@@ -14,9 +14,9 @@
 - `flow.semantic.json` 的 `goals[]` 可声明 `dependsOn`（先序 0-based index；缺省等同依赖前一步，`[]` 表示无前置）和 `writeScope`（模块/目录 glob；缺省视为未知写入范围）。
 - Flow 最多 10 个 `normal` 执行步骤；单步 Flow 只含 1 个 `normal` 且不写 `final_acceptance`；多步 Flow 最后必须且只能有 1 个 `final_acceptance`，最终验收不占 10 个执行步骤名额。
 - `flow.json.parallelRun` 是落盘并行运行门闩：`null` 表示无活动并行运行；非空时必须为 `{ id, goalIndexes, startedAt }`，表示这些 Goal 已进入同一个并行运行。
-- 并行开始时父 session 先写 `flow.json`：批次内 Goal 置为 `running`，记录 `sessionFile` / `sessionName` / `snapshot` / `snapshotHash`，`currentGoal` 指向批次最小下标，`parallelRun` 写入当前运行；该字段保留到 fan-in、恢复或暂停收口。
+- 并行开始时插件先打开可见 orchestrator 新会话；该会话是父 session，负责 lane 看板、worker 启动、fan-in 和后续调度。父 session 先写 `flow.json`：批次内 Goal 置为 `running`，记录 `sessionFile` / `sessionName` / `snapshot` / `snapshotHash`，`currentGoal` 指向批次最小下标，`parallelRun` 写入当前运行；该字段保留到 fan-in、恢复或暂停收口。
 - 并行 worker 只在 `workers/G<index>/` 写内部 `session.jsonl`、`plan.md`、`state.json` 和完成信号 `result.json`；`result.json` 必须带匹配的 `parallelRunId` 才会被父 session 接收。worker 不写父级 `flow.json`、不触发调度。
-- 父 session 收齐 worker 退出后 fan-in 写 `flow.json`：成功 worker 标记 complete，失败、退出非 0 或缺 `result.json` 的 worker 回 pending。失败收口保持 Flow running，`currentGoal` 指向首个失败 Goal，`errors` 写失败 worker 的 step label、exit code / signal、是否缺 `result.json`；不自动重试，用户运行 `/flow go` 后只调度仍 pending 的失败 Goal，已成功的同批 Goal 不重跑。`/flow stop` 会 abort 活动 batch，清空 `parallelRun`，稳定接收已完成 worker 的 `result.json`，未完成 worker 回 pending；若收口后仍有未完成步骤则标记 paused，若所有步骤已完成则标记 complete。
+- 父 session 收齐 worker 退出后 fan-in 写 `flow.json`：成功 worker 标记 complete，失败、退出非 0 或缺 `result.json` 的 worker 回 pending。失败收口保持 Flow running，`currentGoal` 指向首个失败 Goal，`errors` 写失败 worker 的 step label、exit code / signal、是否缺 `result.json` 和 stderr 摘要；不自动重试，用户运行 `/flow go` 后只调度仍 pending 的失败 Goal，已成功的同批 Goal 不重跑。`/flow stop` 会 abort 活动 batch，清空 `parallelRun`，稳定接收已完成 worker 的 `result.json`，未完成 worker 回 pending；若收口后仍有未完成步骤则标记 paused，若所有步骤已完成则标记 complete。
 - 崩溃或父 session 丢失后，`/flow go` 发现持久化 `parallelRun` 时进入恢复：加锁读取匹配 `parallelRunId` 的 `result.json` 完成已成功 Goal，缺结果的 Goal 重置为 pending，清空 `parallelRun` 后重新交给调度器。
 - 模型不写 `parallelRun`、`checks`、`completionCursor`、`flow.html`。
 - `checks.acceptance` = 完成验收；`checks.quality` = 质量检查；两者结构都是 `enabled / rounds / active`。
@@ -48,7 +48,7 @@
 - `final_acceptance` 是多步 Flow 的最终屏障：只有全部 `normal` step complete 后才 ready，且总是单独串行运行；它不参与 ready 批次的 `writeScope` 并行选择。
 - 父 session 是唯一调度者和父级 `flow.json` 写入者；worker 不触发下一步，不判断 fan-in。
 - worker 没有用户可调用的公开子命令。父 session 通过私有 bootstrap 启动 worker：创建 `workers/G<index>/session.jsonl`，传入 `PI_FLOW_WORKER_*` 环境变量和一次性控制 socket；worker 在 `session_start` 校验 job 与 token 后开始执行，运行中控制 socket 关闭即退出；完成写 `result.json` 后释放控制连接并正常退出，作为 IPC 生命线。
-- 并行批次期间主 session 显示 lane 看板并隐藏默认输入；lane 状态来自 worker JSON event 与 worker `state.json` 的 `checks.active` / `rounds`。
+- 并行批次期间 orchestrator session 显示 lane 看板并隐藏默认输入；lane 状态来自 worker JSON event 与 worker `state.json` 的 `checks.active` / `rounds`，elapsed 每秒刷新。
 - `flow.html` 在并行批次期间监听批次内 step markdown、worker `plan.md` 与 worker `state.json`，用 worker 内部状态渲染实时卡片；批次结束后关闭 watcher。
 
 ## 计划 Markdown Todo
@@ -86,7 +86,7 @@
 - 用户输入和澄清补充必须可见：`appendVisibleUserInput()`。
 - 每个隐藏 prompt 必须有可见锚点：状态卡、活动卡或结果卡。
 - 普通对齐中间轮 prompt 保持轻量，不注入完整拷问协议、原始需求、Q&A、用户刚才回答、摘要或 `<aligned-request>`；普通生成 prompt 只指向当前 `.flow/F<N>/`，不要求模型创建 F 目录，也不注入 Q&A；只有跨会话恢复到撰写计划时才可注入结构化 Q&A。
-- 每次隐藏生成 / 对齐 / follow-up / repair prompt 都带 `<!-- pi-flow:prompt:<token> -->` marker，并按 session 记录 live target；同一 session 有 live target 时禁止覆盖式发送新生成 prompt。完成、暂停或跨 session 接管会把旧 target 降为 stale tombstone，用于吞掉 late `agent_end`，但 stale 不阻塞后续 prompt。
+- 每次隐藏生成 / 对齐 / follow-up / repair prompt 都带 `<!-- pi-flow:prompt:<token> -->` marker，并按 session 记录 live target；同一 session 有 live target 时禁止覆盖式发送新生成 prompt。AI 回显的 prompt marker 会在 `message_end` 被移除后再展示/落盘，同时记录 token 供 `agent_end` 归属匹配。完成、暂停或跨 session 接管会把旧 target 降为 stale tombstone，用于吞掉 late `agent_end`，但 stale 不阻塞后续 prompt。
 - 用户可见文案只用：`目标进行中`、`完成验收`、`验收补完中`、`等待质量检查收口`、`质量检查`、`质量修复中`。
 - 实时卡片和 status 隐藏第一轮；第二轮起显示 `第 N 轮...`。HTML 多轮历史从 `第 1 轮...` 开始展示。
 - Flow 前缀格式：`🌊 flow/第 N 步 · 标题/...`。
