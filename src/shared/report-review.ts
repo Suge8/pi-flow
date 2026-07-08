@@ -10,27 +10,28 @@ import { type Language, reviewToggles } from "./config.js";
 import { copy } from "./copy.js";
 import { renderMarkdownBlock } from "./html-markdown.js";
 import { roundLabel } from "./progress-labels.js";
-import { escapeHtml, seal, TONE_TEXT, type Tone } from "./report-blocks.js";
-import { reportIcon } from "./report-icons.js";
+import {
+	escapeHtml,
+	SOFT_CHIP_BASE,
+	SOFT_CHIP_TONE,
+	statusText,
+	TONE_TEXT,
+	type Tone,
+} from "./report-blocks.js";
+import { type ReportIconName, reportIcon } from "./report-icons.js";
 import { formatReviewResultLines } from "./review-format.js";
 
-export interface CheckProgress {
-	enabled: number;
-	passed: number;
-}
-
-export function checkProgress(
-	checks: GoalChecks | null | undefined,
-): CheckProgress {
-	if (!checks) return { enabled: 0, passed: 0 };
-	let enabled = 0;
-	let passed = 0;
-	for (const phase of [checks.acceptance, checks.quality]) {
-		if (!phase.enabled) continue;
-		enabled += 1;
-		if (phase.rounds.at(-1)?.result === "passed") passed += 1;
-	}
-	return { enabled, passed };
+/** 检查视图上下文：keyPrefix 跨卡片唯一；live 表示步骤正在执行（允许推导「修复中」）。 */
+export interface CheckViewContext {
+	keyPrefix: string;
+	language: Language;
+	live?: boolean;
+	/** 已完成步骤的检查状态由步骤右上角承载，避免重复显示两个「已通过」。 */
+	hidePassedStatus?: boolean;
+	/** 待执行步骤已由父级显示，不重复显示「等待」。 */
+	hideWaitingStatus?: boolean;
+	/** full：round 详情直接展开（用于步骤模态框内，避免模态嵌套）。默认 modal。 */
+	detail?: "modal" | "full";
 }
 
 /** 清掉实时进度（active），保留轮次结论：用于取消/中断时落盘。 */
@@ -53,73 +54,75 @@ export function pendingChecks(): GoalChecks {
 	};
 }
 
-export function checkPhases(
-	checks: GoalChecks,
-	keyPrefix = "goal",
-	language: Language = "zh",
-) {
-	const t = copy(language);
-	return [
-		checkPhase({
-			name: t.completionAcceptance,
-			hint: t.completionAcceptanceHint,
-			phase: checks.acceptance,
-			keyPrefix: `${keyPrefix}-acceptance`,
-			language,
-			icon: "target",
-			accent: "blue",
-		}),
-		checkPhase({
-			name: t.qualityCheck,
-			hint: t.qualityCheckHint,
-			phase: checks.quality,
-			keyPrefix: `${keyPrefix}-quality`,
-			language,
-			icon: "shield-check",
-			accent: "green",
-		}),
-	].join("");
-}
-
-function checkPhase({
-	name,
-	hint,
-	phase,
-	keyPrefix,
-	language,
-	icon,
-	accent,
-}: {
+interface PhaseMeta {
+	key: "acceptance" | "quality";
 	name: string;
 	hint: string;
-	phase: CheckPhase;
-	keyPrefix: string;
-	language: Language;
-	icon: Parameters<typeof reportIcon>[0];
+	icon: ReportIconName;
 	accent: Tone;
-}) {
-	const state = phaseState(phase, language);
-	const chips = (phase.active ?? []).map(modelChip).join("");
-	const history = phaseHistory(phase, keyPrefix, language);
+}
+
+function phaseMetas(language: Language): PhaseMeta[] {
+	const t = copy(language);
+	return [
+		{
+			key: "acceptance",
+			name: t.completionAcceptance,
+			hint: t.completionAcceptanceHint,
+			icon: "target",
+			accent: "blue",
+		},
+		{
+			key: "quality",
+			name: t.qualityCheck,
+			hint: t.qualityCheckHint,
+			icon: "shield-check",
+			accent: "green",
+		},
+	];
+}
+
+export function checkPhases(checks: GoalChecks, ctx: CheckViewContext) {
+	return phaseMetas(ctx.language)
+		.map((meta) => checkPhaseCard(checks[meta.key], meta, ctx))
+		.join("");
+}
+
+function checkPhaseCard(
+	phase: CheckPhase,
+	meta: PhaseMeta,
+	ctx: CheckViewContext,
+) {
+	const state = phaseState(phase, meta.key, ctx.language, ctx.live);
+	const history = phaseHistory(phase, meta, ctx);
+	const active = activeRoundItem(phase, meta, ctx);
+	const rows = [history, active].filter(Boolean).join("");
+	if (!phase.enabled && !rows) return "";
 	const tone = state.tone === "gray" ? undefined : state.tone;
+	const status = phaseStatusHtml(phase, state, ctx);
 	return `<section data-rough-card${tone ? ` data-tone="${tone}"` : ""} class="${checkCardClass(state.tone)}">
-<div class="flex items-start justify-between gap-3">${checkTitle(name, hint, icon, phase.enabled && state.tone === "gray" ? accent : state.tone)}${seal(state.label, state.tone)}</div>
-${chips ? `<div class="mt-3 flex flex-wrap gap-1.5">${chips}</div>` : ""}
-${history ? `<div class="mt-3">${history}</div>` : ""}
+<div class="flex items-start justify-between gap-3">${checkTitle(meta, phase.enabled && state.tone === "gray" ? meta.accent : state.tone)}${status}</div>
+${rows ? `<ol class="mt-3 space-y-2">${rows}</ol>` : ""}
 </section>`;
 }
 
-function checkTitle(
-	name: string,
-	hint: string,
-	icon: Parameters<typeof reportIcon>[0],
-	tone: Tone,
-) {
+function checkTitle(meta: PhaseMeta, tone: Tone) {
 	return `<div class="inline-flex min-w-0 items-center gap-2">
-<span class="${TONE_TEXT[tone]}">${reportIcon(icon, "h-5 w-5")}</span>
-<p class="text-base font-semibold leading-6 text-stone-900">${escapeHtml(name)}</p>
-<span tabindex="0" aria-label="${escapeHtml(hint)}" data-tooltip="${escapeHtml(hint)}" class="tooltip inline-grid h-4 w-4 shrink-0 cursor-help place-items-center rounded-full bg-stone-100 text-[10px] font-semibold text-stone-500 shadow-[inset_0_0_0_1px_rgba(41,37,36,0.08)] transition-[color,background-color,box-shadow] duration-150 hover:bg-white hover:text-stone-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200">?</span>
+<span class="${TONE_TEXT[tone]}">${reportIcon(meta.icon, "h-5 w-5")}</span>
+<p class="text-base font-semibold leading-6 text-stone-900">${escapeHtml(meta.name)}</p>
+<span tabindex="0" aria-label="${escapeHtml(meta.hint)}" data-tooltip="${escapeHtml(meta.hint)}" class="tooltip inline-grid h-3 w-3 shrink-0 cursor-pointer place-items-center rounded-full bg-stone-100 text-[8px] font-semibold text-stone-500 shadow-[inset_0_0_0_1px_rgba(41,37,36,0.08)] transition-[color,background-color,box-shadow] duration-150 hover:bg-white hover:text-stone-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200">?</span>
 </div>`;
+}
+
+function phaseStatusHtml(
+	phase: CheckPhase,
+	state: PhaseView,
+	ctx: CheckViewContext,
+) {
+	if (!phase.enabled) return "";
+	if (ctx.hidePassedStatus && state.tone === "green") return "";
+	if (ctx.hideWaitingStatus && state.tone === "gray") return "";
+	return statusText(state.label, state.tone);
 }
 
 function checkCardClass(tone: Tone) {
@@ -130,22 +133,128 @@ function checkCardClass(tone: Tone) {
 	return "bg-white/80 p-4";
 }
 
-export function phaseState(
-	phase: CheckPhase,
-	language: Language = "zh",
-): {
+export interface PhaseView {
 	label: string;
 	tone: Tone;
-} {
+	pulse?: boolean;
+	repairing?: boolean;
+}
+
+export function phaseState(
+	phase: CheckPhase,
+	key: PhaseMeta["key"],
+	language: Language = "zh",
+	live = false,
+): PhaseView {
 	const t = copy(language);
 	if (!phase.enabled) return { label: t.disabled, tone: "gray" };
 	if (phase.active?.some((item) => item.status === "running"))
-		return { label: t.checking, tone: "blue" };
+		return {
+			label: phaseActiveLabel(key, language),
+			tone: "blue",
+			pulse: true,
+		};
 	const last = phase.rounds.at(-1);
 	if (!last) return { label: t.waiting, tone: "gray" };
 	if (last.result === "passed") return { label: t.passed, tone: "green" };
 	if (last.result === "error") return { label: t.error, tone: "amber" };
+	if (live)
+		return {
+			label: phaseRepairLabel(key, language),
+			tone: "blue",
+			pulse: true,
+			repairing: true,
+		};
 	return { label: t.failed, tone: "red" };
+}
+
+function phaseActiveLabel(key: PhaseMeta["key"], language: Language) {
+	if (language === "en") return key === "acceptance" ? "Accepting" : "Checking";
+	return key === "acceptance" ? "验收中" : "检查中";
+}
+
+function phaseRepairLabel(key: PhaseMeta["key"], language: Language) {
+	if (language === "en")
+		return key === "acceptance" ? "Completing" : "Optimizing";
+	return key === "acceptance" ? "补完中" : "优化中";
+}
+
+const MINI_CHIP: Record<Tone, string> = {
+	green: "text-emerald-800",
+	blue: "text-sky-800",
+	amber: "text-amber-800",
+	red: "text-rose-800",
+	gray: "text-stone-500",
+};
+
+const MINI_DOT: Record<Tone, string> = {
+	green: "bg-emerald-500",
+	blue: "bg-sky-500",
+	amber: "bg-amber-500",
+	red: "bg-rose-500",
+	gray: "bg-stone-300",
+};
+
+/** stepper 用的微型检查点：验收 + 质检各一枚，保持紧凑横排。 */
+export function checkDots(
+	checks: GoalChecks | null | undefined,
+	options: {
+		goalComplete: boolean;
+		language: Language;
+		live?: boolean;
+		criteriaChanged?: boolean;
+	},
+) {
+	const t = copy(options.language);
+	return phaseMetas(options.language)
+		.map((meta) => {
+			const label = phaseShortLabel(meta.key, options.language);
+			const flagged = meta.key === "acceptance" && options.criteriaChanged;
+			if (!checks)
+				return options.goalComplete
+					? checkMiniChip(
+							label,
+							{ label: t.passed, tone: "green" },
+							0,
+							options.language,
+							flagged,
+						)
+					: checkMiniChip(
+							label,
+							{ label: t.waiting, tone: "gray" },
+							0,
+							options.language,
+							flagged,
+						);
+			const phase = checks[meta.key];
+			const state = phaseState(phase, meta.key, options.language, options.live);
+			const roundCount =
+				phase.rounds.length + (state.pulse && !state.repairing ? 1 : 0);
+			return checkMiniChip(label, state, roundCount, options.language, flagged);
+		})
+		.join("");
+}
+
+function phaseShortLabel(key: PhaseMeta["key"], language: Language) {
+	if (language === "en") return key === "acceptance" ? "Accept" : "QA";
+	return key === "acceptance" ? "验收" : "质检";
+}
+
+function checkMiniChip(
+	shortLabel: string,
+	state: PhaseView,
+	roundCount: number,
+	language: Language = "zh",
+	criteriaChanged = false,
+) {
+	const badge =
+		roundCount > 1
+			? `<span class="text-[9px] font-bold tabular-nums ${TONE_TEXT[state.tone]}">${language === "en" ? `×${roundCount}` : `${roundCount}轮`}</span>`
+			: "";
+	const marker = criteriaChanged
+		? `<span class="font-bold text-amber-700">▲</span>`
+		: "";
+	return `<span class="inline-flex items-center gap-1 whitespace-nowrap text-[10px] font-medium leading-none ${MINI_CHIP[state.tone]}"><span class="h-1.5 w-1.5 shrink-0 rounded-full ${MINI_DOT[state.tone]}${state.pulse ? " pulse-soft" : ""}"></span><span>${escapeHtml(shortLabel)}</span>${badge}${marker}</span>`;
 }
 
 const MODEL_TONE: Record<CheckModelStatus, Tone> = {
@@ -155,9 +264,9 @@ const MODEL_TONE: Record<CheckModelStatus, Tone> = {
 	error: "amber",
 };
 const MODEL_ICON: Record<CheckModelStatus, ReturnType<typeof modelIcon>> = {
-	running: modelIcon("clock"),
-	passed: modelIcon("check-circle"),
-	failed: modelIcon("x-circle"),
+	running: reportIcon("loader-circle", "h-3 w-3 spin-soft"),
+	passed: modelIcon("check"),
+	failed: modelIcon("x"),
 	error: modelIcon("warning-circle"),
 };
 const ROUND_TONE: Record<CheckResult, Tone> = {
@@ -173,24 +282,82 @@ const ROUND_ICON: Record<CheckResult, string> = {
 
 function phaseHistory(
 	phase: CheckPhase,
-	keyPrefix: string,
-	language: Language,
+	meta: PhaseMeta,
+	ctx: CheckViewContext,
 ) {
 	if (!phase.enabled || phase.rounds.length === 0) return "";
-	return `<ol class="space-y-2">${phase.rounds.map((round) => roundItem(round, phase.rounds.length, keyPrefix, language)).join("")}</ol>`;
+	return phase.rounds
+		.map((round) => roundItem(round, phase.rounds.length, meta, ctx))
+		.join("");
+}
+
+function activeRoundItem(
+	phase: CheckPhase,
+	meta: PhaseMeta,
+	ctx: CheckViewContext,
+) {
+	if (!phase.enabled || !phase.active || phase.active.length === 0) return "";
+	const round = Math.max(0, ...phase.rounds.map((item) => item.round)) + 1;
+	return reviewRoundItem({
+		round,
+		result: "running",
+		models: phase.active,
+		language: ctx.language,
+		meta,
+	});
 }
 
 function roundItem(
 	round: CheckPhase["rounds"][number],
 	total: number,
-	keyPrefix: string,
+	meta: PhaseMeta,
+	ctx: CheckViewContext,
+) {
+	if (ctx.detail === "full") return fullRoundItem(round, total, ctx.language);
+	return reviewRoundItem({
+		round: round.round,
+		result: round.result,
+		models: roundModels(round, ctx.language),
+		language: ctx.language,
+		meta,
+	});
+}
+
+function fullRoundItem(
+	round: CheckPhase["rounds"][number],
+	total: number,
 	language: Language,
 ) {
 	const tone = ROUND_TONE[round.result];
 	const title = roundHistoryTitle(round, total, language);
-	const summary = clipText(round.summary, 160);
-	const details = roundDetails(round, keyPrefix, language);
-	return `<li class="flex gap-2 text-xs leading-5 text-stone-600"><span data-rough-node data-tone="${tone}" class="mt-0.5 grid h-4 w-4 shrink-0 place-items-center ${TONE_TEXT[tone]}">${ROUND_ICON[round.result]}</span><div class="min-w-0"><span><span class="font-medium ${TONE_TEXT[tone]}">${escapeHtml(title)}</span>${summary ? ` · ${escapeHtml(summary)}` : ""}</span>${details}</div></li>`;
+	const details = round.details?.trim();
+	const detailHtml = details
+		? renderMarkdownBlock(
+				formatReviewResultLines(details).join("\n"),
+				"mt-2 space-y-2 text-xs leading-5 text-stone-600",
+			)
+		: "";
+	return `<li class="flex gap-2 text-xs leading-5 text-stone-600"><span data-rough-node data-tone="${tone}" class="mt-0.5 grid h-4 w-4 shrink-0 place-items-center ${TONE_TEXT[tone]}">${ROUND_ICON[round.result]}</span><div class="min-w-0"><span><span class="font-medium ${TONE_TEXT[tone]}">${escapeHtml(title)}</span>${round.summary ? ` · ${escapeHtml(clipText(round.summary, 160))}` : ""}</span>${detailHtml}</div></li>`;
+}
+
+function reviewRoundItem(input: {
+	round: number;
+	result: CheckResult | "running";
+	models: CheckModelSnapshot[];
+	language: Language;
+	meta: PhaseMeta;
+}) {
+	const tone = input.result === "running" ? "blue" : ROUND_TONE[input.result];
+	const title =
+		input.language === "en"
+			? `Round ${input.round}`
+			: roundLabel(input.round, input.language);
+	const models = input.models
+		.map((model, index) =>
+			reviewModelChip(model, index, input.meta, input.language),
+		)
+		.join("");
+	return `<li class="text-xs leading-5 text-stone-600"><div class="min-w-0 flex flex-wrap items-center gap-1.5"><span class="font-medium ${TONE_TEXT[tone]}">${escapeHtml(title)}</span><span class="text-stone-300">·</span>${models}</div></li>`;
 }
 
 function roundHistoryTitle(
@@ -206,31 +373,49 @@ function roundHistoryTitle(
 	return total > 1 ? `${roundText}${label}` : label;
 }
 
-function roundDetails(
+function roundModels(
 	round: CheckPhase["rounds"][number],
-	keyPrefix: string,
 	language: Language,
-) {
-	const details = round.details?.trim();
-	if (!details) return "";
-	const markdown = formatReviewResultLines(details).join("\n");
-	const key = `${keyPrefix}-round-${round.round}`;
-	return `<details data-key="${escapeHtml(key)}" class="mt-1">${roundDetailsSummary(round.result, language)}${renderMarkdownBlock(clipText(markdown, 2400), "mt-2 space-y-2 text-xs leading-5 text-stone-600")}</details>`;
+): CheckModelSnapshot[] {
+	if (round.models?.length) return round.models;
+	const source = [round.details, round.summary].filter(Boolean).join("\n\n");
+	const sections = modelSections(source, language);
+	if (sections.length > 0)
+		return sections.map((section) => ({
+			label: section.label,
+			status: roundResultModelStatus(round.result),
+			summary: section.body,
+		}));
+	return [
+		{
+			label: resultLabel(round.result, language),
+			status: roundResultModelStatus(round.result),
+			summary: [round.summary, round.details].filter(Boolean).join("\n\n"),
+		},
+	];
 }
 
-function roundDetailsSummary(result: CheckResult, language: Language) {
-	return `<summary class="inline-flex items-center gap-1 rounded-full bg-white/75 px-2.5 py-1 text-[11px] font-medium text-stone-500 shadow-[0_0_0_1px_rgba(41,37,36,0.08),0_6px_14px_rgba(41,37,36,0.05)] transition-[color,background-color,box-shadow,transform] duration-150 hover:bg-stone-50 hover:text-stone-900 hover:shadow-[0_0_0_1px_rgba(41,37,36,0.12),0_8px_18px_rgba(41,37,36,0.08)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200 active:scale-[0.96]">${reportIcon("dots-three", "h-3.5 w-3.5")}<span>${escapeHtml(roundDetailsLabel(result, language))}</span></summary>`;
+function modelSections(text: string, language: Language) {
+	const normalized = text.replace(/^(PASS|FAIL)\s*/iu, "").trim();
+	const pattern =
+		/(?:^|\n)(?:模型|Model)\s+\d+\s+·\s+([^\n]+)\n([\s\S]*?)(?=\n\n(?:模型|Model)\s+\d+\s+·|$)/giu;
+	return [...normalized.matchAll(pattern)]
+		.map((match) => ({
+			label: match[1].trim(),
+			body: cleanModelFeedback(match[2], language),
+		}))
+		.filter((item) => item.label);
 }
 
-function roundDetailsLabel(result: CheckResult, language: Language) {
-	if (language === "en") {
-		if (result === "failed") return "View findings";
-		if (result === "error") return "View error";
-		return "View output";
-	}
-	if (result === "failed") return "查看未通过原因";
-	if (result === "error") return "查看错误信息";
-	return "查看输出";
+function cleanModelFeedback(text: string, language: Language) {
+	const cleaned = formatReviewResultLines(text).join("\n").trim();
+	return cleaned || (language === "en" ? "No detailed output" : "暂无详细输出");
+}
+
+function roundResultModelStatus(result: CheckResult): CheckModelStatus {
+	if (result === "passed") return "passed";
+	if (result === "failed") return "failed";
+	return "error";
 }
 
 function resultLabel(result: CheckResult, language: Language) {
@@ -244,11 +429,39 @@ function resultLabel(result: CheckResult, language: Language) {
 	return "错误";
 }
 
-function modelChip(model: CheckModelSnapshot) {
+function reviewModelChip(
+	model: CheckModelSnapshot,
+	_index: number,
+	_meta: PhaseMeta,
+	language: Language,
+) {
 	const tone = MODEL_TONE[model.status];
-	return `<span data-rough-seal data-tone="${tone}" class="inline-flex items-center gap-1 px-2 py-0.5 font-mono text-[11px] ${TONE_TEXT[tone]}">${MODEL_ICON[model.status]} ${escapeHtml(model.label)}</span>`;
+	const summary = modelTooltip(model, _meta.key, language);
+	return `<span tabindex="0" data-model-chip data-hover-chip data-tooltip="${escapeHtml(summary)}" data-tooltip-side="auto" data-tooltip-size="lg" class="${SOFT_CHIP_BASE} ${SOFT_CHIP_TONE[tone]} gap-1 px-2 py-0.5 text-[11px] font-medium tracking-[-0.01em]"><span>${MODEL_ICON[model.status]}</span><span>${escapeHtml(model.label)}</span></span>`;
 }
 
-function modelIcon(name: Parameters<typeof reportIcon>[0]) {
+function modelTooltip(
+	model: CheckModelSnapshot,
+	key: PhaseMeta["key"],
+	language: Language,
+) {
+	const fallback =
+		model.status === "running"
+			? phaseRunningModelFallback(key, language)
+			: language === "en"
+				? "No detailed output"
+				: "暂无详细输出";
+	return clipText(model.summary?.trim() || fallback, 1400);
+}
+
+function phaseRunningModelFallback(key: PhaseMeta["key"], language: Language) {
+	if (language === "en")
+		return key === "acceptance"
+			? "Accepting, no output yet"
+			: "Checking, no output yet";
+	return key === "acceptance" ? "验收中，暂无输出" : "检查中，暂无输出";
+}
+
+function modelIcon(name: ReportIconName) {
 	return reportIcon(name, "h-3 w-3");
 }

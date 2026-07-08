@@ -38,16 +38,13 @@ function stepRow(
 	const state = stepState(step, index, options.language ?? "zh");
 	const connector = isLast
 		? ""
-		: `<span data-rough-line data-vertical data-tone="${step.done ? "green" : "gray"}" class="absolute bottom-0 left-[13px] top-9 w-1"></span>`;
-	const open = isCurrent && options.expandCurrent;
-	const detail = step.detail
-		? `<details data-key="${options.keyPrefix}-${index}"${open ? " open" : ""} class="mt-1">${stepDetailSummary(options.language ?? "zh")}<p class="mt-1.5 text-sm leading-6 text-stone-600">${inline(step.detail)}</p></details>`
-		: "";
-	return `<li class="relative flex gap-3 ${isLast ? "" : "pb-5"}">
+		: `<span data-rough-line data-vertical data-tone="${step.done ? "green" : "gray"}" class="absolute bottom-0 left-[17px] top-11 w-1"></span>`;
+	const detail = step.detail ? stepDetailText(step.detail) : "";
+	return `<li class="relative flex gap-4 ${isLast ? "" : "pb-6"}">
 ${connector}
-<span data-rough-node data-tone="${state.tone}" class="grid h-7 w-7 shrink-0 place-items-center text-[11px] font-bold ${TONE_TEXT[state.tone]}">${stepGlyph(state.glyph)}</span>
-<div class="min-w-0 flex-1 pt-1">
-<p class="flex flex-wrap items-center gap-2 text-sm font-medium leading-5 ${isCurrent ? "text-stone-900" : "text-stone-700"}"><span>${inline(step.title)}</span>${stateBadge(state.label, state.tone)}</p>
+<span data-rough-node data-tone="${state.tone}" class="grid h-9 w-9 shrink-0 place-items-center text-xs font-bold ${TONE_TEXT[state.tone]}">${stepGlyph(state.glyph)}</span>
+<div class="min-w-0 flex-1 pt-1.5">
+<p class="flex flex-wrap items-center gap-2 text-sm font-semibold leading-5 ${isCurrent ? "text-stone-900" : "text-stone-700"}"><span>${inline(step.title)}</span>${stateBadge(state.label, state.tone)}</p>
 ${detail}
 </div>
 </li>`;
@@ -65,18 +62,17 @@ function stepState(step: PlanStep, index: number, language: Language) {
 }
 
 function stepGlyph(glyph: string) {
-	if (glyph === "✓") return reportIcon("check", "h-4 w-4");
-	if (glyph === "…") return reportIcon("clock", "h-4 w-4");
-	if (glyph === "!") return reportIcon("warning-circle", "h-4 w-4");
+	if (glyph === "✓") return reportIcon("check", "h-5 w-5");
+	if (glyph === "…") return reportIcon("rotate-3d", "h-5 w-5 rotate-3d-soft");
+	if (glyph === "!") return reportIcon("warning-circle", "h-5 w-5");
 	return glyph;
 }
 
 function stateBadge(label: string, tone: Tone) {
-	if (tone === "green") return "";
+	if (tone === "green" || tone === "gray") return "";
 	return `<span class="text-[11px] font-medium ${TONE_TEXT[tone]}">${label}</span>`;
 }
 
-function stepDetailSummary(language: Language) {
-	const label = language === "en" ? "Notes" : "说明";
-	return `<summary class="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-xs font-medium text-stone-500 transition-[color,background-color,transform] duration-150 hover:bg-stone-50 hover:text-stone-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200 active:scale-[0.96]">${reportIcon("list-checks", "h-3.5 w-3.5")}<span>${label}</span></summary>`;
+function stepDetailText(detail: string) {
+	return `<p class="mt-1 max-w-[46ch] text-xs leading-5 text-stone-500">${inline(detail)}</p>`;
 }

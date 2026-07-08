@@ -36,7 +36,11 @@ export interface UiCopy {
 	qualityCheckHint: string;
 	disabled: string;
 	checking: string;
+	repairing: string;
 	waiting: string;
+	draftStatus: string;
+	aligningStatus: string;
+	generatingStatus: string;
 	passed: string;
 	failed: string;
 	error: string;
@@ -89,7 +93,11 @@ const ZH: UiCopy = {
 	qualityCheckHint: "把关实现质量",
 	disabled: "未启用",
 	checking: "检查中",
+	repairing: "修复中",
 	waiting: "等待",
+	draftStatus: "待启动",
+	aligningStatus: "对齐中",
+	generatingStatus: "生成中",
 	passed: "已通过",
 	failed: "未通过",
 	error: "错误",
@@ -138,7 +146,11 @@ const EN: UiCopy = {
 	qualityCheckHint: "Review implementation quality",
 	disabled: "Disabled",
 	checking: "Checking",
+	repairing: "Fixing",
 	waiting: "Waiting",
+	draftStatus: "Ready to start",
+	aligningStatus: "Aligning",
+	generatingStatus: "Generating",
 	passed: "Passed",
 	failed: "Failed",
 	error: "Error",
