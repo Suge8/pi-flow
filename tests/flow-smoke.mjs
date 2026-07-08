@@ -205,11 +205,23 @@ try {
 }
 
 async function runScenario(fn, name = fn.name) {
+	let timeout;
 	try {
-		await fn();
+		await Promise.race([
+			fn(),
+			new Promise((_, reject) => {
+				timeout = setTimeout(
+					() => reject(new Error(`scenario timed out: ${name}`)),
+					20_000,
+				);
+				timeout.unref?.();
+			}),
+		]);
 	} catch (error) {
 		console.error(`flow smoke failed in ${name}`);
 		throw error;
+	} finally {
+		clearTimeout(timeout);
 	}
 }
 
