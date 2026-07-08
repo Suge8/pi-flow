@@ -6969,8 +6969,8 @@ function waitForFile(path) {
 }
 
 async function waitForCondition(predicate, message) {
-	const deadline = Date.now() + 1000;
-	while (Date.now() < deadline) {
+	const startedAt = performance.now();
+	while (performance.now() - startedAt < 1000) {
 		if (predicate()) return;
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
