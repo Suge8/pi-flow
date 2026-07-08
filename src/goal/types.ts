@@ -26,6 +26,7 @@ export interface CheckRound {
 	result: CheckResult;
 	summary: string;
 	details?: string;
+	models?: CheckModelSnapshot[];
 }
 
 export interface CheckPhase {

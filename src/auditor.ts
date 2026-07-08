@@ -42,6 +42,11 @@ export interface GoalAuditResult {
 	raw: string;
 	systemError?: boolean;
 	infraFeedback?: string;
+	models?: {
+		label: string;
+		status: "passed" | "failed" | "error";
+		summary?: string;
+	}[];
 }
 
 type GoalAuditModelResult = ReviewerResult<GoalAuditResult>;
@@ -78,7 +83,10 @@ export async function auditGoalCompletion(
 		summaryOf: auditSummary,
 		onUpdate: onProgress,
 	});
-	return aggregateAuditResults(results, goal.language);
+	return withAuditModels(
+		aggregateAuditResults(results, goal.language),
+		results,
+	);
 }
 
 async function runSingleAudit(
@@ -243,6 +251,22 @@ function auditSection(
 ) {
 	const label = language === "en" ? "Model" : "模型";
 	return `${label} ${item.index + 1} · ${item.label}\n${text.trim()}`;
+}
+
+function withAuditModels(
+	result: GoalAuditResult,
+	models: GoalAuditModelResult[],
+): GoalAuditResult {
+	return {
+		...result,
+		models: models.map((model) => ({
+			label: model.label,
+			status: auditStatus(model.result) as "passed" | "failed" | "error",
+			...(auditSummary(model.result)
+				? { summary: auditSummary(model.result) }
+				: {}),
+		})),
+	};
 }
 
 function auditStatus(result: GoalAuditResult): ReviewerStatus {

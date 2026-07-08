@@ -242,6 +242,7 @@ function checkRound(entry: ReviewHistoryEntry): CheckRound {
 		result: entry.result,
 		summary: entry.summary,
 		...(entry.details ? { details: entry.details } : {}),
+		...(entry.models ? { models: entry.models } : {}),
 	};
 }
 

@@ -5,4 +5,9 @@ export interface ReviewHistoryEntry {
 	result: ReviewHistoryResult;
 	summary: string;
 	details?: string;
+	models?: {
+		label: string;
+		status: ReviewHistoryResult;
+		summary?: string;
+	}[];
 }

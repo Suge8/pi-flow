@@ -96,6 +96,7 @@ export function recordGoalReview(
 				...(!audit.complete || audit.systemError
 					? { details: audit.raw.trim() }
 					: {}),
+				...(audit.models ? { models: audit.models } : {}),
 			},
 		],
 	};
@@ -632,6 +633,7 @@ function reviewRound(entry: ReviewHistoryEntry) {
 		result: entry.result,
 		summary: entry.summary,
 		...(entry.details ? { details: entry.details } : {}),
+		...(entry.models ? { models: entry.models } : {}),
 	};
 }
 

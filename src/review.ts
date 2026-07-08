@@ -814,6 +814,11 @@ function recordReviewHistory(
 	details?: string,
 ) {
 	const trimmedDetails = details?.trim();
+	const models = loop.reviewerProgress.map((model) => ({
+		label: model.label,
+		status: reviewHistoryModelStatus(model.status),
+		...(model.summary ? { summary: model.summary } : {}),
+	}));
 	loop.history = [
 		...loop.history.filter((item) => item.round !== loop.round),
 		{
@@ -821,9 +826,18 @@ function recordReviewHistory(
 			result,
 			summary: singleLineSummary(summary),
 			...(trimmedDetails ? { details: trimmedDetails } : {}),
+			...(models.length > 0 ? { models } : {}),
 		},
 	];
 	loop.options.onProgress?.([...loop.reviewerProgress], [...loop.history]);
+}
+
+function reviewHistoryModelStatus(
+	status: ReviewerStatus,
+): ReviewHistoryEntry["result"] {
+	if (status === "passed") return "passed";
+	if (status === "failed") return "failed";
+	return "error";
 }
 
 export type { ReviewLoopStats } from "./review/types.js";

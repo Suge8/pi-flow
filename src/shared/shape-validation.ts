@@ -143,6 +143,12 @@ function validateCheckRound(round: unknown, path: string, errors: string[]) {
 		errors.push(`${path}.summary 必须是字符串`);
 	if (round.details !== undefined && typeof round.details !== "string")
 		errors.push(`${path}.details 必须是字符串`);
+	if (round.models !== undefined) {
+		if (!Array.isArray(round.models)) errors.push(`${path}.models 必须是数组`);
+		else
+			for (const [index, model] of round.models.entries())
+				validateModel(model, `${path}.models[${index}]`, errors);
+	}
 }
 
 function validateModel(model: unknown, path: string, errors: string[]) {
