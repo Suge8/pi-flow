@@ -274,5 +274,5 @@ function notifyError(error: unknown): string {
 }
 
 function truncateNotification(value: string): string {
-	return value.length > 160 ? `${value.slice(0, 157)}...` : value;
+	return value.length > 160 ? `${value.slice(0, 157)}…` : value;
 }

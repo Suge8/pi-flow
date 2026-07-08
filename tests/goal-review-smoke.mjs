@@ -227,7 +227,12 @@ async function goalArtifactSaveFailureNoticeFormatScenario() {
 		id: "goal-artifact-save-failure",
 		language: "zh",
 		status: "active",
-		artifactDir: join(out, "missing-goal-artifact"),
+		artifactDir: join(
+			out,
+			"missing-goal-artifact",
+			"intentionally-long-path-to-trigger-notification-truncation",
+			"with-enough-segments-to-match-ci-runner-path-length",
+		),
 		stateReviewHistory: [],
 		qualityReviewHistory: [],
 	};
@@ -236,6 +241,8 @@ async function goalArtifactSaveFailureNoticeFormatScenario() {
 		item.includes("目标状态保存失败"),
 	);
 	assertNoticeFormat(notice, "❌", "missing-goal-artifact");
+	assert(notice.includes("…"), `notice was not truncated: ${notice}`);
+	assert(!notice.includes("..."), notice);
 }
 
 async function flowAcceptanceSystemErrorNoticeFormatScenario() {

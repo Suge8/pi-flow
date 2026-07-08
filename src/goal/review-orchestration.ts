@@ -724,7 +724,7 @@ function goalReviewSyncFailedNotice(error: string, language: "zh" | "en") {
 
 function formatNotifyError(error: unknown): string {
 	const value = error instanceof Error ? error.message : String(error);
-	return value.length > 160 ? `${value.slice(0, 157)}...` : value;
+	return value.length > 160 ? `${value.slice(0, 157)}…` : value;
 }
 
 function nextCompletionAuditGeneration(state: GoalRuntimeState): number {

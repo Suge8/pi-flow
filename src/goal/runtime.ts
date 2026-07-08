@@ -2652,7 +2652,7 @@ function notifyError(error: unknown) {
 }
 
 function truncateNotification(value: string) {
-	return value.length > 160 ? `${value.slice(0, 157)}...` : value;
+	return value.length > 160 ? `${value.slice(0, 157)}…` : value;
 }
 
 function currentTokenTotal(ctx: StatusContext): number {
