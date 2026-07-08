@@ -7614,20 +7614,25 @@ const args = process.argv.slice(2);
 const env = Object.fromEntries(
 	Object.entries(process.env).filter(([key]) => key.startsWith("PI_FLOW_WORKER_")),
 );
+const releasePath = join(process.cwd(), "release-worker-spawn");
+let releaseWatcher;
+const release = new Promise((resolve) => {
+	const finish = () => {
+		releaseWatcher?.close();
+		resolve();
+	};
+	releaseWatcher = watch(process.cwd(), (_event, name) => {
+		if (name !== null && String(name) !== "release-worker-spawn") return;
+		if (!existsSync(releasePath)) return;
+		finish();
+	});
+	if (existsSync(releasePath)) finish();
+});
 writeFileSync(
 	join(process.cwd(), "worker-spawn-args.json"),
 	JSON.stringify({ args, command: process.argv[1], env }, null, 2),
 );
-await new Promise((resolve) => {
-	const releasePath = join(process.cwd(), "release-worker-spawn");
-	if (existsSync(releasePath)) return resolve();
-	const watcher = watch(process.cwd(), (_event, name) => {
-		if (name !== null && String(name) !== "release-worker-spawn") return;
-		if (!existsSync(releasePath)) return;
-		watcher.close();
-		resolve();
-	});
-});
+await release;
 console.log(JSON.stringify({ type: "agent_start" }));
 `,
 	);
@@ -7644,7 +7649,7 @@ function installFakePi(cwd) {
 	);
 	writeFileSync(
 		join(bin, "pi.mjs"),
-		`import { appendFileSync, existsSync, mkdirSync, watch, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nconst args = process.argv.slice(2);\nconst session = args[args.indexOf("--session") + 1];\nconst flowId = process.env.PI_FLOW_WORKER_FLOW_ID ?? "";\nconst goalIndex = process.env.PI_FLOW_WORKER_GOAL_INDEX ?? "0";\nconst parallelRunId = () => process.env.PI_FLOW_WORKER_PARALLEL_RUN_ID;\nappendFileSync(join(process.cwd(), "worker-runs.log"), goalIndex + "\\n");\nconst marker = (suffix) => join(process.cwd(), \`worker-\${goalIndex}.\${suffix}\`);\nconst waitForRelease = () => new Promise((resolve) => {\n\tconst releasePath = join(process.cwd(), "release-workers");\n\tif (existsSync(releasePath)) return resolve();\n\tconst watcher = watch(process.cwd(), (_event, name) => {\n\t\tif (name !== null && String(name) !== "release-workers") return;\n\t\tif (!existsSync(releasePath)) return;\n\t\twatcher.close();\n\t\tresolve();\n\t});\n});\nconsole.log(JSON.stringify({ type: "agent_start", goalIndex: Number(goalIndex) }));\nif (process.env.PI_FLOW_FAKE_HANG === "1") {\n\twriteFileSync(marker("started"), "");\n\tconst exit = () => {\n\t\twriteFileSync(marker("killed"), "");\n\t\tprocess.exit(0);\n\t};\n\tprocess.on("SIGTERM", exit);\n\tprocess.on("SIGINT", exit);\n\tsetInterval(() => undefined, 1000);\n} else if (process.env.PI_FLOW_FAKE_FAIL_INDEX === goalIndex) {\n\tconsole.error("fake worker failed " + goalIndex);\n\tprocess.exit(1);\n} else {\n\tconsole.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-" + goalIndex, toolName: "bash", result: "ok", isError: false }));\n\twriteFileSync(marker("started"), "");\n\tif (process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE === "1") {\n\t\tawait waitForRelease();\n\t}\n\tconst workerDir = dirname(session);\n\tmkdirSync(workerDir, { recursive: true });\n\twriteFileSync(join(workerDir, "result.json"), JSON.stringify({ goalId: \`worker-\${goalIndex}\`, summary: \`done \${goalIndex}\`, acceptance: "passed", sessionFile: session, parallelRunId: parallelRunId() }, null, 2));\n\tconsole.log(JSON.stringify({ type: "agent_end", messages: [] }));\n}\n`,
+		`import { appendFileSync, existsSync, mkdirSync, watch, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nconst args = process.argv.slice(2);\nconst session = args[args.indexOf("--session") + 1];\nconst flowId = process.env.PI_FLOW_WORKER_FLOW_ID ?? "";\nconst goalIndex = process.env.PI_FLOW_WORKER_GOAL_INDEX ?? "0";\nconst parallelRunId = () => process.env.PI_FLOW_WORKER_PARALLEL_RUN_ID;\nappendFileSync(join(process.cwd(), "worker-runs.log"), goalIndex + "\\n");\nconst marker = (suffix) => join(process.cwd(), \`worker-\${goalIndex}.\${suffix}\`);\nconst waitForRelease = () => new Promise((resolve) => {\n\tconst releasePath = join(process.cwd(), "release-workers");\n\tlet watcher;\n\tconst finish = () => {\n\t\twatcher?.close();\n\t\tresolve();\n\t};\n\twatcher = watch(process.cwd(), (_event, name) => {\n\t\tif (name !== null && String(name) !== "release-workers") return;\n\t\tif (!existsSync(releasePath)) return;\n\t\tfinish();\n\t});\n\tif (existsSync(releasePath)) finish();\n});\nconsole.log(JSON.stringify({ type: "agent_start", goalIndex: Number(goalIndex) }));\nif (process.env.PI_FLOW_FAKE_HANG === "1") {\n\twriteFileSync(marker("started"), "");\n\tconst exit = () => {\n\t\twriteFileSync(marker("killed"), "");\n\t\tprocess.exit(0);\n\t};\n\tprocess.on("SIGTERM", exit);\n\tprocess.on("SIGINT", exit);\n\tsetInterval(() => undefined, 1000);\n} else if (process.env.PI_FLOW_FAKE_FAIL_INDEX === goalIndex) {\n\tconsole.error("fake worker failed " + goalIndex);\n\tprocess.exit(1);\n} else {\n\tconsole.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-" + goalIndex, toolName: "bash", result: "ok", isError: false }));\n\twriteFileSync(marker("started"), "");\n\tif (process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE === "1") {\n\t\tawait waitForRelease();\n\t}\n\tconst workerDir = dirname(session);\n\tmkdirSync(workerDir, { recursive: true });\n\twriteFileSync(join(workerDir, "result.json"), JSON.stringify({ goalId: \`worker-\${goalIndex}\`, summary: \`done \${goalIndex}\`, acceptance: "passed", sessionFile: session, parallelRunId: parallelRunId() }, null, 2));\n\tconsole.log(JSON.stringify({ type: "agent_end", messages: [] }));\n}\n`,
 	);
 	chmodSync(join(bin, "pi"), 0o755);
 	const previousPath = process.env.PATH;
