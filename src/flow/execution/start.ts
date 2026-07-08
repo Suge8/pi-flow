@@ -43,7 +43,7 @@ export async function startGoalInNewSession(
 	const batch = computeReadyBatch(current);
 	if (!batch) return false;
 	if (batch.mode === "parallel")
-		return startParallelBatch(pi, ctx, dir, current, batch.indices);
+		return startParallelBatchInNewSession(pi, ctx, dir, current, batch.indices);
 	return startSelectedGoalInNewSession(
 		pi,
 		ctx,
@@ -150,7 +150,55 @@ async function startSelectedGoalWithLock(
 	}
 }
 
-async function startParallelBatch(
+async function startParallelBatchInNewSession(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	dir: string,
+	flow: FlowState,
+	batchIndices: number[],
+): Promise<boolean> {
+	if (typeof ctx.newSession !== "function") {
+		notifyUser(
+			ctx,
+			newSessionUnsupportedMessage(flow.language),
+			"info",
+			flow.language,
+		);
+		return false;
+	}
+	let started = false;
+	let replacementCtx: ExtensionCommandContext | undefined;
+	try {
+		const result = await ctx.newSession({
+			parentSession: currentSessionFile(ctx),
+			withSession: async (sessionCtx) => {
+				replacementCtx = sessionCtx;
+				rememberFlowContext(sessionCtx);
+				setParallelSessionName(sessionCtx, flow, batchIndices);
+				started = await runParallelBatchAndContinue(
+					pi,
+					sessionCtx,
+					dir,
+					flow,
+					batchIndices,
+				);
+			},
+		});
+		return started && !result.cancelled;
+	} catch (error) {
+		const message = flowStepSessionStartFailedMessage(
+			formatError(error),
+			flow.language,
+		);
+		const notified = replacementCtx
+			? notifySessionStartFailed(replacementCtx, message, flow.language)
+			: notifySessionStartFailed(ctx, message, flow.language);
+		if (!notified) throw new Error(message);
+		return false;
+	}
+}
+
+async function runParallelBatchAndContinue(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	dir: string,
@@ -469,6 +517,16 @@ function flowStepSessionStartFailedMessage(
 
 function setSessionName(ctx: ExtensionCommandContext, name: string) {
 	appendSessionName(ctx, name);
+}
+
+function setParallelSessionName(
+	ctx: ExtensionCommandContext,
+	flow: FlowState,
+	batchIndices: number[],
+) {
+	const labels = batchIndices.map((index) => `G${index + 1}`).join("+");
+	const suffix = flow.language === "en" ? "parallel batch" : "并行批次";
+	appendSessionName(ctx, `${flow.id}-${labels} ${suffix}`);
 }
 
 function appendSessionName(ctx: ExtensionCommandContext, name: string) {

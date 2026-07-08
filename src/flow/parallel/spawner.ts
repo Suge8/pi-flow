@@ -9,6 +9,7 @@ import { flowMainExtensionArgs } from "../../shared/child-extensions.js";
 import { readFlowConfig } from "../../shared/config.js";
 import { formatError } from "../../shared/guards.js";
 import {
+	PRIVATE_WORKER_ENV,
 	type PrivateWorkerJob,
 	privateWorkerEnv,
 	privateWorkerMessage,
@@ -22,6 +23,7 @@ export interface WorkerSpawnOptions {
 	flowDir: string;
 	parallelRunId: string;
 	cwd: string;
+	initialPrompt: string;
 	signal?: AbortSignal;
 }
 
@@ -29,7 +31,11 @@ export interface WorkerHandle {
 	goalIndex: number;
 	onEvent(cb: (event: unknown) => void): () => void;
 	onExit(
-		cb: (code: number | null, signal: NodeJS.Signals | null) => void,
+		cb: (
+			code: number | null,
+			signal: NodeJS.Signals | null,
+			stderr: string | null,
+		) => void,
 	): () => void;
 	kill(): void;
 }
@@ -48,14 +54,23 @@ export function spawnWorker(options: WorkerSpawnOptions): WorkerHandle {
 	};
 	const events = new Set<(event: unknown) => void>();
 	const exits = new Set<
-		(code: number | null, signal: NodeJS.Signals | null) => void
+		(
+			code: number | null,
+			signal: NodeJS.Signals | null,
+			stderr: string | null,
+		) => void
 	>();
 	let child: WorkerProcess | undefined;
 	let stdout = "";
+	let stderr = "";
 	let killed = false;
 	let exited = false;
 	let exitState:
-		| { code: number | null; signal: NodeJS.Signals | null }
+		| {
+				code: number | null;
+				signal: NodeJS.Signals | null;
+				stderr: string | null;
+		  }
 		| undefined;
 	let forceKill: NodeJS.Timeout | undefined;
 	const emitEvent = (event: unknown) => {
@@ -83,19 +98,27 @@ export function spawnWorker(options: WorkerSpawnOptions): WorkerHandle {
 		}
 	};
 	const control = startWorkerControl(job, (error) => {
-		emitEvent({ type: "process_error", error: formatError(error) });
-		finishExit(null, null);
+		const message = formatError(error);
+		emitEvent({ type: "process_error", error: message });
+		finishExit(null, null, message);
 	});
-	const finishExit = (code: number | null, signal: NodeJS.Signals | null) => {
+	const finishExit = (
+		code: number | null,
+		signal: NodeJS.Signals | null,
+		error?: string,
+	) => {
 		if (exited) return;
 		exited = true;
-		exitState = { code, signal };
+		const stderrTail = trimErrorTail(
+			[stderr, error].filter(Boolean).join("\n"),
+		);
+		exitState = { code, signal, stderr: stderrTail || null };
 		parseLine(stdout);
 		stdout = "";
 		control.close();
 		if (forceKill) clearTimeout(forceKill);
 		options.signal?.removeEventListener("abort", abort);
-		for (const cb of exits) cb(code, signal);
+		for (const cb of exits) cb(code, signal, exitState.stderr);
 	};
 	const kill = () => {
 		if (killed) return;
@@ -117,21 +140,30 @@ export function spawnWorker(options: WorkerSpawnOptions): WorkerHandle {
 				...flowMainExtensionArgs(runner.extensions),
 				"--session",
 				sessionPath,
+				"-p",
+				options.initialPrompt,
 			],
 			{
 				cwd: options.cwd,
 				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env, ...control.env },
+				env: {
+					...process.env,
+					...control.env,
+					[PRIVATE_WORKER_ENV.initialPrompt]: "1",
+				},
 			},
 		);
 		child.stdout.on("data", (chunk) => {
 			stdout += chunk.toString();
 			flushLines();
 		});
-		child.stderr.on("data", () => undefined);
+		child.stderr.on("data", (chunk) => {
+			stderr = trimErrorTail(stderr + chunk.toString());
+		});
 		child.on("error", (error) => {
-			emitEvent({ type: "process_error", error: formatError(error) });
-			finishExit(null, null);
+			const message = formatError(error);
+			emitEvent({ type: "process_error", error: message });
+			finishExit(null, null, message);
 		});
 		child.on("close", finishExit);
 	};
@@ -147,7 +179,7 @@ export function spawnWorker(options: WorkerSpawnOptions): WorkerHandle {
 			return () => events.delete(cb);
 		},
 		onExit(cb) {
-			if (exitState) cb(exitState.code, exitState.signal);
+			if (exitState) cb(exitState.code, exitState.signal, exitState.stderr);
 			else exits.add(cb);
 			return () => exits.delete(cb);
 		},
@@ -216,4 +248,10 @@ function workerSocketPath(goalIndex: number) {
 
 function removeSocketFile(path: string) {
 	if (process.platform !== "win32") rmSync(path, { force: true });
+}
+
+function trimErrorTail(message: string) {
+	const max = 4000;
+	const trimmed = message.trim();
+	return trimmed.length > max ? trimmed.slice(trimmed.length - max) : trimmed;
 }

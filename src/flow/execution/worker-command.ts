@@ -29,6 +29,7 @@ import { flowSessionName } from "../util.js";
 import { validateFlowDir } from "../validator.js";
 import { flowStatusLabel } from "./shared.js";
 import {
+	PRIVATE_WORKER_ENV,
 	type PrivateWorkerControl,
 	type PrivateWorkerJob,
 	privateWorkerControlFromEnv,
@@ -175,8 +176,8 @@ async function startWorkerGoal(
 	}
 	const resultPath = join(workerDir, "result.json");
 	const planPath = join(workerDir, "plan.md");
-	const markdown = readFileSync(join(flowDir, goal.file), "utf8");
-	writeFileSync(planPath, markdown);
+	const input = workerGoalInput(flowDir, flow, goalIndex);
+	writeFileSync(planPath, input.markdown);
 	rmSync(resultPath, { force: true });
 	const sessionName = flowSessionName(flow, goal);
 	setSessionName(pi, ctx, sessionName);
@@ -188,20 +189,13 @@ async function startWorkerGoal(
 			privateJob?.parallelRunId ?? workerParallelRunId(flow, goalIndex),
 		finishPrivateWorker,
 	});
-	const promptGoal = { ...goal, file: `workers/${workerId}/plan.md` };
 	const started = await startGoalFromFlow(
-		{
-			objective: objectiveFromPlan(markdown) || goal.title,
-			prompt: planGoalPrompt(
-				workerPromptFlow(flow, promptGoal),
-				promptGoal,
-				markdown,
-			),
-		},
+		{ objective: input.objective, prompt: input.prompt },
 		ctx,
 		{
 			artifact: { artifactDir: workerDir, artifactId: workerId },
 			rememberFlowContext: false,
+			sendPrompt: !workerUsesInitialPrompt(),
 		},
 	);
 	if (!started) clearWorkerJob(ctx);
@@ -227,6 +221,27 @@ function writeWorkerGoalArtifact(
 	});
 }
 
+export function workerGoalInput(
+	flowDir: string,
+	flow: FlowState,
+	goalIndex: number,
+) {
+	const goal = flow.goals[goalIndex];
+	if (!goal) throw new Error(`Worker goal not found: G${goalIndex}`);
+	const workerId = `G${goalIndex}`;
+	const markdown = readFileSync(join(flowDir, goal.file), "utf8");
+	const promptGoal = { ...goal, file: `workers/${workerId}/plan.md` };
+	return {
+		markdown,
+		objective: objectiveFromPlan(markdown) || goal.title,
+		prompt: planGoalPrompt(
+			workerPromptFlow(flow, promptGoal),
+			promptGoal,
+			markdown,
+		),
+	};
+}
+
 function workerPromptFlow(flow: FlowState, promptGoal: FlowGoal) {
 	return {
 		...flow,
@@ -234,6 +249,10 @@ function workerPromptFlow(flow: FlowState, promptGoal: FlowGoal) {
 			item.index === promptGoal.index ? promptGoal : item,
 		),
 	};
+}
+
+function workerUsesInitialPrompt() {
+	return process.env[PRIVATE_WORKER_ENV.initialPrompt] === "1";
 }
 
 function workerParallelRunId(flow: FlowState, goalIndex: number) {

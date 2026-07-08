@@ -11,6 +11,7 @@ import {
 import { sendResultCard } from "../../shared/result-card.js";
 import { notifyUser } from "../../shared/ui-language.js";
 import { flowValidationFailedNotice } from "../execution/shared.js";
+import { workerGoalInput } from "../execution/worker-command.js";
 import { writeFlowHtml } from "../html.js";
 import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { computeReadyBatch } from "../scheduler.js";
@@ -319,6 +320,7 @@ function collectWorkerResults(
 		goalIndex: number,
 		exitCode: number | null,
 		exitSignal: NodeJS.Signals | null,
+		stderr: string | null,
 	) => void,
 ) {
 	return new Promise<Omit<BatchResult, "flow">>((resolve) => {
@@ -361,18 +363,20 @@ function collectWorkerResults(
 				flowDir: dir,
 				parallelRunId,
 				cwd: ctx.cwd,
+				initialPrompt: workerGoalInput(dir, flow, goalIndex).prompt,
 				signal,
 			});
 			cleanups.push(
 				handle.onEvent((event) => onWorkerEvent?.(goalIndex, event)),
 			);
 			cleanups.push(
-				handle.onExit((exitCode, exitSignal) => {
-					onWorkerExit(goalIndex, exitCode, exitSignal);
+				handle.onExit((exitCode, exitSignal, stderr) => {
+					onWorkerExit(goalIndex, exitCode, exitSignal, stderr);
 					const state = states.get(goalIndex);
 					if (!state) return;
 					state.exitCode = exitCode;
 					state.exitSignal = exitSignal;
+					state.stderr = stderr;
 					state.exited = true;
 					finishIfDone();
 				}),
@@ -461,6 +465,7 @@ function workerState(goalIndex: number): WorkerState {
 		fact: null,
 		exitCode: null,
 		exitSignal: null,
+		stderr: null,
 		exited: false,
 	};
 }

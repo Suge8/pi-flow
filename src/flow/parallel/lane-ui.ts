@@ -59,7 +59,9 @@ export function showParallelLaneBoard(
 		elapsed: 0,
 	}));
 	const laneByIndex = new Map(lanes.map((lane) => [lane.goalIndex, lane]));
+	let disposed = false;
 	const mount = () => {
+		if (disposed) return;
 		ctx.ui.setWidget(
 			LANE_WIDGET_KEY,
 			(tui, theme) =>
@@ -72,6 +74,8 @@ export function showParallelLaneBoard(
 		for (const lane of lanes) lane.elapsed = elapsed;
 		mount();
 	};
+	const timer = setInterval(refresh, 1000);
+	timer.unref?.();
 
 	ctx.ui.setWorkingVisible(false);
 	mount();
@@ -81,7 +85,14 @@ export function showParallelLaneBoard(
 			const lane = laneByIndex.get(goalIndex);
 			const record = eventRecord(event);
 			if (!lane || !record) return;
-			if (record.type === "tool_execution_end") {
+			if (record.type === "agent_start" || record.type === "message_start") {
+				refresh();
+				return;
+			}
+			if (
+				record.type === "tool_execution_start" ||
+				record.type === "tool_execution_end"
+			) {
 				lane.lastToolCall = [
 					...(lane.lastToolCall ?? []),
 					toolCallLabel(record),
@@ -123,6 +134,8 @@ export function showParallelLaneBoard(
 			refresh();
 		},
 		dispose() {
+			disposed = true;
+			clearInterval(timer);
 			ctx.ui.setWidget(LANE_WIDGET_KEY, undefined);
 			ctx.ui.setWorkingVisible(true);
 		},
@@ -182,6 +195,7 @@ function eventRecord(event: unknown) {
 
 function toolCallLabel(event: Record<string, unknown>) {
 	const name = typeof event.toolName === "string" ? event.toolName : "tool";
+	if (event.type === "tool_execution_start") return `${name}…`;
 	return event.isError === true ? `${name} ✗` : name;
 }
 

@@ -12,6 +12,7 @@ export interface ParallelWorkerResult {
 	fact: GoalCompletionFact | null;
 	exitCode: number | null;
 	exitSignal: NodeJS.Signals | null;
+	stderr: string | null;
 }
 
 export interface ParallelFanInResult {
@@ -189,7 +190,8 @@ function workerFailureLine(flow: FlowState, result: ParallelWorkerResult) {
 	const parts = [
 		workerExitSummary(result, flow.language),
 		workerResultSummary(result, flow.language),
-	];
+		workerStderrSummary(result, flow.language),
+	].filter(Boolean);
 	return flow.language === "en"
 		? `${label}: ${parts.join("; ")}`
 		: `${label}：${parts.join("；")}`;
@@ -237,12 +239,26 @@ function workerResultSummary(
 	return language === "en" ? "missing result.json" : "缺少 result.json";
 }
 
+function workerStderrSummary(
+	result: ParallelWorkerResult,
+	language: FlowState["language"],
+) {
+	if (!result.stderr) return undefined;
+	const stderr = truncateWorkerStderr(result.stderr);
+	return language === "en" ? `stderr: ${stderr}` : `stderr：${stderr}`;
+}
+
+function truncateWorkerStderr(message: string) {
+	return message.length > 500 ? `${message.slice(0, 500)}…` : message;
+}
+
 function emptyResult(goalIndex: number): ParallelWorkerResult {
 	return {
 		goalIndex,
 		fact: null,
 		exitCode: null,
 		exitSignal: null,
+		stderr: null,
 	};
 }
 

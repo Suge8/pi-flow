@@ -178,6 +178,7 @@ export type FlowGoalContinueResult =
 interface FlowGoalStartOptions {
 	artifact?: { artifactDir: string; artifactId: string };
 	rememberFlowContext?: boolean;
+	sendPrompt?: boolean;
 }
 
 export { yieldForGoalReviewCard };
@@ -530,10 +531,12 @@ export async function startGoalFromFlow(
 	}
 	persistGoal(goal, ctx);
 	updateStatus(ctx, goal);
-	const started = await sendRuntimePrompt(pi, ctx, prompt, { language });
-	if (!started) {
-		clearActiveGoal(ctx);
-		return false;
+	if (options.sendPrompt !== false) {
+		const started = await sendRuntimePrompt(pi, ctx, prompt, { language });
+		if (!started) {
+			clearActiveGoal(ctx);
+			return false;
+		}
 	}
 	if (options.rememberFlowContext !== false) rememberFlowContext(ctx);
 	return true;

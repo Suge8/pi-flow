@@ -4,6 +4,7 @@ export const PRIVATE_WORKER_ENV = {
 	goalIndex: "PI_FLOW_WORKER_GOAL_INDEX",
 	parallelRunId: "PI_FLOW_WORKER_PARALLEL_RUN_ID",
 	sessionPath: "PI_FLOW_WORKER_SESSION_PATH",
+	initialPrompt: "PI_FLOW_WORKER_INITIAL_PROMPT",
 	socketPath: "PI_FLOW_WORKER_SOCKET_PATH",
 	token: "PI_FLOW_WORKER_TOKEN",
 } as const;
