@@ -313,7 +313,7 @@ try {
 	const html = flowHtml.renderFlowHtml(flowDir, flow);
 	assert(html.includes('<html lang="en">'), "English Flow HTML lang missing");
 	assert(
-		html.includes("1 steps, waiting to start"),
+		html.includes(">Flow</span>") && html.includes("/flow go F1"),
 		"English Flow HTML chrome missing",
 	);
 	assert(
@@ -512,9 +512,10 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 		2,
 	);
 	assert(
-		zhAskQ1.phase === "对齐中" &&
-			zhAskQ1.rows === "等待 AI 提出 Q1" &&
-			zhAskQ2.rows === "等待 AI 提出 Q2",
+		zhAskQ1.phase === "Q1" &&
+			zhAskQ1.rows === "思考中" &&
+			zhAskQ2.phase === "Q2" &&
+			zhAskQ2.rows === "思考中",
 		"Chinese Q1/Q2 ask copy missing",
 	);
 	const zhWaitingQ2 = generationAlignment.generationAlignmentActivityCopy(
@@ -523,7 +524,8 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 		2,
 	);
 	assert(
-		zhWaitingQ2.phase === "等待回复" && zhWaitingQ2.rows === "回答 Q2 继续对齐",
+		zhWaitingQ2.phase === "Q2" &&
+			zhWaitingQ2.rows === "回复对齐需求 ｜「/flow go」 直接生成计划",
 		"Chinese waiting-reply copy missing",
 	);
 	const zhFinal = generationAlignment.generationAlignmentActivityCopy(
@@ -533,10 +535,8 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 		"/flow go F1",
 	);
 	assert(
-		zhFinal.phase === "等待确认" &&
-			zhFinal.rows[0] === "对齐已就绪" &&
-			zhFinal.rows[1] === "运行 /flow go F1 生成计划" &&
-			zhFinal.rows[2] === "继续输入则补充对齐",
+		zhFinal.phase === "已对齐" &&
+			zhFinal.rows === "「/flow go」生成计划 ｜继续回复则补充信息",
 		"Chinese ready-confirmation rows missing",
 	);
 	const zhDraft = generationAlignment.generationAlignmentActivityCopy(
@@ -545,8 +545,8 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 		3,
 	);
 	assert(
-		zhDraft.phase === "撰写计划中" && zhDraft.rows.length === 0,
-		"Chinese drafting copy should not depend on Q&A turns",
+		zhDraft.phase === "撰写中" && zhDraft.rows === "基于 2 轮问答生成全面计划",
+		"Chinese drafting copy should show completed Q&A turns",
 	);
 	const enAskQ1 = generationAlignment.generationAlignmentActivityCopy(
 		"aligning",
@@ -602,7 +602,7 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 			"en",
 		) === "Answer Q1 to continue alignment." &&
 			generationAlignment.generationAlignmentSummary("generating", "zh", 8) ===
-				"正在撰写计划。",
+				"基于 7 轮问答生成全面计划。",
 		"alignment summary copy missing",
 	);
 	const draftBox = generationState.generationDraftBox(

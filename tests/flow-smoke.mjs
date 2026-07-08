@@ -73,6 +73,7 @@ try {
 	await runScenario(privateWorkerRequiresParentScenario);
 	await runScenario(workerAlreadyCompleteNoticeFormatScenario);
 	await runScenario(privateWorkerCompletionExitScenario);
+	await runScenario(privateWorkerInitialPromptScenario);
 	await runScenario(privateWorkerControlDisconnectScenario);
 	await runScenario(workerSpawnConfigScenario);
 	await runScenario(parallelLaneBoardThreeGoalScenario);
@@ -133,6 +134,8 @@ try {
 	await runScenario(flowPreDraftDirectReplyAmbiguousScenario);
 	await runScenario(generationAlignCommandConfigScenario);
 	await runScenario(flowAlignmentActivityCopyScenario);
+	await runScenario(flowAlignmentQuestionGoDraftsScenario);
+	await runScenario(flowPromptMarkerHiddenScenario);
 	await runScenario(flowDuplicatePreDraftStartBlockedScenario);
 	await runScenario(flowReadyWithoutAlignedRequestScenario);
 	await runScenario(flowRestoredAlignmentContextScenario);
@@ -519,6 +522,45 @@ async function privateWorkerCompletionExitScenario() {
 	}
 }
 
+async function privateWorkerInitialPromptScenario() {
+	const { PRIVATE_WORKER_ENV } = await importModule(
+		"flow/execution/worker-protocol.js",
+	);
+	const run = await startPrivateWorkerChild(
+		"private-worker-initial-prompt",
+		"F1",
+		{
+			env: { [PRIVATE_WORKER_ENV.initialPrompt]: "1" },
+		},
+	);
+	let exited = false;
+	const exitPromise = waitForChildExit(run.child).then((exit) => {
+		exited = true;
+		return exit;
+	});
+	try {
+		await run.control.socket;
+		await waitForFile(join(run.workerDir, "result.json"));
+		const exit = await exitPromise;
+		assert(exit.code === 0 && exit.signal === null, JSON.stringify(exit));
+		assert(
+			!existsSync(join(run.cwd, "private-worker-started")),
+			"initial-prompt worker sent a duplicate hidden prompt",
+		);
+		const result = JSON.parse(
+			readFileSync(join(run.workerDir, "result.json"), "utf8"),
+		);
+		assert(
+			result.parallelRunId === run.parallelRunId,
+			"initial-prompt worker result missing parallelRunId",
+		);
+	} finally {
+		run.control.server.close();
+		removePrivateWorkerSocket(run.socketPath);
+		if (!exited) run.child.kill("SIGKILL");
+	}
+}
+
 async function privateWorkerControlDisconnectScenario() {
 	const run = await startPrivateWorkerChild("private-worker-control", "F1", {
 		emitAgentEnd: false,
@@ -588,6 +630,7 @@ async function startPrivateWorkerChild(cwdName, flowId, scriptOptions = {}) {
 				FLOW_SMOKE_CWD: cwd,
 				FLOW_SMOKE_SESSION: sessionPath,
 				FLOW_SMOKE_SRC_OUT: srcOut,
+				...(scriptOptions.env ?? {}),
 			},
 			stdio: ["ignore", "pipe", "pipe"],
 		},
@@ -635,6 +678,7 @@ async function workerSpawnConfigScenario() {
 			flowDir,
 			parallelRunId: "P-worker-spawn-config",
 			cwd,
+			initialPrompt: "run worker prompt",
 		});
 		const eventPromise = firstWorkerEvent(handle);
 		const exitPromise = workerExit(handle).then((exit) => {
@@ -655,7 +699,8 @@ async function workerSpawnConfigScenario() {
 		assert(event.type === "agent_start", JSON.stringify(event));
 		assert(flagValue(args, "--mode") === "json", joined);
 		assert(flagValue(args, "--session") === sessionFile, joined);
-		assert(!args.includes("-p"), joined);
+		assert(args.includes("-p"), joined);
+		assert(args.at(-1) === "run worker prompt", joined);
 		assert(invocation.env[PRIVATE_WORKER_ENV.flowId] === flowId, joined);
 		assert(invocation.env[PRIVATE_WORKER_ENV.goalIndex] === "2", joined);
 		assert(
@@ -667,6 +712,7 @@ async function workerSpawnConfigScenario() {
 			invocation.env[PRIVATE_WORKER_ENV.sessionPath] === sessionFile,
 			joined,
 		);
+		assert(invocation.env[PRIVATE_WORKER_ENV.initialPrompt] === "1", joined);
 		assert(invocation.env[PRIVATE_WORKER_ENV.socketPath], joined);
 		assert(invocation.env[PRIVATE_WORKER_ENV.token], joined);
 		assert(args.includes("--no-extensions"), joined);
@@ -696,42 +742,77 @@ async function parallelLaneBoardThreeGoalScenario() {
 	flow.goals[3].status = "running";
 	const state = newState(cwd);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
-	const board = showParallelLaneBoard(ctx, dir, flow, [1, 2, 3]);
+	const originalNow = Date.now;
+	const originalSetInterval = globalThis.setInterval;
+	const originalClearInterval = globalThis.clearInterval;
+	let now = 1000;
+	let tick;
+	let intervalCleared = false;
+	let board;
+	Date.now = () => now;
+	globalThis.setInterval = (callback) => {
+		tick = callback;
+		return { unref() {} };
+	};
+	globalThis.clearInterval = () => {
+		intervalCleared = true;
+	};
+	try {
+		board = showParallelLaneBoard(ctx, dir, flow, [1, 2, 3]);
 
-	let text = latestWidgetText(state);
-	assert(text.includes("3 lanes"), `lane count missing:\n${text}`);
-	assert(
-		text.includes("Goal 2") &&
-			text.includes("Goal 3") &&
-			text.includes("Goal 4"),
-		`three parallel goals missing:\n${text}`,
-	);
-	assert(count(text, "验收: 等待") === 3, text);
+		let text = latestWidgetText(state);
+		assert(text.includes("3 lanes"), `lane count missing:\n${text}`);
+		assert(
+			text.includes("Goal 2") &&
+				text.includes("Goal 3") &&
+				text.includes("Goal 4"),
+			`three parallel goals missing:\n${text}`,
+		);
+		assert(count(text, "验收: 等待") === 3, text);
+		assert(typeof tick === "function", "lane board timer was not started");
+		now = 2500;
+		tick();
+		text = latestWidgetText(state);
+		assert(text.includes("1s"), `lane elapsed did not refresh:\n${text}`);
 
-	writeWorkerGoalArtifact(dir, flow, 1, runningChecks());
-	board.updateWorkerEvent(1, { type: "message_end" });
-	text = latestWidgetText(state);
-	assert(text.includes("验收: 进行中"), text);
+		board.updateWorkerEvent(1, {
+			type: "tool_execution_start",
+			toolName: "bash",
+		});
+		text = latestWidgetText(state);
+		assert(text.includes("tool: bash…"), text);
 
-	writeWorkerGoalArtifact(dir, flow, 1, passedChecks());
-	board.updateWorkerEvent(1, { type: "agent_end" });
-	text = latestWidgetText(state);
-	assert(text.includes("✓ G2") && text.includes("验收: 通过"), text);
+		writeWorkerGoalArtifact(dir, flow, 1, runningChecks());
+		board.updateWorkerEvent(1, { type: "message_end" });
+		text = latestWidgetText(state);
+		assert(text.includes("验收: 进行中"), text);
 
-	writeWorkerGoalArtifact(dir, flow, 2, failedChecks());
-	board.updateWorkerEvent(2, { type: "agent_end" });
-	text = latestWidgetText(state);
-	assert(text.includes("✗ G3") && text.includes("验收: 失败"), text);
+		writeWorkerGoalArtifact(dir, flow, 1, passedChecks());
+		board.updateWorkerEvent(1, { type: "agent_end" });
+		text = latestWidgetText(state);
+		assert(text.includes("✓ G2") && text.includes("验收: 通过"), text);
 
-	board.updateWorkerExit(3, 1, null);
-	text = latestWidgetText(state);
-	assert(text.includes("✗ G4") && text.includes("验收: 错误"), text);
-	board.dispose();
-	assert(
-		state.widgets.filter((item) => item.key === "flow-parallel-lanes").at(-1)
-			?.content === undefined,
-		"lane board was not cleared",
-	);
+		writeWorkerGoalArtifact(dir, flow, 2, failedChecks());
+		board.updateWorkerEvent(2, { type: "agent_end" });
+		text = latestWidgetText(state);
+		assert(text.includes("✗ G3") && text.includes("验收: 失败"), text);
+
+		board.updateWorkerExit(3, 1, null);
+		text = latestWidgetText(state);
+		assert(text.includes("✗ G4") && text.includes("验收: 错误"), text);
+		board.dispose();
+		assert(intervalCleared, "lane board timer was not cleared");
+		assert(
+			state.widgets.filter((item) => item.key === "flow-parallel-lanes").at(-1)
+				?.content === undefined,
+			"lane board was not cleared",
+		);
+	} finally {
+		if (!intervalCleared) board?.dispose();
+		Date.now = originalNow;
+		globalThis.setInterval = originalSetInterval;
+		globalThis.clearInterval = originalClearInterval;
+	}
 }
 
 async function parallelRunSuccessScenario() {
@@ -751,6 +832,16 @@ async function parallelRunSuccessScenario() {
 			waitForFile(join(cwd, "worker-1.started")),
 			waitForFile(join(cwd, "worker-2.started")),
 		]);
+		const orchestratorSession = state.newSessions[0]?.to;
+		assert(
+			state.newSessions.length === 1 &&
+				state.newSessions[0].from === join(cwd, "planning.jsonl"),
+			"parallel batch did not open an orchestrator session",
+		);
+		assert(
+			state.sessionNames.includes("F1-G2+G3 并行批次"),
+			"parallel orchestrator session was not named",
+		);
 		await waitForCondition(
 			() => latestWidgetText(state).includes("tool: bash"),
 			"parallel lane widget did not show worker tool event",
@@ -835,7 +926,11 @@ async function parallelRunSuccessScenario() {
 			!isFlowEditorInputHidden(),
 			"parallel batch did not restore editor input",
 		);
-		assert(state.newSessions.length === 1, "G4 did not start in a new session");
+		assert(
+			state.newSessions.length === 2 &&
+				state.newSessions[1].from === orchestratorSession,
+			"G4 did not start from the orchestrator session",
+		);
 		assert(
 			existsSync(join(dir, "workers", "G1", "result.json")) &&
 				existsSync(join(dir, "workers", "G2", "result.json")),
@@ -979,7 +1074,15 @@ async function parallelRunFailureScenario() {
 			error.includes("缺少 result.json"),
 			`batch failure missing result.json state: ${error}`,
 		);
-		assert(state.newSessions.length === 0, "batch failure should not start G4");
+		assert(
+			error.includes("stderr：fake worker failed 2"),
+			`batch failure missing stderr: ${error}`,
+		);
+		assert(
+			state.newSessions.length === 1 &&
+				state.sessionNames.includes("F1-G2+G3 并行批次"),
+			"batch failure did not stay within the orchestrator session",
+		);
 		delete process.env.PI_FLOW_FAKE_FAIL_INDEX;
 		await commands.get("flow").handler("go", ctx);
 		await flushScheduledGoalStart();
@@ -1001,8 +1104,8 @@ async function parallelRunFailureScenario() {
 			"manual retry recreated a parallel run",
 		);
 		assert(
-			state.newSessions.length === 1,
-			"manual retry did not open one session",
+			state.newSessions.length === 2,
+			"manual retry did not open one additional session",
 		);
 		const workerRuns = readFileSync(join(cwd, "worker-runs.log"), "utf8")
 			.trim()
@@ -1982,7 +2085,7 @@ async function flowPreDraftTargetRoutingScenario() {
 		);
 	assert(
 		uniqueState.notifications.at(-1).includes("Flow: F1") &&
-			uniqueState.notifications.at(-1).includes("正在撰写计划"),
+			uniqueState.notifications.at(-1).includes("基于 0 轮问答生成全面计划"),
 		"bare status did not select the only active pre-draft Flow",
 	);
 
@@ -2072,7 +2175,7 @@ async function flowPreDraftTargetRoutingScenario() {
 	);
 	assert(
 		selectedAlignment.stage === "generating" &&
-			latestWidgetText(ambiguousState).includes("🌊 Flow · 撰写计划中"),
+			latestWidgetText(ambiguousState).includes("🌊 Flow · 撰写中"),
 		`explicit id go did not generate the selected pre-draft Flow: stage=${selectedAlignment.stage}; widget=${latestWidgetText(ambiguousState)}`,
 	);
 }
@@ -2565,6 +2668,10 @@ async function htmlScenario() {
 		"draft command chips should only show go with bare id",
 	);
 	assert(
+		draftHtml.includes("bg-white/60 px-1.5"),
+		"flow command chips should be compact and borderless",
+	);
+	assert(
 		draftHtml.includes("文件 · src/app.ts"),
 		"source path should be project-relative",
 	);
@@ -2587,20 +2694,64 @@ async function htmlScenario() {
 		!draftHtml.includes("第 1 步 · Goal 1"),
 		"goal card header should not repeat the step label as an eyebrow",
 	);
-	assert(draftHtml.includes(">范围</p>"), "flow goal scope label missing");
-	assert(
-		draftHtml.includes(">怎么算完成</p>"),
-		"flow goal criteria label missing",
-	);
+	assert(draftHtml.includes("范围"), "flow goal scope label missing");
+	assert(draftHtml.includes("怎么算完成"), "flow goal criteria label missing");
 	assert(!draftHtml.includes("- Done."), "raw bullet markdown leaked");
 	assert(
 		!draftHtml.includes("要做"),
 		"flow repeated objective as work section",
 	);
 	assert(draftHtml.includes("尚未启动"), "session label not localized");
-	assert(draftHtml.includes(">怎么验证</p>"), "verification section missing");
-	assert(draftHtml.includes("原始需求与调试"), "debug details missing");
-	assert(draftHtml.includes("0/2 步完成"), "progress caption missing");
+	assert(draftHtml.includes("怎么验证"), "verification section missing");
+	assert(draftHtml.includes("需求记录"), "request log missing");
+	assert(
+		draftHtml.includes("data-hover-chip data-tooltip=") &&
+			draftHtml.includes('data-tooltip-side="right" data-tooltip-size="lg"') &&
+			!draftHtml.includes("dlg-context") &&
+			!draftHtml.includes(
+				'text-base font-semibold text-stone-900">需求记录</p>',
+			),
+		"request log should use the shared modern hover chip instead of a modal",
+	);
+	assert(!draftHtml.includes(">计划 ID</p>"), "request log leaked plan id");
+	const noRecordFlow = readFlow(singleDraftDir);
+	noRecordFlow.source.originalRequest = "";
+	const noRecordHtml = readFileSync(
+		writeFlowHtml(singleDraftDir, noRecordFlow),
+		"utf8",
+	);
+	assert(
+		!noRecordHtml.includes("需求记录") && !noRecordHtml.includes("dlg-context"),
+		"empty request log should be hidden",
+	);
+	writeFileSync(
+		join(singleDraftDir, "alignment.json"),
+		`${JSON.stringify({
+			version: 1,
+			stage: "aligning",
+			sessionFile: null,
+			autoStart: false,
+			alignmentTurns: [{ question: "范围？", answer: "src/pages/**" }],
+			lastAlignmentQuestion: null,
+			createdAt: 0,
+			updatedAt: 0,
+		})}\n`,
+	);
+	const qaHtml = readFileSync(
+		writeFlowHtml(singleDraftDir, noRecordFlow),
+		"utf8",
+	);
+	assert(
+		qaHtml.includes("需求记录") &&
+			qaHtml.includes("QA 记录") &&
+			qaHtml.includes("范围？") &&
+			qaHtml.includes("src/pages/**"),
+		"request log should show QA when original request is empty",
+	);
+	assert(
+		draftHtml.includes(">验收</span>") && draftHtml.includes(">质检</span>"),
+		"stepper check chips missing",
+	);
 	assert(!draftHtml.includes("mermaid"), "mermaid should be removed");
 	assert(
 		!draftHtml.includes("执行进度"),
@@ -2612,16 +2763,61 @@ async function htmlScenario() {
 		"flow brand mark missing",
 	);
 	assert(draftHtml.includes("data-rough-node"), "flow stepper nodes missing");
-	assert(draftHtml.includes("data-rough-ring"), "flow progress ring missing");
 	assert(
-		draftHtml.includes("[data-rough-card]{border-radius:18px") &&
-			draftHtml.includes("[data-rough-seal]{border-radius:9999px") &&
-			draftHtml.includes("roundedRectPath"),
-		"rough card/seal rounded contract missing",
+		draftHtml.includes('[data-goal-select][data-goal-tone="blue"]:hover') &&
+			draftHtml.includes('[data-goal-select][data-goal-tone="green"]:hover'),
+		"stepper hover color should follow goal status",
 	);
 	assert(
-		draftHtml.includes("M140,128a12,12") && !draftHtml.includes("▸"),
-		"details summary should use local dots icon, not CSS triangle",
+		draftHtml.includes("data-rough-ring") &&
+			draftHtml.includes("ring-ink") &&
+			draftHtml.includes("rough-ring-progress") &&
+			!draftHtml.includes("ring-sketch") &&
+			!draftHtml.includes("data-ring-dot") &&
+			!draftHtml.includes("data-ring-glow"),
+		"flow progress ring should use subtle ink animation only",
+	);
+	assert(
+		draftHtml.includes('class="h-5 w-5 rotate-3d-soft"') &&
+			draftHtml.includes('d="m15.194 13.707') &&
+			draftHtml.includes("line-redraw") &&
+			draftHtml.includes("28%,72%") &&
+			draftHtml.includes("line-redraw 1.5s") &&
+			draftHtml.includes(".rotate-3d-soft>*") &&
+			!draftHtml.includes('class="h-5 w-5 spin-soft"') &&
+			!draftHtml.includes('d="M12 6v6l4 2"'),
+		"active detail step should use slower rotate-3d line redraw, not spinner or clock",
+	);
+	assert(
+		draftHtml.includes("[data-rough-card]{border-radius:18px") &&
+			draftHtml.includes("[data-rough-node]") &&
+			draftHtml.includes("roundedRectPath"),
+		"rough card/node rounded contract missing",
+	);
+	assert(
+		draftHtml.includes("data-hover-chip") &&
+			!draftHtml.includes("data-hover-chip data-rough-seal") &&
+			!/<[^>]*data-hover-chip[^>]*0_0_0_1px/u.test(draftHtml),
+		"hover chips should use the modern shared style without rough or ring borders",
+	);
+	assert(
+		draftHtml.includes("cursor-pointer") && !draftHtml.includes("cursor-help"),
+		"hover controls should use pointer cursor",
+	);
+	assert(
+		draftHtml.includes(
+			"dialog [data-modal-shell]{opacity:0;transform:scale(.985)",
+		) &&
+			draftHtml.includes("main>:not(dialog){animation:rise") &&
+			draftHtml.includes(
+				"modal-closing [data-modal-shell]{opacity:0;transform:scale(.99)",
+			),
+		"modal should use non-directional fade animation",
+	);
+	assert(
+		draftHtml.includes('circle cx="12" cy="12" r="1"') &&
+			!draftHtml.includes("▸"),
+		"more action should use local dots icon, not CSS triangle",
 	);
 	assert(
 		draftHtml.includes(">完成验收</p>") &&
@@ -2629,29 +2825,93 @@ async function htmlScenario() {
 		"flow goal review phase missing",
 	);
 	assert(
+		draftHtml.includes('flow-tooltip[data-size="lg"]') &&
+			draftHtml.includes("max-height:min(60vh,32rem);overflow:auto") &&
+			draftHtml.includes('tip.addEventListener("mouseenter", clearHide)') &&
+			draftHtml.includes('data-tooltip-size="lg"'),
+		"large hover details should be readable, scrollable, and hoverable",
+	);
+	assert(
 		draftHtml.includes(">质量检查</p>") &&
 			draftHtml.includes('data-tooltip="把关实现质量"'),
 		"flow quality review phase missing",
 	);
 	assert(
-		draftHtml.includes("M221.87,83.16") && draftHtml.includes("M208,40H48"),
+		draftHtml.includes('circle cx="12" cy="12" r="10"') &&
+			draftHtml.includes("M20 13c0 5-3.5 7.5"),
 		"check phase title icons missing",
 	);
 	assert(
-		draftHtml.includes("等待") && !draftHtml.includes("等待执行"),
-		"pending checks should show 等待, not 等待执行",
+		draftHtml.includes("等待") &&
+			!draftHtml.includes("等待执行") &&
+			!draftHtml.includes(
+				'shrink-0 text-xs font-medium text-stone-500">等待</span>',
+			),
+		"pending checks should not repeat waiting status in cards",
 	);
 	const mixedFlow = readFlow(dir);
 	mixedFlow.goals[0].checks.quality.enabled = false;
 	const mixedHtml = readFileSync(writeFlowHtml(dir, mixedFlow), "utf8");
 	assert(
-		mixedHtml.includes("等待") && mixedHtml.includes("未启用"),
-		"mixed checks not reflected in pending checks",
+		mixedHtml.includes("等待") && !mixedHtml.includes("未启用"),
+		"disabled empty checks should be hidden",
 	);
 	const enabledHtml = draftHtml;
 	assert(
 		enabledHtml.includes("等待") && !enabledHtml.includes("未启用"),
-		"enabled checks should all show 等待",
+		"enabled checks should show waiting only in compact progress",
+	);
+	const checkingFlow = readFlow(dir);
+	checkingFlow.status = "running";
+	checkingFlow.startedAt = Date.now();
+	checkingFlow.goals[0].status = "running";
+	checkingFlow.goals[0].checks = {
+		acceptance: {
+			enabled: true,
+			rounds: [],
+			active: [{ label: "model-a", status: "running" }],
+		},
+		quality: {
+			enabled: true,
+			rounds: [],
+			active: [{ label: "model-q", status: "running" }],
+		},
+	};
+	const checkingHtml = readFileSync(writeFlowHtml(dir, checkingFlow), "utf8");
+	assert(
+		checkingHtml.includes("验收中") &&
+			checkingHtml.includes("检查中") &&
+			checkingHtml.includes("验收中，暂无输出") &&
+			checkingHtml.includes("检查中，暂无输出") &&
+			checkingHtml.includes('class="h-6 w-6 bot-soft"') &&
+			checkingHtml.includes('<rect width="16" height="12"') &&
+			!checkingHtml.includes(".bot-soft>*") &&
+			checkingHtml.includes('class="h-5 w-5 rotate-3d-soft"') &&
+			checkingHtml.includes('class="h-3 w-3 spin-soft"') &&
+			checkingHtml.includes('d="M21 12a9 9 0 1 1-6.219-8.56"') &&
+			!checkingHtml.includes('d="M12 6v6l4 2"'),
+		"active checks should keep LoaderCircle while top uses bot and detail uses rotate-3d",
+	);
+	const repairingFlow = readFlow(dir);
+	repairingFlow.status = "running";
+	repairingFlow.startedAt = Date.now();
+	repairingFlow.goals[0].status = "running";
+	repairingFlow.goals[0].checks = {
+		acceptance: {
+			enabled: true,
+			rounds: [{ round: 1, result: "failed", summary: "验收失败" }],
+			active: null,
+		},
+		quality: {
+			enabled: true,
+			rounds: [{ round: 1, result: "failed", summary: "质检失败" }],
+			active: null,
+		},
+	};
+	const repairingHtml = readFileSync(writeFlowHtml(dir, repairingFlow), "utf8");
+	assert(
+		repairingHtml.includes("补完中") && repairingHtml.includes("优化中"),
+		"repair labels should be phase-specific",
 	);
 	const parallelFlow = readFlow(dir);
 	parallelFlow.status = "running";
@@ -2661,13 +2921,23 @@ async function htmlScenario() {
 	parallelFlow.goals[1].status = "running";
 	const parallelHtml = readFileSync(writeFlowHtml(dir, parallelFlow), "utf8");
 	assert(
-		count(parallelHtml, "当前</span>") === 2 &&
-			!parallelHtml.includes(" · 当前"),
-		"parallel batch did not mark every active goal current with status pills",
+		parallelHtml.includes("border-l border-dashed border-stone-300"),
+		"running command chips should have a dashed divider",
 	);
 	assert(
-		parallelHtml.includes('data-tone="blue" class="mt-[18px] h-1'),
-		"parallel batch stepper line did not show active tone",
+		!parallelHtml.includes("当前</span>") && !parallelHtml.includes(" · 当前"),
+		"parallel batch should not render redundant current status pills",
+	);
+	assert(
+		parallelHtml.includes("data-parallel-stepper") &&
+			parallelHtml.includes("data-parallel-group") &&
+			parallelHtml.includes('data-parallel-group data-tone="blue"') &&
+			parallelHtml.includes("data-parallel-divider") &&
+			parallelHtml.includes("M15 6a9 9 0 0 0-9 9V3") &&
+			!parallelHtml.includes("∥") &&
+			parallelHtml.includes("rough-branch-layer") &&
+			!parallelHtml.includes("data-parallel-label"),
+		"parallel batch stepper branch did not show grouped connector",
 	);
 	const pausedFlow = readFlow(dir);
 	pausedFlow.status = "paused";
@@ -2675,19 +2945,25 @@ async function htmlScenario() {
 	pausedFlow.goals[0].status = "running";
 	const pausedHtml = readFileSync(writeFlowHtml(dir, pausedFlow), "utf8");
 	assert(
-		pausedHtml.includes('data-rough-seal data-tone="amber"') &&
-			pausedHtml.includes("已暂停"),
-		"paused current goal did not render an amber status pill",
+		!pausedHtml.includes('data-rough-seal data-tone="amber"') &&
+			pausedHtml.includes(
+				'shrink-0 text-xs font-medium text-amber-800">已暂停</span>',
+			),
+		"paused current goal should render amber text status",
 	);
 	assert(
-		draftHtml.includes('data-key="g0-step-0" open') &&
+		draftHtml.includes("安装依赖并初始化数据库") &&
+			!draftHtml.includes('data-tooltip="安装依赖并初始化数据库"') &&
 			draftHtml.includes("准备环境") &&
 			draftHtml.includes("进行中") &&
 			draftHtml.includes("阻塞") &&
 			!draftHtml.includes("**"),
 		"flow step list not aligned with goal rendering",
 	);
-	assert(draftHtml.includes("<details"), "verification should be collapsed");
+	assert(
+		!draftHtml.includes("<dialog"),
+		"draft hover details should not use modal",
+	);
 	assert(!draftHtml.includes("pending"), "pending leaked into html");
 	assert(
 		!draftHtml.includes("未绑定 session"),
@@ -2737,28 +3013,59 @@ async function htmlScenario() {
 	);
 	assert(count(html, "<article") === 2, "plan cards missing");
 	assert(html.includes("全部完成"), "completion card missing");
-	assert(html.includes("已通过"), "goal check status missing");
+	assert(
+		html.includes('<article data-rough-card data-tone="green"') &&
+			html.includes(
+				'shrink-0 text-xs font-medium text-emerald-800">已完成</span>',
+			) &&
+			!html.includes(
+				'shrink-0 text-xs font-medium text-emerald-800">已通过</span>',
+			),
+		"completed goal card should use green edge and hide repeated passed statuses",
+	);
 	assert(html.includes("校验错误"), "error card missing");
 	assert(!html.includes("页面文件"), "flow html leaked page file label");
 	assert(!html.includes(htmlPath), "flow html leaked absolute html path");
 	assert(!html.includes(sessionFile), "flow html leaked session file path");
-	assert(html.includes("第 1 轮未通过"), "first failed round label missing");
+	assert(
+		html.includes("第 1 轮") && html.includes("未通过"),
+		"first failed round label missing",
+	);
 	assert(html.includes("旧失败摘要"), "acceptance failure history missing");
 	assert(html.includes("新通过摘要"), "acceptance pass history missing");
 	assert(html.includes("旧质量失败"), "quality failure history missing");
 	assert(html.includes("新质量通过"), "quality pass history missing");
-	assert(html.includes("第 2 轮通过"), "second round history missing");
+	assert(
+		html.includes("第 2 轮") && html.includes("通过"),
+		"second round history missing",
+	);
 	assert(html.includes("验收失败详情"), "acceptance details missing");
 	assert(html.includes("质量失败详情"), "quality details missing");
-	assert(html.includes("查看未通过原因"), "round details action unclear");
-	assert(html.includes('data-key="g1-acceptance-round-1"'));
-	assert(html.includes('data-key="g1-quality-round-1"'));
+	const modelChipHtml =
+		html.match(
+			/<span tabindex="0" data-model-chip[\s\S]*?<\/span><\/span>/gu,
+		) ?? [];
+	assert(
+		!html.includes("查看未通过原因") &&
+			modelChipHtml.length > 0 &&
+			html.includes('data-tooltip-side="auto"') &&
+			!html.includes("data-model-chip data-rough-seal") &&
+			modelChipHtml.every(
+				(chip) =>
+					!chip.includes('circle cx="12" cy="12" r="10"') &&
+					!chip.includes("M21.801 10"),
+			) &&
+			!html.includes("mt-0.5 grid h-4 w-4 shrink-0 place-items-center"),
+		"round details should use modern hover model chips with simple non-circled icons",
+	);
 	assertUniqueDataKeys(html);
 	assert(html.includes("实现登录"), "flow html missing session display name");
 	assert(html.includes("全部 2 步已完成"), "complete subtitle missing");
 	assert(!html.includes("Goal 0"), "flow html exposed 0-based Goal index");
-	assert(html.includes("pnpm test"), "handoff markdown content missing");
-	assert(!html.includes("- `pnpm test`"), "raw handoff markdown leaked");
+	assert(
+		!html.includes("pnpm test"),
+		"step more modal should not repeat handoff content",
+	);
 	for (const label of [
 		"next action",
 		">Verification</p>",
@@ -2790,8 +3097,7 @@ async function htmlScenario() {
 	singleFlow.goals[0].result.criteriaChanged = true;
 	const singleHtml = readFileSync(writeFlowHtml(singleDir, singleFlow), "utf8");
 	assert(
-		singleHtml.includes("验收口径有调整，已在本步骤检查中记录") &&
-			singleHtml.includes("执行中有验收口径调整，已在步骤检查中记录"),
+		singleHtml.includes("执行中有验收口径调整，已在步骤检查中记录"),
 		"single-step criteria deviation did not use step-level wording",
 	);
 	assert(
@@ -3131,8 +3437,6 @@ async function flowCrossSessionOldReplyTargetIgnoredScenario() {
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
 	const ctxA = commandContext(state, cwd, sessionA);
-	await commands.get("flow").handler("go F1", ctxA);
-	assertNoticeFormat(state.notifications.at(-1), "⏳", "回答 Q1 继续对齐");
 	const ctxB = commandContext(state, cwd, sessionB);
 	await commands.get("flow").handler("go F1", ctxB);
 	const before = JSON.stringify(
@@ -3824,7 +4128,7 @@ async function flowPreDraftStatusTextScenario() {
 	const notice = state.notifications.at(-1);
 	assert(
 		notice.includes("状态: 等待回复") &&
-			notice.includes("回答 Q1 继续对齐") &&
+			notice.includes("回复对齐需求；/flow go 直接生成计划") &&
 			notice.includes("下一步: /flow go F1") &&
 			notice.includes("问题: 问题 1：范围是什么？") &&
 			!notice.includes("直接回复答案") &&
@@ -3967,8 +4271,8 @@ async function flowAlignmentActivityCopyScenario() {
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 	await commands.get("flow").handler("activity copy", ctx);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · 对齐中") &&
-			latestWidgetText(state).includes("等待 AI 提出 Q1"),
+		latestWidgetText(state).includes("🌊 Flow · Q1") &&
+			latestWidgetText(state).includes("思考中"),
 		"initial alignment activity should wait for Q1",
 	);
 	await emit(
@@ -3978,8 +4282,10 @@ async function flowAlignmentActivityCopyScenario() {
 		ctx,
 	);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · 等待回复") &&
-			latestWidgetText(state).includes("回答 Q1 继续对齐") &&
+		latestWidgetText(state).includes("🌊 Flow · Q1") &&
+			latestWidgetText(state).includes(
+				"回复对齐需求 ｜「/flow go」 直接生成计划",
+			) &&
 			!latestWidgetText(state).includes("🌊 Flow · 等待回复 Q1") &&
 			!latestWidgetText(state).includes("开始生成"),
 		"alignment question activity should wait for Q1 reply",
@@ -3992,8 +4298,8 @@ async function flowAlignmentActivityCopyScenario() {
 	);
 	assert(
 		answerResult?.action === "handled" &&
-			latestWidgetText(state).includes("等待 AI 提出 Q2") &&
-			!latestWidgetText(state).includes("等待 AI 提出 Q1"),
+			latestWidgetText(state).includes("🌊 Flow · Q2") &&
+			latestWidgetText(state).includes("思考中"),
 		"alignment answer should advance activity to Q2",
 	);
 	assertLightweightAlignmentPrompt(state.hiddenMessages.at(-1));
@@ -4011,13 +4317,16 @@ async function flowAlignmentActivityCopyScenario() {
 		ctx,
 	);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · 等待确认") &&
-			latestWidgetText(state).includes("运行 /flow go F1 生成计划"),
+		latestWidgetText(state).includes("🌊 Flow · 已对齐") &&
+			latestWidgetText(state).includes(
+				"「/flow go」生成计划 ｜继续回复则补充信息",
+			),
 		"ready marker should show final confirmation activity",
 	);
 	await commands.get("flow").handler("go F1", ctx);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · 撰写计划中") &&
+		latestWidgetText(state).includes("🌊 Flow · 撰写中") &&
+			latestWidgetText(state).includes("基于 1 轮问答生成全面计划") &&
 			!latestWidgetText(state).includes("Q1") &&
 			!latestWidgetText(state).includes("Q2"),
 		"drafting activity should be compact even after Q&A turns",
@@ -4028,6 +4337,73 @@ async function flowAlignmentActivityCopyScenario() {
 			!state.hiddenMessages.at(-1).includes("A1:") &&
 			!state.hiddenMessages.at(-1).includes("恢复的对齐问答"),
 		"same-session generation prompt should not inject alignment Q&A",
+	);
+}
+
+async function flowAlignmentQuestionGoDraftsScenario() {
+	const cwd = tempDir("flow-alignment-question-go-drafts");
+	const state = newState(cwd);
+	state.select = "先进行多轮问答对齐想法";
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("question go drafts", ctx);
+	await emit(
+		handlers,
+		"agent_end",
+		{ messages: [{ role: "assistant", content: "问题 1：范围？" }] },
+		ctx,
+	);
+	await commands.get("flow").handler("go F1", ctx);
+	const alignment = JSON.parse(
+		readFileSync(join(cwd, ".flow", "F1", "alignment.json"), "utf8"),
+	);
+	assert(
+		alignment.stage === "generating" &&
+			latestWidgetText(state).includes("🌊 Flow · 撰写中") &&
+			latestWidgetText(state).includes("基于 0 轮问答生成全面计划") &&
+			state.hiddenMessages.at(-1).includes("question go drafts") &&
+			!state.hiddenMessages.at(-1).includes("继续 Flow 生成前对齐"),
+		"/flow go from a pending alignment question should draft immediately",
+	);
+}
+
+async function flowPromptMarkerHiddenScenario() {
+	const cwd = tempDir("flow-prompt-marker-hidden");
+	const state = newState(cwd);
+	state.select = "先进行多轮问答对齐想法";
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("old target", ctx);
+	await commands.get("flow").handler("stop F1", ctx);
+	await commands.get("flow").handler("new target", ctx);
+	const token = state.hiddenMessages
+		.at(-1)
+		?.match(/<!--\s*pi-flow:prompt:([^\s]+)\s*-->/u)?.[1];
+	assert(token, "hidden prompt token missing");
+	const messageEnd = await emitLast(
+		handlers,
+		"message_end",
+		{
+			message: {
+				role: "assistant",
+				content: `问题 1：范围？\n<!-- pi-flow:prompt:${token} -->`,
+			},
+		},
+		ctx,
+	);
+	assert(
+		messageEnd?.message.content === "问题 1：范围？" &&
+			!messageEnd.message.content.includes("pi-flow:prompt"),
+		"prompt marker should be stripped before display",
+	);
+	await emit(handlers, "agent_end", { messages: [messageEnd.message] }, ctx);
+	const alignment = JSON.parse(
+		readFileSync(join(cwd, ".flow", "F2", "alignment.json"), "utf8"),
+	);
+	assert(
+		alignment.stage === "awaiting_alignment_input" &&
+			alignment.lastAlignmentQuestion === "问题 1：范围？",
+		"stripped prompt marker should still route the result to the live Flow",
 	);
 }
 
@@ -4068,9 +4444,10 @@ async function flowReadyWithoutAlignedRequestScenario() {
 		ctx,
 	);
 	assert(
-		latestWidgetText(state).includes("等待确认") &&
-			latestWidgetText(state).includes("运行 /flow go F1 生成计划") &&
-			latestWidgetText(state).includes("继续输入则补充对齐") &&
+		latestWidgetText(state).includes("🌊 Flow · 已对齐") &&
+			latestWidgetText(state).includes(
+				"「/flow go」生成计划 ｜继续回复则补充信息",
+			) &&
 			!latestWidgetText(state).includes("<aligned-request>"),
 		"flow ready without aligned-request should wait for final confirmation",
 	);
@@ -4085,8 +4462,8 @@ async function flowReadyWithoutAlignedRequestScenario() {
 		"continued flow alignment input should stop the original prompt",
 	);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · 对齐中") &&
-			latestWidgetText(state).includes("等待 AI 提出 Q2") &&
+		latestWidgetText(state).includes("🌊 Flow · Q2") &&
+			latestWidgetText(state).includes("思考中") &&
 			!latestWidgetText(state).includes("已收到"),
 		"flow alignment input should keep an in-progress activity box",
 	);
@@ -4123,7 +4500,8 @@ async function flowReadyWithoutAlignedRequestScenario() {
 	);
 	await commands.get("flow").handler("go F1", ctx);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · 撰写计划中") &&
+		latestWidgetText(state).includes("🌊 Flow · 撰写中") &&
+			latestWidgetText(state).includes("基于 1 轮问答生成全面计划") &&
 			!latestWidgetText(state).includes("flow missing summary"),
 		"go should switch to compact generation box",
 	);
@@ -4461,7 +4839,8 @@ async function generateScenario() {
 		"flow draft generation did not show activity widget",
 	);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · 撰写计划中") &&
+		latestWidgetText(state).includes("🌊 Flow · 撰写中") &&
+			latestWidgetText(state).includes("基于 0 轮问答生成全面计划") &&
 			!latestWidgetText(state).includes("Q1"),
 		"direct generation activity should be compact without Q&A turns",
 	);
@@ -6365,7 +6744,7 @@ async function flowParallelMainGoalWatcherScenario() {
 	const html = readFileSync(htmlPath, "utf8");
 	assert(
 		html.includes("Main goal watcher checked.") &&
-			count(html, "当前</span>") === 3 &&
+			!html.includes("当前</span>") &&
 			!html.includes(" · 当前"),
 		"parallel watcher did not render three-goal main markdown changes",
 	);
@@ -6523,7 +6902,7 @@ function writePrivateWorkerChildScript(cwd, options = {}) {
 record("private-worker-agent-end", "done");`;
 	writeFileSync(
 		script,
-		`import { writeFileSync } from "node:fs";\nimport { join } from "node:path";\nconst srcOut = process.env.FLOW_SMOKE_SRC_OUT;\nconst cwd = process.env.FLOW_SMOKE_CWD;\nconst sessionFile = process.env.FLOW_SMOKE_SESSION;\nif (!srcOut || !cwd || !sessionFile) throw new Error("missing child env");\nconst { default: flowExtension } = await import("file://" + join(srcOut, "index.js"));\nconst handlers = new Map();\nconst entries = [];\nconst record = (name, value = "") => writeFileSync(join(cwd, name), String(value));\nflowExtension({\n\tregisterCommand() {},\n\tregisterTool() {},\n\tregisterMessageRenderer() {},\n\tregisterFlag() {},\n\tgetFlag() {},\n\tgetActiveTools() { return []; },\n\tsetActiveTools() {},\n\tgetAllTools() { return []; },\n\tgetCommands() { return []; },\n\tappendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },\n\tsendUserMessage() {},\n\tsendMessage(message) { record("private-worker-started", message.content); },\n\ton(name, handler) {\n\t\tif (!handlers.has(name)) handlers.set(name, []);\n\t\thandlers.get(name).push(handler);\n\t},\n\tsetSessionName() {},\n\tgetSessionName() {},\n\texec() { return Promise.resolve({ code: 0, stdout: "", stderr: "" }); },\n});\nconst ui = {\n\tasync confirm() { return true; },\n\tasync select(_title, options) { return options[0]; },\n\tnotify() {},\n\tsetStatus() {},\n\tsetWorkingVisible() {},\n\tsetWidget() {},\n};\nconst ctx = {\n\tcwd,\n\tmode: "json",\n\thasUI: true,\n\tui,\n\tisIdle() { return true; },\n\thasPendingMessages() { return false; },\n\tsessionManager: {\n\t\tgetSessionFile() { return sessionFile; },\n\t\tgetSessionDir() { return cwd; },\n\t\tgetBranch() { return entries; },\n\t\tgetEntries() { return entries; },\n\t\tappendSessionInfo() {},\n\t\tappendCustomEntry(customType, data) { entries.push({ type: "custom", customType, data }); },\n\t},\n\tasync waitForIdle() {},\n\tasync newSession() { throw new Error("unexpected newSession"); },\n\tasync switchSession() { throw new Error("unexpected switchSession"); },\n};\nfor (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);\n${afterSessionStart}\n`,
+		`import { writeFileSync } from "node:fs";\nimport { join } from "node:path";\nconst srcOut = process.env.FLOW_SMOKE_SRC_OUT;\nconst cwd = process.env.FLOW_SMOKE_CWD;\nconst sessionFile = process.env.FLOW_SMOKE_SESSION;\nif (!srcOut || !cwd || !sessionFile) throw new Error("missing child env");\nconst { default: flowExtension } = await import("file://" + join(srcOut, "index.js"));\nconst handlers = new Map();\nconst entries = [];\nconst record = (name, value = "") => writeFileSync(join(cwd, name), String(value));\nflowExtension({\n\tregisterCommand() {},\n\tregisterTool() {},\n\tregisterMessageRenderer() {},\n\tregisterFlag() {},\n\tgetFlag() {},\n\tgetActiveTools() { return []; },\n\tsetActiveTools() {},\n\tgetAllTools() { return []; },\n\tgetCommands() { return []; },\n\tappendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },\n\tsendUserMessage() {},\n\tsendMessage(message) {\n\t\tif (message.display === false) record("private-worker-started", message.content);\n\t\telse record("private-worker-message", message.content);\n\t},\n\ton(name, handler) {\n\t\tif (!handlers.has(name)) handlers.set(name, []);\n\t\thandlers.get(name).push(handler);\n\t},\n\tsetSessionName() {},\n\tgetSessionName() {},\n\texec() { return Promise.resolve({ code: 0, stdout: "", stderr: "" }); },\n});\nconst ui = {\n\tasync confirm() { return true; },\n\tasync select(_title, options) { return options[0]; },\n\tnotify() {},\n\tsetStatus() {},\n\tsetWorkingVisible() {},\n\tsetWidget() {},\n};\nconst ctx = {\n\tcwd,\n\tmode: "json",\n\thasUI: true,\n\tui,\n\tisIdle() { return true; },\n\thasPendingMessages() { return false; },\n\tsessionManager: {\n\t\tgetSessionFile() { return sessionFile; },\n\t\tgetSessionDir() { return cwd; },\n\t\tgetBranch() { return entries; },\n\t\tgetEntries() { return entries; },\n\t\tappendSessionInfo() {},\n\t\tappendCustomEntry(customType, data) { entries.push({ type: "custom", customType, data }); },\n\t},\n\tasync waitForIdle() {},\n\tasync newSession() { throw new Error("unexpected newSession"); },\n\tasync switchSession() { throw new Error("unexpected switchSession"); },\n};\nfor (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);\n${afterSessionStart}\n`,
 	);
 	return script;
 }
@@ -7253,7 +7632,7 @@ function installFakePi(cwd) {
 	);
 	writeFileSync(
 		join(bin, "pi.mjs"),
-		`import { appendFileSync, existsSync, mkdirSync, watch, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nconst args = process.argv.slice(2);\nconst session = args[args.indexOf("--session") + 1];\nconst flowId = process.env.PI_FLOW_WORKER_FLOW_ID ?? "";\nconst goalIndex = process.env.PI_FLOW_WORKER_GOAL_INDEX ?? "0";\nconst parallelRunId = () => process.env.PI_FLOW_WORKER_PARALLEL_RUN_ID;\nappendFileSync(join(process.cwd(), "worker-runs.log"), goalIndex + "\\n");\nconst marker = (suffix) => join(process.cwd(), \`worker-\${goalIndex}.\${suffix}\`);\nconst waitForRelease = () => new Promise((resolve) => {\n\tconst releasePath = join(process.cwd(), "release-workers");\n\tif (existsSync(releasePath)) return resolve();\n\tconst watcher = watch(process.cwd(), (_event, name) => {\n\t\tif (name !== null && String(name) !== "release-workers") return;\n\t\tif (!existsSync(releasePath)) return;\n\t\twatcher.close();\n\t\tresolve();\n\t});\n});\nconsole.log(JSON.stringify({ type: "agent_start", goalIndex: Number(goalIndex) }));\nif (process.env.PI_FLOW_FAKE_HANG === "1") {\n\twriteFileSync(marker("started"), "");\n\tconst exit = () => {\n\t\twriteFileSync(marker("killed"), "");\n\t\tprocess.exit(0);\n\t};\n\tprocess.on("SIGTERM", exit);\n\tprocess.on("SIGINT", exit);\n\tsetInterval(() => undefined, 1000);\n} else if (process.env.PI_FLOW_FAKE_FAIL_INDEX === goalIndex) {\n\tprocess.exit(1);\n} else {\n\tconsole.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-" + goalIndex, toolName: "bash", result: "ok", isError: false }));\n\twriteFileSync(marker("started"), "");\n\tif (process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE === "1") {\n\t\tawait waitForRelease();\n\t}\n\tconst workerDir = dirname(session);\n\tmkdirSync(workerDir, { recursive: true });\n\twriteFileSync(join(workerDir, "result.json"), JSON.stringify({ goalId: \`worker-\${goalIndex}\`, summary: \`done \${goalIndex}\`, acceptance: "passed", sessionFile: session, parallelRunId: parallelRunId() }, null, 2));\n\tconsole.log(JSON.stringify({ type: "agent_end", messages: [] }));\n}\n`,
+		`import { appendFileSync, existsSync, mkdirSync, watch, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nconst args = process.argv.slice(2);\nconst session = args[args.indexOf("--session") + 1];\nconst flowId = process.env.PI_FLOW_WORKER_FLOW_ID ?? "";\nconst goalIndex = process.env.PI_FLOW_WORKER_GOAL_INDEX ?? "0";\nconst parallelRunId = () => process.env.PI_FLOW_WORKER_PARALLEL_RUN_ID;\nappendFileSync(join(process.cwd(), "worker-runs.log"), goalIndex + "\\n");\nconst marker = (suffix) => join(process.cwd(), \`worker-\${goalIndex}.\${suffix}\`);\nconst waitForRelease = () => new Promise((resolve) => {\n\tconst releasePath = join(process.cwd(), "release-workers");\n\tif (existsSync(releasePath)) return resolve();\n\tconst watcher = watch(process.cwd(), (_event, name) => {\n\t\tif (name !== null && String(name) !== "release-workers") return;\n\t\tif (!existsSync(releasePath)) return;\n\t\twatcher.close();\n\t\tresolve();\n\t});\n});\nconsole.log(JSON.stringify({ type: "agent_start", goalIndex: Number(goalIndex) }));\nif (process.env.PI_FLOW_FAKE_HANG === "1") {\n\twriteFileSync(marker("started"), "");\n\tconst exit = () => {\n\t\twriteFileSync(marker("killed"), "");\n\t\tprocess.exit(0);\n\t};\n\tprocess.on("SIGTERM", exit);\n\tprocess.on("SIGINT", exit);\n\tsetInterval(() => undefined, 1000);\n} else if (process.env.PI_FLOW_FAKE_FAIL_INDEX === goalIndex) {\n\tconsole.error("fake worker failed " + goalIndex);\n\tprocess.exit(1);\n} else {\n\tconsole.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-" + goalIndex, toolName: "bash", result: "ok", isError: false }));\n\twriteFileSync(marker("started"), "");\n\tif (process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE === "1") {\n\t\tawait waitForRelease();\n\t}\n\tconst workerDir = dirname(session);\n\tmkdirSync(workerDir, { recursive: true });\n\twriteFileSync(join(workerDir, "result.json"), JSON.stringify({ goalId: \`worker-\${goalIndex}\`, summary: \`done \${goalIndex}\`, acceptance: "passed", sessionFile: session, parallelRunId: parallelRunId() }, null, 2));\n\tconsole.log(JSON.stringify({ type: "agent_end", messages: [] }));\n}\n`,
 	);
 	chmodSync(join(bin, "pi"), 0o755);
 	const previousPath = process.env.PATH;
