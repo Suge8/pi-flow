@@ -5,14 +5,12 @@
 <h1 align="center">Pi Flow</h1>
 
 <p align="center">
-  <strong>Loop Engineering 的最佳实践，指数级提升 Agent 交付质量。<br>
-  零工具注入 — 尊重 Pi 极简哲学，经验证的优雅实现。</strong><br>
-  Best practice for Loop Engineering. Exponentially improve Agent delivery quality.<br>
-  Zero tool injection — respects Pi's minimalist philosophy, proven elegant implementation.
+  <strong>Best practice for Loop Engineering. Exponentially improve Agent delivery quality.<br>
+  Zero tool injection — respects Pi's minimalist philosophy, proven elegant implementation.</strong>
 </p>
 
 <p align="center">
-  <a href="#english">🇺🇸 English</a> · <a href="#中文">🇨🇳 中文</a>
+  🇺🇸 English · <a href="https://github.com/Suge8/pi-flow/blob/main/README.zh-CN.md">🇨🇳 简体中文</a>
 </p>
 
 <p align="center">
@@ -22,8 +20,6 @@
 </p>
 
 ---
-
-## English
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Suge8/pi-flow/main/assets/hero.png" alt="Pi Flow hero banner">
@@ -37,7 +33,12 @@ Agents write great code, but long tasks often die on four things:
 
 Pi Flow solves this: multi-round alignment → executable plan → live HTML report → multi-model adversarial checks → loop until quality ships.
 
-### Comparison
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Suge8/pi-flow/main/assets/demo.gif" alt="Pi Flow real workflow demo">
+</p>
+<p align="center"><sub>10-second product film · Align → Plan → Execute → Check → Advise → Ship</sub></p>
+
+## Comparison
 
 | | Pi Flow | Codex | Claude |
 |---|---|---|---|
@@ -50,21 +51,22 @@ Pi Flow solves this: multi-round alignment → executable plan → live HTML rep
 | Orchestration | `/flow` chains + per-goal acceptance | ❌ | ❌ |
 | Reports | Live HTML report, step-level, traceable | ❌ | ❌ |
 
-### Highlights
+## Highlights
 
 - **Zero tool injection** — Pure prompt recognition, no agent tools, respects Pi's runtime
 - **Clarification-first** — Clarifies before planning, unlike other agents that go with assumptions
 - **Role-based models** — Separate planning, execution, and review models, so each model does what it is best at
 - **Multi-model acceptance** — Cross-review, per-requirement verification, fewer false "done"s
 - **Multi-agent review** — Read-only review, iterative optimization, no shortcuts
+- **Live subagent monitor** — Pi Flow opens it for parallel work, acceptance, quality checks, and advisor consultations. Press Esc to close it; press Alt+S to reopen it.
 - **Live reports** — HTML step-level progress, runs locally, always traceable
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Suge8/pi-flow/main/assets/report-en.png" alt="Pi Flow live HTML report">
 </p>
-<p align="center"><sub>Report screenshot</sub></p>
+<p align="center"><sub>Demo report · 6 acceptance rounds · 3 review models · advisor interventions · 2 quality rounds</sub></p>
 
-### Install
+## Install
 
 ```bash
 pi install npm:@surgee/pi-flow
@@ -78,7 +80,7 @@ If Pi is already running, restart it or run:
 
 Requires Node.js `>=22.19.0`.
 
-### Configuration
+## Configuration
 
 Copy the template for local overrides:
 
@@ -93,7 +95,7 @@ cp config.template.json config.json
 ```json
 {
   "modelRoles": {
-    "planner": { "model": "52mx/free/glm-5.2", "thinking": "xhigh" },
+    "advisor": { "model": "52mx/free/glm-5.2", "thinking": "xhigh" },
     "executor": { "model": "openai-codex/gpt-5.5", "thinking": "xhigh" },
     "reviewers": [
       { "model": "openai-codex/gpt-5.4", "thinking": "high" }
@@ -102,14 +104,18 @@ cp config.template.json config.json
 }
 ```
 
-- `planner` — alignment and plan generation
+- `advisor` — alignment and plan generation, plus automatic or on-demand direction consults when a step fails checks
 - `executor` — implementation entry
-- `reviewers` — completion acceptance and quality checks
-- `planner` / `executor` may also be `"current"`
+- `reviewers` — acceptance and quality checks
+- `advisor` / `executor` may also be `"current"` (consult subprocesses fall back to the first reviewer)
+
+Planning uses the tools currently active in Pi. Failure advisors run as background subprocesses and share `checks.tools` with acceptance and quality reviewers, including `bash` for safe verification; `write` and `edit` remain unavailable.
+
+`thinking: "max"` requires Pi `>=0.80.6`.
 
 **Recommended role models**
 
-- **Planning** — Claude Fable 5, Claude Ops 4.8, GLM 5.2
+- **Advisor** — Claude Fable 5, Claude Ops 4.8, GLM 5.2
 - **Execution** — Claude Fable 5, GPT-5.5
 - **Review** — GPT-5.2, GPT-5.3 Codex, GPT-5.4, GLM 5.2, Kimi K2.7, DeepSeek V4, GPT-5.4 Mini
 - [Cost-performance benchmark →](https://factory.ai/news/code-review-benchmark)
@@ -119,29 +125,55 @@ cp config.template.json config.json
 
 | Key | Value | Description |
 |---|---|---|
-| `generation.align` | `"ask"` / `"yes"` / `"no"` | `ask` = ask each time; `yes` = always align; `no` = generate directly |
-| `modelRoles.planner` | `"current"` / role model | Model used for alignment and plan generation. Role model must use exact `provider/model` plus `thinking` |
+| `generation.align` | `"ask"` / `"coarse"` / `"standard"` / `"deep"` / `"no"` | `ask` = ask each time; depth values always align at that question budget (~10 / ~20-30 / no hard cap); `no` = generate directly |
+| `modelRoles.advisor` | `"current"` / role model | Model for alignment, plan generation, and automatic advice after 2/4/6/8 consecutive failed check rounds. Failed checks appear first; advice follows in a separate card. Role model must use exact `provider/model` plus `thinking`; `"current"` falls back to the first reviewer for consult subprocesses |
 | `modelRoles.executor` | `"current"` / role model | Model used once when execution starts. Pi keeps the selected model afterward |
-| `modelRoles.reviewers` | model array | Models for acceptance and quality checks, each with `model` and `thinking` (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`) |
-| `models` | model array | Legacy alias for `modelRoles.reviewers`; do not set both |
-| `runner.command` | `"pi"` | Child process CLI command |
-| `runner.tools` | tool name array | Tools available to child process, e.g. `["read","bash","grep"]` |
-| `runner.timeoutMs` | milliseconds | Per-step timeout, default `1200000` (20 min) |
-| `runner.serviceTier` | `"default"` / `"priority"` | API service tier |
-| `acceptance.enabled` | `true` / `false` | Toggle completion acceptance |
+| `modelRoles.reviewers` | model array | Models for acceptance and quality checks, each with `model` and `thinking` (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`) |
+| `advisor.enabled` | boolean | Master switch for automatic and `/advisor` consults; defaults to `true` |
+| `prewalk.enabled` | boolean | Fork the first execution conversation from the planning conversation so the executor inherits the planner's code exploration; falls back to a fresh conversation when the planning context is too large or the workspace changed since planning. Isolated-harness A/B with live model calls (3 single-file synthetic tasks × 9 runs, behavioral assertions; bypasses the /flow extension path and acceptance/quality checks): dedicated read-tool calls 1 vs 54, median 1.4× faster first step, median execution cost 0.99× (parity, range 0.54–1.20×), quality 18/18 on par. A first real-Flow A/B (`npm run eval:prewalk:flow`, 3 serial pairs through the full extension chain incl. acceptance/quality) confirms forking works in production (goal conversation carries plan lineage, execution reads drop sharply) with all runs completing, but fork won only 1 of 3 pairs on cost — the sample is too small to claim a universal benefit. With no `prewalk` config the runtime fallback is `false`; the shipped `config.template.json` enables it by default |
+| `background.command` | `"pi"` | Pi command used by background workers and check subprocesses |
+| `background.extensions` | path array | Extra extensions loaded by background Pi processes |
+| `checks.tools` | tool name array | Shared tools for acceptance, quality review, and failure advisors; `write`/`edit` are always denied |
+| `checks.timeoutMinutes` | minutes | Timeout per check or advisor subprocess; default `20` |
+| `checks.openaiFast` | boolean | Request paid priority processing for supported OpenAI Responses requests; other requests silently use standard processing. Default `false` |
+| `acceptance.enabled` | `true` / `false` | Toggle acceptance |
 | `quality.enabled` | `true` / `false` | Toggle quality checks |
 | `quality.mode` | `"autoFix"` / `"manual"` | `autoFix` = auto-fix on failure; `manual` = report only |
+| `report.bind` | `"localhost"` / IP | Listen address; default `127.0.0.1` |
+| `report.port` | integer | Fixed user-level report port; default `49327` |
+| `report.publicBaseUrl` | HTTP(S) origin / `null` | Public origin shown in report links; does not change the listen address |
+
+Only documented keys are accepted. Unknown keys are reported instead of ignored.
 
 </details>
 
-### 5 seconds to start
+### Remote reports with Tailscale
+
+All Pi terminals for the same OS user share one report service. The terminal that starts it can exit; the service stops 15 minutes after its last Pi control or browser event connection closes.
+
+The recommended setup keeps `report.bind` at `127.0.0.1`, proxies the fixed port with [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve), and sets `report.publicBaseUrl` to the HTTPS origin printed by Serve:
+
+```bash
+tailscale serve --bg 49327
+```
+
+This keeps the backend local while remote access passes through Tailscale Serve, where tailnet access rules apply. See the [`tailscale serve` CLI reference](https://tailscale.com/docs/reference/tailscale-cli/serve) for flags and status commands. Pi Flow does not change Tailscale settings for you.
+
+Advanced users can bind directly to this machine's Tailscale IP. Binding to `0.0.0.0` or `::` also exposes the service to other reachable LAN interfaces; it does **not** mean “Tailscale only.” Protect direct binds with tailnet ACLs and the host firewall. Report URLs contain an unguessable capability, but they are bearer links: do not publish or treat them as permanent public URLs.
+
+## 5 seconds to start
 
 ```text
 /flow [request|path.md]  # Plan → execute → accept → quality check
 /flow go [F1]            # advance or resume a Flow
 /flow stop [F1]          # stop a Flow; resume with go
-/review                  # Quality-check AI operations
+/advisor                 # Consult after an unresolved failed check
+/review [request]        # Check now, or execute a request then auto-check
 ```
+
+`/advisor` takes no arguments and uses the Flow step attached to the current conversation. It requires a currently unresolved failed acceptance or quality round. Advice is recorded in the report and queued for the executor; run `/flow go F<N>` to continue and deliver it. It does not run during parallel batches. The advice is excluded from reviewer Context Evidence and cannot be used as review evidence.
+
+Run `/review` while idle to check the work already in the conversation. Run `/review Fix the login timeout` to execute that request as a normal user message and automatically start quality checks when it finishes. While the AI is working, bare `/review` arms the same automatic check for the current turn. Press Esc or Ctrl+C before checking begins to cancel it.
 
 <details>
 <summary>Advanced usage</summary>
@@ -170,205 +202,28 @@ Advance or stop an existing Flow:
 
 Multiple Flows can be in progress in one project, including alignment, plan generation, and execution. Bare `go` targets the Flow owned by the current conversation or the only in-progress Flow; otherwise Pi asks for an explicit Flow id. During alignment or plan generation, replying in the current conversation continues the same Flow.
 
+Independent Flows can also run in parallel from separate [git worktrees](https://git-scm.com/docs/git-worktree): each worktree keeps its own `.flow` state, so running Pi separately in each worktree needs no extra setup.
+
 </details>
 
-### Delivery loop
+## Delivery loop
 
 ```text
-Request → plan → execution → completion acceptance → quality check → close
+Request → plan → execution → acceptance → quality check → close
                            ↘ keep fixing if a check fails ↙
 ```
 
 - `/flow` — one entrance for focused tasks and larger multi-step work; each step has plan / accept / report / handoff.
-- Reports run at `http://127.0.0.1:<port>`.
-- Completion acceptance: "Is the requirement truly done?"
-- Quality checks: "Is the implementation clean, reliable, and maintainable?"
+- Reports use one user-level service at `http://127.0.0.1:49327` by default.
+- Acceptance: "Is the requirement truly done?"
+- Quality check: "Is the implementation clean, reliable, and maintainable?"
 
-### Co-create
+## Co-create
 
 Pi Flow is young and opinionated. If you care about more reliable agent delivery loops, ideas, issues, and focused PRs are welcome.
 
 - Discuss — open an issue with the workflow you want to improve
-- Contribute — read [CONTRIBUTING.md](CONTRIBUTING.md) and keep changes small
-
----
-
-## 中文
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Suge8/pi-flow/main/assets/hero-zh.png" alt="Pi Flow 中文 hero banner">
-</p>
-
-Agent 很会写代码，但长任务常死在四件事：
-1. 计划遗漏关键信息，不符合你真正的需求
-2. 说自己做完了，实际上是幻觉
-3. 完成质量差
-4. 不同模型擅长不同角色，单模型硬扛效果不佳
-
-Pi Flow 解决这个问题：多轮对齐需求 → 可执行计划 → 实时报告 → 多模型对抗检查 → 循环修复直至高质量交付
-
-### 对比
-
-| | Pi Flow | Codex | Claude |
-|---|---|---|---|
-| 实现 | Prompt 注入 · 零工具，纯 UI 提示符识别 | ❌ 工具注入 | ❌ 工具注入 |
-| 对齐 | 先追问澄清，再生成计划 | ❌ | ❌ |
-| 角色模型 | 计划 / 执行 / 审查分别指定模型 | ❌ | ❌ |
-| 验收 | 多模型交叉审查，按需求逐项反查 | ❌ 既当球员又当裁判 | ❌ 小模型 |
-| 证据 | 需求 + 计划 + 代码 + 输出 + 多模型意见 | ❌ 既当球员又当裁判 | ❌ 只看对话 |
-| 质量 | 多代理只读审查，循环优化 | ❌ | ❌ |
-| 编排 | `/flow` 串联 + 逐目标验收 | ❌ | ❌ |
-| 报告 | 实时 HTML 报告，步骤级可回溯 | ❌ | ❌ |
-
-### 亮点
-
-- **零工具注入** — 纯 Prompt 识别，不加 agent tool，不侵入 Pi 运行时
-- **追问对齐** — 先澄清再计划，不像其他 Agents 靠自己的想当然发挥
-- **角色模型** — 计划、执行、审查分别指定模型，让合适的模型做擅长的事
-- **多模型验收** — 交叉审查，按需求反查，减少"假完成"
-- **多代理审查** — 只读审查，循环优化，不偷懒、不遗漏
-- **实时报告** — HTML 步骤级进度，本地运行，随时回溯
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Suge8/pi-flow/main/assets/usage-1.png" width="23%" alt="使用截图 1">
-  <img src="https://raw.githubusercontent.com/Suge8/pi-flow/main/assets/usage-2.png" width="23%" alt="使用截图 2">
-  <img src="https://raw.githubusercontent.com/Suge8/pi-flow/main/assets/usage-3.png" width="23%" alt="使用截图 3">
-  <img src="https://raw.githubusercontent.com/Suge8/pi-flow/main/assets/usage-4.png" width="23%" alt="使用截图 4">
-</p>
-<p align="center"><sub>典型场景</sub></p>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Suge8/pi-flow/main/assets/report.png" alt="Pi Flow 实时 HTML 报告">
-</p>
-<p align="center"><sub>报告截图</sub></p>
-
-### 安装
-
-```bash
-pi install npm:@surgee/pi-flow
-```
-
-如果 Pi 已经在运行，重启或执行：
-
-```text
-/reload
-```
-
-需要 Node.js `>=22.19.0`。
-
-### 配置
-
-复制模板作为本机配置：
-
-```bash
-cp config.template.json config.json
-```
-
-**模型角色**
-
-`config.template.json` 已包含 `modelRoles`。某个角色写 `"current"` 就沿用 Pi 当前模型；写 `{ "model", "thinking" }` 就固定到指定模型。
-
-```json
-{
-  "modelRoles": {
-    "planner": { "model": "52mx/free/glm-5.2", "thinking": "xhigh" },
-    "executor": { "model": "openai-codex/gpt-5.5", "thinking": "xhigh" },
-    "reviewers": [
-      { "model": "openai-codex/gpt-5.4", "thinking": "high" }
-    ]
-  }
-}
-```
-
-- `planner`：追问对齐、生成计划
-- `executor`：进入执行时使用
-- `reviewers`：完成验收和质量检查
-- `planner` / `executor` 也可以写 `"current"`
-
-**推荐角色模型**
-
-- **计划模型** — Claude Fable 5、Claude Ops 4.8、GLM 5.2
-- **执行模型** — Claude Fable 5、GPT-5.5
-- **审查模型** — GPT-5.2、GPT-5.3 Codex、GPT-5.4、GLM 5.2、Kimi K2.7、DeepSeek V4、GPT-5.4 Mini
-- [综合性价比 benchmark →](https://factory.ai/news/code-review-benchmark)
-
-<details>
-<summary>常用配置</summary>
-
-| 配置 | 值 | 说明 |
-|---|---|---|
-| `generation.align` | `"ask"` / `"yes"` / `"no"` | `ask`＝每次询问；`yes`＝总是先对齐；`no`＝直接生成 |
-| `modelRoles.planner` | `"current"` / 角色模型 | 对齐和生成计划时使用；角色模型必须写精确 `provider/model` 和 `thinking` |
-| `modelRoles.executor` | `"current"` / 角色模型 | 执行开始时切一次；之后保留 Pi 当前选择 |
-| `modelRoles.reviewers` | 模型数组 | 完成验收和质量检查用的模型，每项含 `model` 和 `thinking`（`off`/`minimal`/`low`/`medium`/`high`/`xhigh`） |
-| `models` | 模型数组 | 旧配置别名，等同 `modelRoles.reviewers`；不要同时配置 |
-| `runner.command` | `"pi"` | 子进程 CLI 命令 |
-| `runner.tools` | 工具名数组 | 子进程可用工具，如 `["read","bash","grep"]` |
-| `runner.timeoutMs` | 毫秒数 | 单步超时，默认 `1200000`（20 分钟） |
-| `runner.serviceTier` | `"default"` / `"priority"` | API 服务等级 |
-| `acceptance.enabled` | `true` / `false` | 开关完成验收 |
-| `quality.enabled` | `true` / `false` | 开关质量检查 |
-| `quality.mode` | `"autoFix"` / `"manual"` | `autoFix`＝不过自动修；`manual`＝只报告 |
-
-</details>
-
-### 5 秒开始
-
-```text
-/flow [需求|path.md]  # 计划 → 执行 → 验收 → 质量检查
-/flow go [F1]         # 推进或恢复 Flow
-/flow stop [F1]       # 停止 Flow，之后用 go 恢复
-/review               # 对 AI 操作做质量检查
-```
-
-<details>
-<summary>高级用法</summary>
-
-直接带需求：
-
-```text
-/flow 修复刷新后的登录状态
-/flow 重构登录流程，分步骤安全推进
-```
-
-把 md 文件作为需求：
-
-```text
-/flow task.md
-/flow plan.md
-```
-
-推进或停止已有 Flow：
-
-```text
-/flow go        # 当前对话所属 Flow，或唯一活跃 Flow
-/flow go F1     # 显式指定 Flow id
-/flow stop F1   # 停止，之后仍可用 go 恢复
-```
-
-同一项目可同时有多个进行中的 Flow，包括对齐、计划生成和执行中。裸 `go` 会路由到当前对话所属 Flow 或唯一进行中的 Flow；多义时 Pi 会要求指定 id。对齐或计划生成期间，直接在当前对话回复会继续同一个 Flow。
-
-</details>
-
-### 工作流程
-
-```text
-对齐 → 计划 → 执行 → 完成验收 → 质量检查 → 收口
-                   ↘ 不通过则循环修复 ↙
-```
-
-- 对齐："多轮问答全面挖掘你的需求"
-- 完成验收："确保任务完整完成，无偷懒"
-- 质量检查："确保实现干净、可靠、可维护"
-
-### 共创
-
-Pi Flow 还在快速迭代。如果你也在探索更可靠的 Agent 循环，欢迎一起打磨。
-
-- 讨论 — 用 issue 描述你的工作流和痛点
-- 贡献 — 先读 [CONTRIBUTING.md](CONTRIBUTING.md)，保持改动小而清晰
-
----
+- Contribute — read [CONTRIBUTING.md](.github/CONTRIBUTING.md) and keep changes small
 
 ## License
 
