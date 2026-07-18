@@ -1,6 +1,8 @@
 node_modules/
 config.json
 .flow/
-.tmp-*/
+.tmp/
 .DS_Store
 dist/
+# executed work ledgers from improve-skill runs; facts live in CHANGELOG/docs
+plans/

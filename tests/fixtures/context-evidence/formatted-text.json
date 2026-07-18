@@ -1,0 +1,52 @@
+[
+	{
+		"type": "message",
+		"id": "format-u1",
+		"parentId": null,
+		"timestamp": "2026-06-01T10:00:01.000Z",
+		"message": {
+			"role": "user",
+			"content": [
+				{
+					"type": "text",
+					"text": "保留格式：\n```json\n{\n  \"alpha\": 1,\n  \"beta\": [2, 3]\n}\n```\n\n第二段。"
+				}
+			],
+			"timestamp": 1780308001000
+		}
+	},
+	{
+		"type": "message",
+		"id": "format-a1",
+		"parentId": "format-u1",
+		"timestamp": "2026-06-01T10:00:02.000Z",
+		"message": {
+			"role": "assistant",
+			"content": [
+				{
+					"type": "text",
+					"text": "收到。\n\n```ts\nconst value = 1;\n```"
+				}
+			],
+			"api": "test",
+			"provider": "test",
+			"model": "fixture-model",
+			"usage": {
+				"input": 100,
+				"output": 20,
+				"cacheRead": 0,
+				"cacheWrite": 0,
+				"totalTokens": 120,
+				"cost": {
+					"input": 0,
+					"output": 0,
+					"cacheRead": 0,
+					"cacheWrite": 0,
+					"total": 0
+				}
+			},
+			"stopReason": "stop",
+			"timestamp": 1780308002000
+		}
+	}
+]

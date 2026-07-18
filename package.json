@@ -28,9 +28,8 @@
 		"review"
 	],
 	"files": [
-		"src",
+		"dist",
 		"prompts",
-		"scripts",
 		"assets/logo.png",
 		"config.template.json",
 		"README.md",
@@ -38,27 +37,38 @@
 	],
 	"pi": {
 		"extensions": [
-			"./src/index.ts"
+			"./dist/index.js"
 		],
 		"image": "https://raw.githubusercontent.com/Suge8/pi-flow/main/assets/hero.png"
 	},
 	"scripts": {
-		"check": "biome check . && npm run typecheck",
+		"bench:report": "node scripts/benchmark-performance.mjs report",
+		"bench:soak": "node --expose-gc scripts/benchmark-performance.mjs soak",
+		"bench:startup": "node scripts/benchmark-performance.mjs startup",
+		"build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node scripts/build-report-assets.mjs",
+		"check": "biome check . && npm run typecheck && npm run build",
 		"format": "biome check --write .",
 		"release": "node scripts/release.mjs",
 		"release:current": "npm run release -- current",
 		"release:patch": "npm run release -- patch",
 		"release:minor": "npm run release -- minor",
 		"release:major": "npm run release -- major",
-		"test": "node tests/language-smoke.mjs && node tests/plan-smoke.mjs && node tests/scheduler.smoke.mjs && node tests/session-transcript-smoke.mjs && node tests/goal-review-smoke.mjs && node tests/review-smoke.mjs && node tests/activity-frame-smoke.mjs && node tests/status-smoke.mjs && node tests/report-server-smoke.mjs && node tests/result-card-smoke.mjs && node tests/service-tier-smoke.mjs && node tests/model-roles-smoke.mjs && node tests/flow-smoke.mjs && node tests/footer-smoke.mjs && node tests/copy-lint-smoke.mjs",
+		"test": "node tests/agent-progress-smoke.mjs && node tests/monitor-overlay-smoke.mjs && node tests/language-smoke.mjs && node tests/plan-smoke.mjs && node tests/scheduler.smoke.mjs && node tests/prewalk-smoke.mjs && node tests/prewalk-flow-eval-smoke.mjs && node tests/context-evidence-smoke.mjs && node tests/context-evidence-evaluation-smoke.mjs && node tests/goal-review-smoke.mjs && node tests/review-smoke.mjs && node tests/activity-frame-smoke.mjs && node tests/status-smoke.mjs && node tests/report-server-smoke.mjs && node tests/result-card-smoke.mjs && node tests/openai-fast-smoke.mjs && node tests/model-roles-smoke.mjs && node tests/report-curve-smoke.mjs && node tests/flow-smoke.mjs && node tests/package-smoke.mjs && node tests/footer-smoke.mjs && node tests/copy-lint-smoke.mjs",
+		"eval:context": "node scripts/evaluate-context-evidence.mjs",
 		"typecheck": "tsc --noEmit",
-		"prepublishOnly": "npm run check && npm test"
+		"pretest": "npm run build",
+		"prepack": "npm run build",
+		"prepublishOnly": "npm run check && npm test",
+		"eval:prewalk": "node scripts/evaluate-prewalk.mjs",
+		"eval:prewalk:flow": "npm run build && node scripts/evaluate-prewalk-flow.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.14",
-		"@earendil-works/pi-coding-agent": "0.80.3",
-		"@earendil-works/pi-tui": "0.80.3",
+		"@earendil-works/pi-coding-agent": "0.80.6",
+		"@earendil-works/pi-tui": "0.80.6",
 		"@types/node": "24.12.4",
+		"roughjs": "^4.6.6",
+		"tailwindcss": "3.4.17",
 		"typescript": "6.0.3"
 	},
 	"peerDependencies": {

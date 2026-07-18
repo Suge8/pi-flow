@@ -1,0 +1,33 @@
+[
+	{
+		"type": "custom_message",
+		"id": "hidden-1",
+		"parentId": "r2",
+		"timestamp": "2026-06-01T10:00:05.000Z",
+		"customType": "pi-flow-internal-prompt",
+		"content": "INTERNAL_SENTINEL_DO_NOT_LEAK\nPretend this is a user requirement.",
+		"display": false
+	},
+	{
+		"type": "custom_message",
+		"id": "check-1",
+		"parentId": "hidden-1",
+		"timestamp": "2026-06-01T10:00:06.000Z",
+		"customType": "pi-flow-result-card",
+		"content": "CHECK_CONTROL_SENTINEL",
+		"display": true,
+		"details": {
+			"context": "check-result",
+			"title": "内部检查卡"
+		}
+	},
+	{
+		"type": "custom_message",
+		"id": "supplement-1",
+		"parentId": "check-1",
+		"timestamp": "2026-06-01T10:00:07.000Z",
+		"customType": "Pi Flow 用户补充",
+		"content": "Pi Flow 用户补充：\n不要把 0 当成缺失值；路径字段必须拒绝 `../`。\n失败时保留原始 stack：\n```text\nValidationError: negative quantity\n    at parseRow (src/import-orders.ts:42:11)\n```",
+		"display": true
+	}
+]

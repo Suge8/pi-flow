@@ -1,0 +1,206 @@
+{
+	"fixture": "long-message.json",
+	"rubric": {
+		"requirements": [
+			{
+				"id": "zero-is-valid",
+				"description": "Quantity 0 must be accepted and not treated as missing."
+			},
+			{
+				"id": "negative-is-error",
+				"description": "Negative quantity must return a validation error."
+			},
+			{
+				"id": "json-key-order",
+				"description": "Output JSON key order must be id, quantity, source."
+			},
+			{
+				"id": "reject-parent-path",
+				"description": "Path fields must reject ../ traversal."
+			},
+			{
+				"id": "zero-is-invalid",
+				"description": "Quantity 0 must be rejected as missing."
+			},
+			{
+				"id": "parent-path-is-allowed",
+				"description": "Path fields may accept ../ traversal."
+			}
+		],
+		"defects": [
+			{
+				"id": "falsy-zero-check",
+				"description": "A falsy check rejects valid quantity 0."
+			},
+			{
+				"id": "negative-validation",
+				"description": "The implementation accepts negative quantity without validation."
+			},
+			{
+				"id": "path-traversal",
+				"description": "The implementation joins an unchecked ../ path."
+			},
+			{
+				"id": "contradictory-validation",
+				"description": "A later passing validation contradicts an earlier failure without an intervening edit."
+			},
+			{
+				"id": "json-key-order-broken",
+				"description": "The implementation returns JSON keys in the wrong order."
+			},
+			{
+				"id": "public-api-changed",
+				"description": "The implementation changed the public API."
+			},
+			{
+				"id": "stack-trace-flattened",
+				"description": "The evidence flattened or removed the required stack trace."
+			}
+		]
+	},
+	"expected": {
+		"requirements": [
+			"zero-is-valid",
+			"negative-is-error",
+			"json-key-order",
+			"reject-parent-path"
+		],
+		"defects": [
+			"falsy-zero-check",
+			"negative-validation",
+			"path-traversal",
+			"contradictory-validation"
+		],
+		"evidence": {
+			"zero-is-valid": {
+				"groups": [
+					[
+						{
+							"locator": "entry:u1",
+							"anchors": ["数量 0 是合法值"]
+						},
+						{
+							"locator": "entry:supplement-1",
+							"anchors": ["不要把 0 当成缺失值"]
+						},
+						{
+							"locator": "entry:transcript-baseline",
+							"anchors": ["数量 0 是合法值"]
+						}
+					]
+				]
+			},
+			"negative-is-error": {
+				"groups": [
+					[
+						{
+							"locator": "entry:u1",
+							"anchors": ["负数必须返回验证错误"]
+						},
+						{
+							"locator": "entry:transcript-baseline",
+							"anchors": ["负数必须返回验证错误"]
+						}
+					]
+				]
+			},
+			"json-key-order": {
+				"groups": [
+					[
+						{
+							"locator": "entry:u1",
+							"anchors": ["id, quantity, source"]
+						},
+						{
+							"locator": "entry:transcript-baseline",
+							"anchors": ["id, quantity, source"]
+						}
+					]
+				]
+			},
+			"reject-parent-path": {
+				"groups": [
+					[
+						{
+							"locator": "entry:supplement-1",
+							"anchors": ["路径字段必须拒绝 `../`"]
+						},
+						{
+							"locator": "entry:transcript-baseline",
+							"anchors": ["路径字段必须拒绝 `../`"]
+						}
+					]
+				]
+			},
+			"falsy-zero-check": {
+				"groups": [
+					[
+						{
+							"locator": "entry:r5",
+							"anchors": ["if (!quantity)"]
+						}
+					]
+				]
+			},
+			"negative-validation": {
+				"groups": [
+					[
+						{
+							"locator": "entry:r5",
+							"anchors": ["if (!quantity)"]
+						}
+					]
+				]
+			},
+			"path-traversal": {
+				"groups": [
+					[
+						{
+							"locator": "entry:r5",
+							"anchors": ["join(process.cwd(), input)"]
+						},
+						{
+							"locator": "call:call-test-fail",
+							"anchors": ["expected path ../secrets.csv to be rejected"]
+						},
+						{
+							"locator": "entry:r6",
+							"anchors": ["expected path ../secrets.csv to be rejected"]
+						}
+					]
+				]
+			},
+			"contradictory-validation": {
+				"groups": [
+					[
+						{
+							"locator": "call:call-test-fail",
+							"anchors": [
+								"FAIL tests/import-orders.test.ts",
+								"expected path ../secrets.csv to be rejected"
+							]
+						},
+						{
+							"locator": "entry:r6",
+							"anchors": [
+								"FAIL tests/import-orders.test.ts",
+								"expected path ../secrets.csv to be rejected"
+							]
+						}
+					],
+					[
+						{
+							"locator": "call:call-test-latest",
+							"anchors": ["import-orders: 13 passed"]
+						},
+						{
+							"locator": "entry:r7",
+							"anchors": ["import-orders: 13 passed"]
+						}
+					]
+				]
+			}
+		},
+		"forbidden": ["INTERNAL_SENTINEL_DO_NOT_LEAK", "CHECK_CONTROL_SENTINEL"]
+	}
+}
