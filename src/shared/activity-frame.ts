@@ -1,18 +1,37 @@
+import type {
+	ExtensionContext,
+	KeybindingsManager,
+} from "@earendil-works/pi-coding-agent";
+import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
+import { setPiActivity } from "./activity-signal.js";
+import {
+	ACTIVITY_SPINNER_INTERVAL_MS,
+	hasActivitySpinner,
+	renderActivitySpinners,
+} from "./activity-spinner.js";
+import type { Language } from "./config.js";
+import {
+	FLAME_FRAME_COUNT,
+	flameFrameLines,
+	flameFrameWidth,
+} from "./flame-frames.js";
+import { runtimeLanguage } from "./language.js";
+import { openActiveMonitorOverlay } from "./monitor-overlay.js";
 import {
 	CustomEditor,
-	type ExtensionContext,
-	type KeybindingsManager,
-} from "@earendil-works/pi-coding-agent";
-import {
-	type Component,
-	type EditorTheme,
-	type TUI,
+	matchesKey,
 	truncateToWidth,
 	visibleWidth,
-} from "@earendil-works/pi-tui";
-import type { Language } from "./config.js";
-import { runtimeLanguage } from "./language.js";
-import { localizeUserTextForLanguage } from "./ui-language.js";
+} from "./tui.js";
+import {
+	localizeUserTextForLanguage,
+	MONITOR_SHORTCUT,
+} from "./ui-language.js";
+
+export {
+	ACTIVITY_SPINNER_FRAMES,
+	activitySpinnerLine,
+} from "./activity-spinner.js";
 
 export type FlowActivity = "goal" | "review";
 
@@ -26,6 +45,7 @@ export interface ActivityWidgetMessage {
 	rows?: string[];
 	hint?: string;
 	compact?: boolean;
+	flame?: boolean;
 	language?: Language;
 }
 
@@ -33,6 +53,9 @@ type Rgb = readonly [number, number, number];
 
 const GOAL_WIDGET_KEY = "goal-progress";
 const REVIEW_WIDGET_KEY = "review-progress";
+const FLAME_MARGIN_MIN = 6;
+const FLAME_GAP_MIN = 8;
+const FLAME_GAP_IDEAL = 16;
 const GOAL_COLORS: readonly Rgb[] = [
 	[125, 92, 255],
 	[0, 194, 255],
@@ -41,14 +64,15 @@ const REVIEW_COLORS: readonly Rgb[] = [
 	[255, 153, 102],
 	[255, 91, 137],
 ];
-const flowActivityGlobal = globalThis as typeof globalThis & {
-	__PI_FLOW_ACTIVITY__?: { active: boolean };
-};
+// 外部消费者（终端集成等）通过 activity-signal 订阅 flow/review 编排是否进行中；
+// 本模块是该来源的唯一写入者。
+const FRAME_ACTIVITY_SOURCE = "pi-flow:frame";
 const activityReasons = new Map<FlowActivity, Set<string>>();
 let installed = false;
 let activeTui: TUI | undefined;
 let editorInputHidden = false;
 let activeCancel: (() => void) | undefined;
+let captureCancelWhenInputVisible = false;
 let cancelHint = "Esc/Ctrl+C";
 
 export function installFlowActivityFrame(ctx: ExtensionContext) {
@@ -61,7 +85,9 @@ export function installFlowActivityFrame(ctx: ExtensionContext) {
 	installed = true;
 	ctx.ui.setEditorComponent(
 		(tui, theme, keybindings) =>
-			new FlowActivityEditor(tui, theme, keybindings),
+			new FlowActivityEditor(tui, theme, keybindings, () => {
+				void openActiveMonitorOverlay(ctx);
+			}),
 	);
 }
 
@@ -87,6 +113,7 @@ export function clearFlowActivities() {
 	syncActivityState();
 	editorInputHidden = false;
 	activeCancel = undefined;
+	captureCancelWhenInputVisible = false;
 	activeTui = undefined;
 	installed = false;
 }
@@ -101,12 +128,30 @@ export function isFlowEditorInputHidden() {
 	return editorInputHidden;
 }
 
-export function setFlowCancelHandler(handler: (() => void) | undefined) {
+export function setFlowCancelHandler(
+	handler: (() => void) | undefined,
+	options: { captureWhenInputVisible?: boolean } = {},
+) {
 	activeCancel = handler;
+	captureCancelWhenInputVisible =
+		handler !== undefined && options.captureWhenInputVisible === true;
 }
 
 export function cancelActiveFlowActivity() {
 	activeCancel?.();
+}
+
+export function handleFlowActivityInput(
+	data: string,
+	keybindings: Pick<KeybindingsManager, "matches">,
+) {
+	if (
+		(!editorInputHidden && !captureCancelWhenInputVisible) ||
+		!matchesCancel(data, keybindings)
+	)
+		return false;
+	cancelActiveFlowActivity();
+	return true;
 }
 
 export function currentCancelHint() {
@@ -158,6 +203,7 @@ export function setReviewActivityBox(
 export class ActivityBox implements Component {
 	readonly signal: AbortSignal;
 	private readonly controller = new AbortController();
+	private readonly spinnerTimer: ReturnType<typeof setInterval> | undefined;
 
 	constructor(
 		private readonly options: {
@@ -167,45 +213,106 @@ export class ActivityBox implements Component {
 			rows?: string[];
 			hint?: string;
 			compact?: boolean;
+			flame?: boolean;
+			requestRender?: () => void;
 		},
 	) {
 		this.signal = this.controller.signal;
+		if (
+			!options.requestRender ||
+			(!options.flame && !hasActivitySpinner(options))
+		)
+			return;
+		this.spinnerTimer = setInterval(
+			() => this.invalidate(),
+			ACTIVITY_SPINNER_INTERVAL_MS,
+		);
+		this.spinnerTimer.unref?.();
 	}
 
 	set onAbort(_fn: (() => void) | undefined) {}
 
 	render(width: number): string[] {
+		const safeWidth = Math.max(1, width);
 		const palette = paletteFor(this.options.activity);
-		const border = colorText("─".repeat(Math.max(1, width)), palette);
-		const blank = " ".repeat(Math.max(0, width));
+		const border = colorText("─".repeat(safeWidth), palette);
+		const contentRows = this.contentRows();
+		const body = this.shouldRenderFlame(safeWidth)
+			? this.renderFlameBody(contentRows, safeWidth)
+			: contentRows.map((line) => centerLine(line, safeWidth));
+		return [border, ...body, border];
+	}
+
+	private contentRows() {
+		const rows: string[] = [];
 		const compact = this.options.compact === true;
-		const lines = [border];
-		if (!compact) lines.push(blank);
+		if (!compact) rows.push("");
 		const title = this.options.title;
 		if (title) {
-			lines.push(centerLine(boldText(title), width));
-			const rows = this.options.rows ?? [];
-			if (rows.length > 0) lines.push(blank);
-			for (const row of rows) {
+			rows.push(boldText(renderActivitySpinners(title)));
+			const contentRows = this.options.rows ?? [];
+			if (contentRows.length > 0) rows.push("");
+			for (const row of contentRows)
 				for (const line of row.split(/\r?\n/u))
-					lines.push(centerLine(line, width));
-			}
+					rows.push(renderActivitySpinners(line));
 		} else {
-			for (const line of (this.options.message ?? "").split(/\r?\n/)) {
-				lines.push(centerLine(line, width));
-			}
+			for (const line of (this.options.message ?? "").split(/\r?\n/u))
+				rows.push(renderActivitySpinners(line));
 		}
 		if (this.options.hint) {
-			lines.push(blank, centerLine(this.options.hint, width));
+			rows.push("", renderActivitySpinners(this.options.hint));
 		}
-		if (!compact) lines.push(blank);
-		lines.push(border);
-		return lines;
+		if (!compact) rows.push("");
+		return rows;
+	}
+
+	private shouldRenderFlame(width: number) {
+		return this.options.flame === true && width >= 60;
+	}
+
+	private renderFlameBody(contentRows: string[], width: number) {
+		const flameHeight = Math.max(4, contentRows.length);
+		const rawFlame = flameFrameLines(flameHeight, currentFlameFrameIndex());
+		const flameWidth = flameFrameWidth(flameHeight);
+		const contentWidth = Math.min(
+			Math.max(1, ...contentRows.map((row) => visibleWidth(row))),
+			Math.max(1, width - FLAME_MARGIN_MIN * 2 - FLAME_GAP_MIN - flameWidth),
+		);
+		const gap = Math.max(
+			FLAME_GAP_MIN,
+			Math.min(
+				FLAME_GAP_IDEAL,
+				width - FLAME_MARGIN_MIN * 2 - contentWidth - flameWidth,
+			),
+		);
+		const group = contentWidth + gap + flameWidth;
+		const leftMargin = Math.max(
+			FLAME_MARGIN_MIN,
+			Math.floor((width - group) / 2),
+		);
+		const indent = " ".repeat(leftMargin);
+		const paddedRows = [...contentRows];
+		while (paddedRows.length < flameHeight) paddedRows.push("");
+		return rawFlame.map((line, index) => {
+			const row = truncateToWidth(paddedRows[index] ?? "", contentWidth, "…");
+			const padding = " ".repeat(
+				Math.max(0, contentWidth - visibleWidth(row) + gap),
+			);
+			const flame = `${truncateToWidth(line, flameWidth, "")}\x1b[0m`;
+			return `${indent}${row}${padding}${flame}`;
+		});
 	}
 
 	handleInput(_data: string): void {}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.options.requestRender?.();
+	}
+
+	dispose(): void {
+		if (this.spinnerTimer) clearInterval(this.spinnerTimer);
+		this.controller.abort();
+	}
 }
 
 function setActivityWidget(
@@ -239,8 +346,12 @@ function setActivityWidgetContent(
 	setWidget(
 		key,
 		widget
-			? (_tui, theme) =>
-					new ActivityBox({
+			? (tui, theme) => {
+					const requestRender =
+						typeof tui.requestRender === "function"
+							? () => tui.requestRender()
+							: undefined;
+					return new ActivityBox({
 						activity,
 						message: widget.message
 							? theme.fg(color, widget.message)
@@ -249,7 +360,10 @@ function setActivityWidgetContent(
 						rows: widget.rows?.map((row) => theme.fg(color, row)),
 						hint: widget.hint,
 						compact: widget.compact,
-					})
+						flame: widget.flame,
+						requestRender,
+					});
+				}
 			: undefined,
 		{ placement: "aboveEditor" },
 	);
@@ -279,7 +393,12 @@ function boldText(text: string) {
 class FlowActivityEditor extends CustomEditor {
 	private readonly appKeybindings: KeybindingsManager;
 
-	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
+	constructor(
+		tui: TUI,
+		theme: EditorTheme,
+		keybindings: KeybindingsManager,
+		private readonly openMonitor: () => void,
+	) {
 		super(tui, theme, keybindings);
 		this.appKeybindings = keybindings;
 		activeTui = tui;
@@ -288,10 +407,12 @@ class FlowActivityEditor extends CustomEditor {
 	}
 
 	handleInput(data: string): void {
-		if (editorInputHidden) {
-			if (matchesCancel(data, this.appKeybindings)) cancelActiveFlowActivity();
+		if (matchesKey(data, MONITOR_SHORTCUT.key)) {
+			this.openMonitor();
 			return;
 		}
+		if (handleFlowActivityInput(data, this.appKeybindings)) return;
+		if (editorInputHidden) return;
 		super.handleInput(data);
 	}
 
@@ -301,7 +422,10 @@ class FlowActivityEditor extends CustomEditor {
 	}
 }
 
-function matchesCancel(data: string, keybindings: KeybindingsManager) {
+function matchesCancel(
+	data: string,
+	keybindings: Pick<KeybindingsManager, "matches">,
+) {
 	return (
 		keybindings.matches(data, "app.interrupt") ||
 		keybindings.matches(data, "app.clear")
@@ -339,14 +463,20 @@ function paletteFor(activity: FlowActivity) {
 
 function centerLine(line: string, width: number) {
 	if (width <= 0) return "";
-	const text = truncateToWidth(line, width, "");
+	const text = truncateToWidth(line, width, "…");
 	const padding = Math.max(0, width - visibleWidth(text));
 	const left = Math.floor(padding / 2);
 	return `${" ".repeat(left)}${text}${" ".repeat(padding - left)}`;
 }
 
+function currentFlameFrameIndex() {
+	return (
+		Math.floor(Date.now() / ACTIVITY_SPINNER_INTERVAL_MS) % FLAME_FRAME_COUNT
+	);
+}
+
 function syncActivityState() {
-	flowActivityGlobal.__PI_FLOW_ACTIVITY__ = { active: activityCount() > 0 };
+	setPiActivity(FRAME_ACTIVITY_SOURCE, activityCount() > 0);
 }
 
 function activityCount() {
