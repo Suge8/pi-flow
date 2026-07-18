@@ -3277,8 +3277,9 @@ async function passAndErrorReviewerStopsScenario() {
 		card.message.content.includes("模型 2 · missing"),
 		card.message.content,
 	);
+	// bash exec-ENOENT: macOS bash 3.x → 126, Ubuntu bash 5.x → 127; both print "No such file or directory"
 	assert(
-		card.message.content.includes("Review failed with exit 126") &&
+		/Review failed with exit 12[67]/.test(card.message.content) &&
 			card.message.content.includes("No such file or directory"),
 		card.message.content,
 	);
@@ -3331,7 +3332,7 @@ function routedDiagnosticCommand(defaultCommand, reviewers) {
 				`${shellQuote(reviewer.model)}) exec ${shellQuote(reviewer.command)} "$@" ;;`,
 		)
 		.join("\n");
-	// bash pins exec-ENOENT to exit 126 across macOS and Ubuntu CI (dash reports 127)
+	// bash (not dash) so missing-exec stderr is "No such file or directory" on both macOS and Ubuntu
 	writeFileSync(
 		path,
 		`#!/bin/bash

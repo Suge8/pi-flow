@@ -5142,7 +5142,7 @@ function routedDiagnosticCommand(defaultCommand, reviewers) {
 				`${shellQuote(reviewer.model)}) exec ${shellQuote(reviewer.command)} "$@" ;;`,
 		)
 		.join("\n");
-	// bash pins exec-ENOENT to exit 126 across macOS and Ubuntu CI (dash reports 127)
+	// bash (not dash) so missing-exec stderr is "No such file or directory" on both macOS and Ubuntu
 	writeFileSync(
 		path,
 		`#!/bin/bash
