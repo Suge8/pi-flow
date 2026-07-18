@@ -1,7 +1,11 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { createArtifactStore } from "../shared/artifact-store.js";
-import type { Language } from "../shared/config.js";
-import { tryReadAlignmentState } from "../shared/generation-state.js";
+import type { AlignmentDepth, Language } from "../shared/config.js";
+import {
+	createAlignmentState,
+	readAlignmentStateIfExists,
+} from "../shared/generation-state.js";
+import { withFlowLockSync } from "./lock.js";
 import type { FlowLocation, FlowSource, FlowState } from "./types.js";
 import { FLOW_SCHEMA_VERSION } from "./types.js";
 
@@ -33,7 +37,7 @@ export function flowJsonPath(dir: string) {
 }
 
 export function readFlow(dir: string): FlowState {
-	return flowStore.read(dir);
+	return requireCurrentFlow(flowStore.read(dir));
 }
 
 export function tryReadFlow(dir: string): FlowState | undefined {
@@ -53,18 +57,31 @@ export function listFlowIds(cwd: string) {
 }
 
 export function listFlows(cwd: string): FlowLocation[] {
-	return flowStore.list(cwd);
+	return listFlowIds(cwd).flatMap((id) => {
+		try {
+			const location = flowStore.find(cwd, id);
+			return location ? [requireCurrentFlowLocation(location)] : [];
+		} catch {
+			return [];
+		}
+	});
 }
 
 export function findFlow(cwd: string, id: string) {
-	return flowStore.find(cwd, id);
+	const location = flowStore.find(cwd, id);
+	return location ? requireCurrentFlowLocation(location) : undefined;
 }
 
 export function latestFlow(
 	cwd: string,
 	include: (flow: FlowState) => boolean = () => true,
 ) {
-	return flowStore.latest(cwd, include);
+	return listFlows(cwd)
+		.filter((item) => include(item.flow))
+		.sort(
+			(a, b) => flowNumber(a.id) - flowNumber(b.id) || a.id.localeCompare(b.id),
+		)
+		.at(-1);
 }
 
 export function runningFlows(cwd: string) {
@@ -97,8 +114,60 @@ export function createPreDraftFlow(
 		language: Language;
 		status: "aligning" | "generating";
 		source: FlowSource;
+		sessionFile: string | null;
+		autoStart: boolean;
+		depth: AlignmentDepth;
 	},
-): FlowLocation {
+) {
+	const reserved = reservePreDraftFlow(cwd);
+	const initialized = withFlowLockSync(
+		reserved.dir,
+		`initialize ${reserved.id}`,
+		() => {
+			try {
+				const alignment = createAlignmentState(reserved.dir, {
+					stage: input.status,
+					sessionFile: input.sessionFile,
+					autoStart: input.autoStart,
+					depth: input.depth,
+				});
+				const now = Date.now();
+				const flow = writeFlow(reserved.dir, {
+					schemaVersion: FLOW_SCHEMA_VERSION,
+					language: input.language,
+					id: reserved.id,
+					title: `Flow ${reserved.id}`,
+					status: input.status,
+					source: input.source,
+					createdAt: now,
+					updatedAt: now,
+					startedAt: null,
+					completedAt: null,
+					currentGoal: 0,
+					meta: null,
+					attention: null,
+					parallelRun: null,
+					repairAttempts: 0,
+					errors: [],
+					goals: [],
+				});
+				return {
+					...reserved,
+					jsonPath: flowJsonPath(reserved.dir),
+					flow,
+					alignment,
+				};
+			} catch (error) {
+				rmSync(reserved.dir, { recursive: true, force: true });
+				throw error;
+			}
+		},
+	);
+	if (!initialized.ok) throw new Error(`Flow ${reserved.id} 初始化锁被占用`);
+	return initialized.value;
+}
+
+function reservePreDraftFlow(cwd: string) {
 	const existingIds = listFlowIds(cwd);
 	mkdirSync(flowRoot(cwd), { recursive: true });
 	let nextNumber = maxFlowNumber(existingIds) + 1;
@@ -107,32 +176,23 @@ export function createPreDraftFlow(
 		const dir = flowDir(cwd, id);
 		try {
 			mkdirSync(dir);
+			return { id, dir };
 		} catch (error) {
-			if (isAlreadyExists(error)) {
-				nextNumber += 1;
-				continue;
-			}
-			throw error;
+			if (!isAlreadyExists(error)) throw error;
+			nextNumber += 1;
 		}
-		const now = Date.now();
-		const flow = writeFlow(dir, {
-			schemaVersion: FLOW_SCHEMA_VERSION,
-			language: input.language,
-			id,
-			title: `Flow ${id}`,
-			status: input.status,
-			source: input.source,
-			createdAt: now,
-			updatedAt: now,
-			startedAt: null,
-			currentGoal: 0,
-			parallelRun: null,
-			repairAttempts: 0,
-			errors: [],
-			goals: [],
-		});
-		return { id, dir, jsonPath: flowJsonPath(dir), flow };
 	}
+}
+
+function requireCurrentFlow(flow: FlowState) {
+	const schemaVersion = (flow as { schemaVersion?: unknown }).schemaVersion;
+	if (schemaVersion !== FLOW_SCHEMA_VERSION)
+		throw new Error(`schemaVersion 必须为 ${FLOW_SCHEMA_VERSION}`);
+	return flow;
+}
+
+function requireCurrentFlowLocation(location: FlowLocation) {
+	return { ...location, flow: requireCurrentFlow(location.flow) };
 }
 
 function maxFlowNumber(ids: string[]) {
@@ -167,16 +227,29 @@ export function flowLocationOwnsSession(
 	sessionFile: string,
 ) {
 	if (isPreDraftSessionFlow(location.flow))
-		return tryReadAlignmentState(location.dir)?.sessionFile === sessionFile;
+		return alignmentOwnsSession(location.dir, sessionFile);
 	return flowOwnsSession(location.flow, sessionFile);
 }
 
+function alignmentOwnsSession(dir: string, sessionFile: string) {
+	try {
+		return readAlignmentStateIfExists(dir)?.sessionFile === sessionFile;
+	} catch {
+		return false;
+	}
+}
+
 export function flowOwnsSession(flow: FlowState, sessionFile: string) {
-	return runningGoals(flow).some((goal) => goal.sessionFile === sessionFile);
+	return (
+		flow.parallelRun?.consoleSessionFile === sessionFile ||
+		runningGoals(flow).some((goal) => goal.sessionFile === sessionFile)
+	);
 }
 
 export function flowCurrentSessionFile(flow: FlowState) {
 	if (!flowCanOwnSession(flow) || !Array.isArray(flow.goals)) return undefined;
+	if (flow.parallelRun?.consoleSessionFile)
+		return flow.parallelRun.consoleSessionFile;
 	const current = currentGoal(flow);
 	if (current?.status === "running") return current.sessionFile ?? undefined;
 	const running = runningGoals(flow);

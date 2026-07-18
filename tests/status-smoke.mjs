@@ -1,39 +1,37 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareTestDist } from "./prepare-dist.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const runId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const out = join(root, `.tmp-status-test-${runId}`);
-const srcOut = join(out, "src");
+const out = join(tmpdir(), `pi-flow-status-test-${runId}`);
+const srcOut = join(out, "dist");
 
 rmSync(out, { recursive: true, force: true });
 mkdirSync(srcOut, { recursive: true });
-execFileSync(
-	join(root, "node_modules/.bin/tsc"),
-	[
-		"--ignoreConfig",
-		"--outDir",
-		srcOut,
-		"--rootDir",
-		"src",
-		"--noEmit",
-		"false",
-		"--target",
-		"ES2022",
-		"--module",
-		"NodeNext",
-		"--moduleResolution",
-		"NodeNext",
-		"--types",
-		"node",
-		"--strict",
-		"--skipLibCheck",
-		"src/shared/status.ts",
-	],
-	{ cwd: root, stdio: "inherit" },
-);
+symlinkSync(join(root, "node_modules"), join(out, "node_modules"), "dir");
+prepareTestDist(root, srcOut, [
+	"--ignoreConfig",
+	"--outDir",
+	srcOut,
+	"--rootDir",
+	"src",
+	"--noEmit",
+	"false",
+	"--target",
+	"ES2022",
+	"--module",
+	"NodeNext",
+	"--moduleResolution",
+	"NodeNext",
+	"--types",
+	"node",
+	"--strict",
+	"--skipLibCheck",
+	"src/shared/status.ts",
+]);
 
 try {
 	const { clearStatus, startElapsedStatus } = await import(

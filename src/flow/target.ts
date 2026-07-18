@@ -2,10 +2,12 @@ import type { Language } from "../shared/config.js";
 import { formatError } from "../shared/guards.js";
 import { currentSessionFile } from "../shared/session.js";
 import { formatUserNotice } from "../shared/ui-language.js";
+import { quoteCommand } from "./parallel/console.js";
 import {
 	advanceableFlows,
 	findFlow,
 	flowLocationOwnsSession,
+	latestFlow,
 } from "./store.js";
 import type { FlowLocation } from "./types.js";
 import { flowCommandId } from "./util.js";
@@ -15,7 +17,7 @@ export type FlowTargetSource = "explicit" | "session" | "advanceable";
 export type FlowTargetResult =
 	| { ok: true; location: FlowLocation; source: FlowTargetSource }
 	| { ok: false; reason: "not_found"; id: string }
-	| { ok: false; reason: "none" }
+	| { ok: false; reason: "none"; latestComplete?: FlowLocation }
 	| { ok: false; reason: "ambiguous_active"; flows: FlowLocation[] };
 
 export function resolveFlowTarget(
@@ -33,7 +35,11 @@ export function resolveFlowTarget(
 		return { ok: true, location: advanceable[0], source: "advanceable" };
 	if (advanceable.length > 1)
 		return { ok: false, reason: "ambiguous_active", flows: advanceable };
-	return { ok: false, reason: "none" };
+	return {
+		ok: false,
+		reason: "none",
+		latestComplete: latestFlow(ctx.cwd, (flow) => flow.status === "complete"),
+	};
 }
 
 export function flowTargetMessage(
@@ -45,7 +51,7 @@ export function flowTargetMessage(
 		return flowNotFoundMessage(result.id, language);
 	if (result.reason === "ambiguous_active")
 		return ambiguousActiveFlowsMessage(result.flows, command, language);
-	return flowTargetRequiredMessage(language);
+	return flowTargetRequiredMessage(language, result.latestComplete);
 }
 
 export function flowTargetLookupFailedMessage(
@@ -63,7 +69,21 @@ export function flowNotFoundMessage(flowId: string, language: Language) {
 		: formatUserNotice("⚠️", "未找到 Flow", [`编号：${flowId}`]);
 }
 
-export function flowTargetRequiredMessage(language: Language) {
+export function flowTargetRequiredMessage(
+	language: Language,
+	latestComplete?: FlowLocation,
+) {
+	if (latestComplete) {
+		const id = flowCommandId(latestComplete.id);
+		const report = quoteCommand(`/flow go ${id}`);
+		return language === "en"
+			? formatUserNotice("⚠️", "No Flow can be advanced", [
+					`${id} is complete · ${report} opens its report`,
+				])
+			: formatUserNotice("⚠️", "没有可推进的 Flow", [
+					`${id} 已完成 · ${report} 查看报告`,
+				]);
+	}
 	return language === "en"
 		? formatUserNotice("⚠️", "No Flow can be advanced", ["Specify a Flow id"])
 		: formatUserNotice("⚠️", "没有可推进的 Flow", ["请指定 Flow id"]);
@@ -97,7 +117,7 @@ function ambiguousActiveFlowsMessage(
 	const choices = flows
 		.map((flow) => {
 			const id = copyableFlowId(flow, flows);
-			return `- ${id} · /flow ${command} ${id}`;
+			return `- ${id} · ${quoteCommand(`/flow ${command} ${id}`)}`;
 		})
 		.join("\n");
 	return language === "en"

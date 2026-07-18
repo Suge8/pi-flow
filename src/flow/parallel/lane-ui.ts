@@ -1,63 +1,81 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import type {
-	ExtensionCommandContext,
-	Theme,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
+import { renderActivitySpinners } from "../../shared/activity-spinner.js";
 import {
-	type Component,
-	Container,
-	Spacer,
-	Text,
-	truncateToWidth,
-} from "@earendil-works/pi-tui";
-import type { CheckPhase, GoalChecks } from "../../goal/types.js";
+	type AgentProgressReference,
+	onProgressChanged,
+} from "../../shared/agent-progress.js";
+import { currentSessionFile } from "../../shared/session.js";
+import { truncateToWidth, visibleWidth } from "../../shared/tui.js";
 import type { FlowState } from "../types.js";
+import { parallelConsoleCommandHint } from "./console.js";
+import {
+	type CheckSlot,
+	checkSlots,
+	formatElapsed,
+	type LaneDisplayStatus,
+	type LaneState,
+	laneActivityLines,
+	progressMetrics,
+	readLane,
+	statusLabel,
+	statusTone,
+} from "./lane-model.js";
 
-export type LaneStatus = "running" | "complete" | "failed";
-export type LaneChecksStatus =
-	| "waiting"
-	| "running"
-	| "passed"
-	| "failed"
-	| "error";
-
-export interface LaneState {
-	goalIndex: number;
-	title: string;
-	status: LaneStatus;
-	lastToolCall?: readonly string[];
-	checksStatus?: LaneChecksStatus;
-	elapsed?: number;
-}
+export type {
+	LaneChecksStatus,
+	LaneDisplayStatus,
+	LaneState,
+} from "./lane-model.js";
 
 export interface ParallelLaneBoard {
-	updateWorkerEvent(goalIndex: number, event: unknown): void;
+	updateWorkerEvent(goalIndex: number): void;
 	updateWorkerExit(
 		goalIndex: number,
 		exitCode: number | null,
 		exitSignal: NodeJS.Signals | null,
+		stderr?: string | null,
 	): void;
 	dispose(): void;
 }
 
+interface ParallelLaneContext {
+	cwd: string;
+	sessionManager?: unknown;
+	ui: ExtensionContext["ui"];
+}
+
+export interface ParallelLaneProgress {
+	scopeId: string;
+	agents: ReadonlyMap<number, AgentProgressReference>;
+}
+
 const LANE_WIDGET_KEY = "flow-parallel-lanes";
+const activeBoards = new Map<string, ParallelLaneBoard>();
+
+export function activeParallelLaneBoardCount() {
+	return activeBoards.size;
+}
 
 export function showParallelLaneBoard(
-	ctx: ExtensionCommandContext,
+	ctx: ParallelLaneContext,
 	dir: string,
 	flow: FlowState,
 	batchIndices: number[],
+	progress?: ParallelLaneProgress,
 ): ParallelLaneBoard {
-	const startedAt = Date.now();
-	const lanes = batchIndices.map<LaneState>((goalIndex) => ({
-		goalIndex,
-		title: flow.goals[goalIndex]?.title ?? `G${goalIndex + 1}`,
-		status: "running",
-		lastToolCall: [],
-		checksStatus: "waiting",
-		elapsed: 0,
-	}));
+	const key = boardKey(ctx, dir);
+	activeBoards.get(key)?.dispose();
+	const startedAt = flow.parallelRun?.startedAt ?? Date.now();
+	const lanes = batchIndices.map((goalIndex) =>
+		readLane(
+			dir,
+			flow,
+			goalIndex,
+			undefined,
+			progress?.agents.get(goalIndex)?.current,
+		),
+	);
 	const laneByIndex = new Map(lanes.map((lane) => [lane.goalIndex, lane]));
 	let disposed = false;
 	const mount = () => {
@@ -65,212 +83,228 @@ export function showParallelLaneBoard(
 		ctx.ui.setWidget(
 			LANE_WIDGET_KEY,
 			(tui, theme) =>
-				new ParallelLaneWidget(lanes, theme, () => tui.requestRender(true)),
+				new ParallelLaneWidget(
+					{
+						flow,
+						lanes,
+						startedAt,
+						terminalRows: tui.terminal?.rows,
+					},
+					theme,
+					() => tui.requestRender(true),
+				),
 			{ placement: "aboveEditor" },
 		);
 	};
 	const refresh = () => {
-		const elapsed = Date.now() - startedAt;
-		for (const lane of lanes) lane.elapsed = elapsed;
+		for (const lane of lanes) {
+			const next = readLane(
+				dir,
+				flow,
+				lane.goalIndex,
+				lane.exit,
+				progress?.agents.get(lane.goalIndex)?.current,
+			);
+			lane.title = next.title;
+			lane.status = next.status;
+			lane.activities = next.activities;
+			lane.checks = next.checks;
+			lane.progress = next.progress;
+		}
 		mount();
 	};
+	const unsubscribeProgress = progress
+		? onProgressChanged((snapshot) => {
+				if (snapshot.scopes.some((scope) => scope.id === progress.scopeId))
+					refresh();
+			})
+		: () => undefined;
 	const timer = setInterval(refresh, 1000);
 	timer.unref?.();
 
 	ctx.ui.setWorkingVisible(false);
 	mount();
 
-	return {
-		updateWorkerEvent(goalIndex, event) {
-			const lane = laneByIndex.get(goalIndex);
-			const record = eventRecord(event);
-			if (!lane || !record) return;
-			if (record.type === "agent_start" || record.type === "message_start") {
-				refresh();
-				return;
-			}
-			if (
-				record.type === "tool_execution_start" ||
-				record.type === "tool_execution_end"
-			) {
-				lane.lastToolCall = [
-					...(lane.lastToolCall ?? []),
-					toolCallLabel(record),
-				].slice(-2);
-				refresh();
-				return;
-			}
-			if (record.type === "message_end") {
-				lane.checksStatus =
-					readWorkerChecksStatus(dir, goalIndex) ?? lane.checksStatus;
-				refresh();
-				return;
-			}
-			if (record.type === "agent_end") {
-				lane.checksStatus = readWorkerChecksStatus(dir, goalIndex) ?? "passed";
-				lane.status = isFailedCheck(lane.checksStatus) ? "failed" : "complete";
-				refresh();
-				return;
-			}
-			if (record.type === "process_error") {
-				lane.status = "failed";
-				lane.checksStatus = "error";
-				refresh();
-			}
+	const board: ParallelLaneBoard = {
+		updateWorkerEvent(goalIndex) {
+			if (!laneByIndex.has(goalIndex)) return;
+			refresh();
 		},
-		updateWorkerExit(goalIndex, exitCode) {
+		updateWorkerExit(goalIndex, exitCode, exitSignal, stderr = null) {
 			const lane = laneByIndex.get(goalIndex);
 			if (!lane) return;
-			lane.checksStatus =
-				readWorkerChecksStatus(dir, goalIndex) ?? lane.checksStatus;
-			if (exitCode === 0 && !isFailedCheck(lane.checksStatus)) {
-				lane.status = "complete";
-				if (lane.checksStatus === "waiting" || lane.checksStatus === "running")
-					lane.checksStatus = "passed";
-			} else {
-				lane.status = "failed";
-				if (!isFailedCheck(lane.checksStatus)) lane.checksStatus = "error";
-			}
+			lane.exit = { code: exitCode, signal: exitSignal, stderr };
 			refresh();
 		},
 		dispose() {
+			if (disposed) return;
 			disposed = true;
+			unsubscribeProgress();
 			clearInterval(timer);
+			if (activeBoards.get(key) === board) activeBoards.delete(key);
 			ctx.ui.setWidget(LANE_WIDGET_KEY, undefined);
 			ctx.ui.setWorkingVisible(true);
 		},
 	};
+	activeBoards.set(key, board);
+	return board;
+}
+
+export function closeParallelLaneBoard(ctx: ParallelLaneContext, dir?: string) {
+	activeBoards.get(boardKey(ctx, dir ?? ctx.cwd))?.dispose();
 }
 
 export class ParallelLaneWidget implements Component {
 	constructor(
-		private readonly lanes: readonly LaneState[],
+		private readonly input: {
+			flow: FlowState;
+			lanes: readonly LaneState[];
+			startedAt: number;
+			terminalRows?: number;
+		},
 		private readonly theme: Theme,
 		private readonly requestRender?: () => void,
 	) {}
 
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		const container = new Container();
-		container.addChild(
-			new Text(
-				fitLine(
-					this.theme.fg("toolTitle", this.theme.bold("Flow 并行看板")) +
-						this.theme.fg("muted", ` · ${this.lanes.length} lanes`),
-					safeWidth,
-				),
-				0,
-				0,
+		const laneRows = rowsPerLane(
+			this.input.terminalRows,
+			this.input.lanes.length,
+		);
+		const lines = [
+			this.fit(
+				`${this.theme.fg("toolTitle", this.input.flow.parallelRun?.consoleSessionName ?? "Flow 并行控制台")} ${this.theme.fg("muted", "·")} ${this.theme.fg("dim", `⏱ ${formatElapsed(Date.now() - this.input.startedAt)}`)}`,
+				safeWidth,
+			),
+		];
+		for (const lane of this.input.lanes)
+			lines.push(...this.renderLane(lane, laneRows, safeWidth));
+		lines.push(
+			this.fit(
+				this.theme.fg("muted", parallelConsoleCommandHint(this.input.flow)),
+				safeWidth,
 			),
 		);
-		if (this.lanes.length > 0) container.addChild(new Spacer(1));
-		for (const lane of this.lanes) {
-			container.addChild(
-				new Text(fitLine(this.laneLine(lane), safeWidth), 0, 0),
-			);
-		}
-		return container.render(safeWidth);
+		return lines;
 	}
 
 	invalidate(): void {
 		this.requestRender?.();
 	}
 
-	private laneLine(lane: LaneState) {
-		const icon = statusIcon(lane.status, this.theme);
-		const goal = this.theme.fg("accent", `G${lane.goalIndex + 1}`);
-		const title = this.theme.fg("toolTitle", lane.title);
-		const elapsed = this.theme.fg("dim", formatElapsed(lane.elapsed ?? 0));
-		const tools = formatTools(lane.lastToolCall, this.theme);
-		const checks = formatChecks(lane.checksStatus ?? "waiting", this.theme);
-		return `${icon} ${goal} ${title} ${this.theme.fg("muted", "·")} ${elapsed} ${this.theme.fg("muted", "·")} ${tools} ${this.theme.fg("muted", "·")} ${checks}`;
+	private renderLane(lane: LaneState, laneRows: number, width: number) {
+		if (laneRows === 1) return [this.compactLaneLine(lane, width)];
+		const slots = checkSlots(lane.checks, this.input.flow.language);
+		const activityRows = Math.max(0, laneRows - 1 - slots.length);
+		return [
+			this.laneHeader(lane, width),
+			...laneActivityLines(
+				lane,
+				activityRows,
+				this.input.flow.language,
+				Date.now(),
+			).map((line) =>
+				this.fit(
+					this.theme.fg(line.tone, renderActivitySpinners(line.text)),
+					width,
+				),
+			),
+			...slots.map((slot) => this.fit(this.checkLine(slot), width)),
+		];
+	}
+
+	private compactLaneLine(lane: LaneState, width: number) {
+		const slots = checkSlots(lane.checks, this.input.flow.language)
+			.map((slot) => `${slot.label}${slot.mark}`)
+			.join(" ");
+		const activity = laneActivityLines(
+			lane,
+			1,
+			this.input.flow.language,
+			Date.now(),
+		)[0];
+		const activityText = activity
+			? this.theme.fg(
+					activity.tone,
+					renderActivitySpinners(activity.text.trim()),
+				)
+			: "";
+		const identity = `${statusIcon(lane.status, this.theme)} ${this.goalLabel(lane)}`;
+		const secondary = `${this.theme.fg("toolTitle", lane.title)} ${this.theme.fg("muted", "·")} ${this.statusText(lane.status)}${slots ? ` ${this.theme.fg("muted", "·")} ${slots}` : ""}`;
+		const leftWidth = this.leftWidthForMetrics(lane, width);
+		const activityWidth = Math.max(1, leftWidth - visibleWidth(identity) - 1);
+		const fittedActivity = this.fit(activityText, activityWidth);
+		const secondaryWidth =
+			leftWidth - visibleWidth(identity) - visibleWidth(fittedActivity) - 4;
+		const left =
+			secondaryWidth >= 4
+				? `${identity} ${this.fit(secondary, secondaryWidth)} ${this.theme.fg("muted", "·")} ${fittedActivity}`
+				: `${identity} ${fittedActivity}`;
+		return this.alignMetrics(left, lane, width);
+	}
+
+	private laneHeader(lane: LaneState, width: number) {
+		const left = `${statusIcon(lane.status, this.theme)} ${this.goalLabel(lane)} ${this.theme.fg("toolTitle", lane.title)} ${this.theme.fg("muted", "·")} ${this.statusText(lane.status)}`;
+		return this.alignMetrics(left, lane, width);
+	}
+
+	private checkLine(slot: CheckSlot) {
+		const summary = slot.summary
+			? ` ${this.theme.fg("muted", "·")} ${slot.summary}`
+			: "";
+		return `  ${this.theme.fg("muted", `${slot.label}：`)}${this.theme.fg(slot.tone, `${slot.mark} ${slot.text}`)}${summary}`;
+	}
+
+	private statusText(status: LaneDisplayStatus) {
+		return this.theme.fg(
+			statusTone(status),
+			statusLabel(status, this.input.flow.language),
+		);
+	}
+
+	private goalLabel(lane: LaneState) {
+		return this.theme.fg("accent", `G${lane.goalIndex + 1}`);
+	}
+
+	private leftWidthForMetrics(lane: LaneState, width: number) {
+		const metrics = progressMetrics(lane.progress);
+		return metrics
+			? Math.max(1, width - visibleWidth(this.theme.fg("dim", metrics)) - 1)
+			: width;
+	}
+
+	private alignMetrics(left: string, lane: LaneState, width: number) {
+		const metrics = progressMetrics(lane.progress);
+		if (!metrics) return this.fit(left, width);
+		const right = this.theme.fg("dim", metrics);
+		const rightWidth = visibleWidth(right);
+		if (rightWidth >= width) return this.fit(right, width);
+		const clippedLeft = this.fit(left, width - rightWidth - 1);
+		const gap = Math.max(1, width - visibleWidth(clippedLeft) - rightWidth);
+		return `${clippedLeft}${" ".repeat(gap)}${right}`;
+	}
+
+	private fit(line: string, width: number) {
+		return truncateToWidth(line, width, "…");
 	}
 }
 
-function eventRecord(event: unknown) {
-	return typeof event === "object" && event !== null
-		? (event as Record<string, unknown>)
-		: undefined;
-}
-
-function toolCallLabel(event: Record<string, unknown>) {
-	const name = typeof event.toolName === "string" ? event.toolName : "tool";
-	if (event.type === "tool_execution_start") return `${name}…`;
-	return event.isError === true ? `${name} ✗` : name;
-}
-
-function readWorkerChecksStatus(dir: string, goalIndex: number) {
-	try {
-		const state = JSON.parse(
-			readFileSync(join(dir, "workers", `G${goalIndex}`, "state.json"), "utf8"),
-		) as { checks?: GoalChecks };
-		return checksStatus(state.checks);
-	} catch {
-		return undefined;
-	}
-}
-
-function checksStatus(checks: GoalChecks | undefined): LaneChecksStatus {
-	return phaseStatus(checks?.acceptance);
-}
-
-function phaseStatus(phase: CheckPhase | undefined): LaneChecksStatus {
-	if (!phase?.enabled) return "waiting";
-	if (phase.active?.some((item) => item.status === "running")) return "running";
-	if (phase.active?.some((item) => item.status === "failed")) return "failed";
-	if (phase.active?.some((item) => item.status === "error")) return "error";
-	const last = phase.rounds.at(-1);
-	if (!last) return "waiting";
-	if (last.result === "passed") return "passed";
-	if (last.result === "failed") return "failed";
-	return "error";
-}
-
-function isFailedCheck(status: LaneChecksStatus | undefined) {
-	return status === "failed" || status === "error";
-}
-
-function statusIcon(status: LaneStatus, theme: Theme) {
+function statusIcon(status: LaneDisplayStatus, theme: Theme) {
 	if (status === "complete") return theme.fg("success", "✓");
-	if (status === "failed") return theme.fg("error", "✗");
-	return theme.fg("warning", "⏳");
+	if (status === "interrupted") return theme.fg("error", "✗");
+	if (status === "paused") return theme.fg("warning", "Ⅱ");
+	return theme.fg("accent", "●");
 }
 
-function formatTools(tools: readonly string[] | undefined, theme: Theme) {
-	const recent = (tools ?? []).slice(-2);
-	if (recent.length === 0) return theme.fg("muted", "tool: —");
-	return `${theme.fg("muted", "tool: ")}${theme.fg("toolOutput", recent.join(" → "))}`;
+function rowsPerLane(terminalRows: number | undefined, laneCount: number) {
+	if (!terminalRows || laneCount <= 0) return 5;
+	const available = Math.max(0, terminalRows - 3);
+	if (available >= laneCount * 5) return 5;
+	if (available >= laneCount * 3) return 3;
+	return 1;
 }
 
-function formatChecks(status: LaneChecksStatus, theme: Theme) {
-	const label = checkLabel(status);
-	const color = checkColor(status);
-	return `${theme.fg("muted", "验收: ")}${theme.fg(color, label)}`;
-}
-
-function checkLabel(status: LaneChecksStatus) {
-	if (status === "passed") return "通过";
-	if (status === "failed") return "失败";
-	if (status === "error") return "错误";
-	if (status === "running") return "进行中";
-	return "等待";
-}
-
-function checkColor(status: LaneChecksStatus) {
-	if (status === "passed") return "success";
-	if (status === "failed") return "error";
-	if (status === "error") return "warning";
-	if (status === "running") return "accent";
-	return "muted";
-}
-
-function formatElapsed(milliseconds: number) {
-	const seconds = Math.max(0, Math.floor(milliseconds / 1000));
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	return `${minutes}m${String(seconds % 60).padStart(2, "0")}s`;
-}
-
-function fitLine(line: string, width: number) {
-	return truncateToWidth(line, width, "…");
+function boardKey(ctx: ParallelLaneContext, fallback: string) {
+	return currentSessionFile(ctx) ?? fallback;
 }

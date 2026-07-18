@@ -4,23 +4,23 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareTestDist } from "./prepare-dist.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const runId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const out = join(root, `.tmp-plan-test-${runId}`);
-const srcOut = join(out, "src");
+const out = join(tmpdir(), `pi-flow-plan-test-${runId}`);
+const srcOut = join(out, "dist");
 
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
-execFileSync(
-	join(root, "node_modules/.bin/tsc"),
-	["--outDir", srcOut, "--rootDir", "src", "--noEmit", "false"],
-	{ cwd: root, stdio: "inherit" },
-);
+symlinkSync(join(root, "node_modules"), join(out, "node_modules"), "dir");
+prepareTestDist(root, srcOut);
 
 try {
 	await markdownScenario();
@@ -29,7 +29,6 @@ try {
 	await validateDraftConsistencyScenario();
 	await flowBuilderScenario();
 	await directoryIdMismatchScenario();
-	await snapshotScenario();
 	await viewScenario();
 	console.log("plan smoke ok");
 } finally {
@@ -107,7 +106,7 @@ async function validatorScenario() {
 function validateDraftCliScenario() {
 	const dir = join(out, "F1");
 	writeFlowDraft(dir, baseFlow("F1", [baseFlowGoal(0, "step-1.md")]));
-	execFileSync("node", [join(root, "scripts", "validate-draft.mjs"), dir]);
+	execFileSync("node", [join(srcOut, "validate-draft.js"), dir]);
 }
 
 async function validateDraftConsistencyScenario() {
@@ -171,12 +170,45 @@ async function validateDraftConsistencyScenario() {
 				),
 		},
 		{
+			name: "flow rejects empty recorded alignment",
+			write: (dir) =>
+				writeFlowDraft(
+					dir,
+					baseFlow("F70", [baseFlowGoal(0, "step-1.md")], {
+						meta: {
+							plannedBy: null,
+							alignment: { kind: "recorded", turns: [] },
+						},
+					}),
+				),
+		},
+		{
 			name: "flow rejects invalid completion cursor",
 			write: (dir) =>
 				writeFlowDraft(
 					dir,
 					baseFlow("F8", [
 						baseFlowGoal(0, "step-1.md", { completionCursor: "done" }),
+					]),
+				),
+		},
+		{
+			name: "flow rejects pending advisor without advice",
+			write: (dir) =>
+				writeFlowDraft(
+					dir,
+					baseFlow("F9", [
+						baseFlowGoal(0, "step-1.md", {
+							pendingAdvisor: { phase: "acceptance", round: 1 },
+							checks: {
+								acceptance: {
+									enabled: true,
+									rounds: [{ round: 1, result: "failed", summary: "未通过" }],
+									active: null,
+								},
+								quality: { enabled: true, rounds: [], active: null },
+							},
+						}),
 					]),
 				),
 		},
@@ -253,8 +285,35 @@ async function validateDraftConsistencyScenario() {
 	);
 	const preDraftCli = runValidateDraft(preDraftDir);
 	assert(!preDraftCli.ok, "validate-draft CLI accepted empty pre-draft");
+	assertSourceFormsValid(validateFlowDir);
 	assertElevenGoalFlowValid(validateFlowDir);
 	assertDuplicateFinalRejected(validateFlowDir);
+	assertOptionalFinalAcceptanceForms(validateFlowDir);
+}
+
+function assertSourceFormsValid(validateFlowDir) {
+	const sources = [
+		{
+			type: "conversation",
+			transcript: [{ kind: "user", at: "2026-01-01", text: "需求" }],
+		},
+		{ type: "prompt", text: "需求" },
+		{ type: "file", path: "requirements.md", text: "需求" },
+	];
+	for (const [index, source] of sources.entries()) {
+		const id = `F${101 + index}`;
+		const dir = join(out, id);
+		writeFlowDraft(
+			dir,
+			baseFlow(id, [baseFlowGoal(0, "step-1.md")], { source }),
+		);
+		const validation = validateFlowDir(dir);
+		const cli = runValidateDraft(dir);
+		assert(
+			validation.ok && cli.ok,
+			`${source.type} source failed validation: ${validation.errors.join("\n")} ${cli.output}`,
+		);
+	}
 }
 
 function assertElevenGoalFlowValid(validateFlowDir) {
@@ -279,20 +338,77 @@ function assertDuplicateFinalRejected(validateFlowDir) {
 	);
 	assertValidationError(
 		validateFlowDir(dir),
-		"多步 Flow 必须有 1 个最终验收步骤（role: final_acceptance）",
+		"最终验收步骤最多 1 个（role: final_acceptance）",
 		"duplicate final acceptance",
 	);
 	const cli = runValidateDraft(dir);
 	assert(
-		!cli.ok && cli.output.includes("多步 Flow 必须有 1 个最终验收步骤"),
+		!cli.ok && cli.output.includes("最终验收步骤最多 1 个"),
 		`duplicate final acceptance CLI accepted: ${cli.output}`,
+	);
+}
+
+function assertOptionalFinalAcceptanceForms(validateFlowDir) {
+	const multiNoFinalDir = join(out, "F80");
+	writeFlowDraft(
+		multiNoFinalDir,
+		baseFlow("F80", [
+			baseFlowGoal(0, "step-1.md"),
+			baseFlowGoal(1, "step-2.md"),
+			baseFlowGoal(2, "step-3.md"),
+		]),
+	);
+	const multiNoFinal = validateFlowDir(multiNoFinalDir);
+	assert(
+		multiNoFinal.ok,
+		`multi-step flow without final acceptance rejected: ${multiNoFinal.errors.join("\n")}`,
+	);
+	assert(
+		runValidateDraft(multiNoFinalDir).ok,
+		"CLI rejected multi-step flow without final acceptance",
+	);
+	const singleWithFinalDir = join(out, "F90");
+	writeFlowDraft(
+		singleWithFinalDir,
+		baseFlow("F90", [
+			baseFlowGoal(0, "step-1.md"),
+			baseFlowGoal(1, "step-final.md", { role: "final_acceptance" }),
+		]),
+	);
+	const singleWithFinal = validateFlowDir(singleWithFinalDir);
+	assert(
+		singleWithFinal.ok,
+		`single-step flow with final acceptance rejected: ${singleWithFinal.errors.join("\n")}`,
+	);
+	assert(
+		runValidateDraft(singleWithFinalDir).ok,
+		"CLI rejected single-step flow with final acceptance",
+	);
+	const nonLastFinalDir = join(out, "F91");
+	writeFlowDraft(
+		nonLastFinalDir,
+		baseFlow("F91", [
+			baseFlowGoal(0, "step-final.md", { role: "final_acceptance" }),
+			baseFlowGoal(1, "step-1.md"),
+		]),
+	);
+	assertValidationError(
+		validateFlowDir(nonLastFinalDir),
+		"goals[0] 非最终步骤必须是 normal",
+		"non-last final acceptance",
+	);
+	assert(
+		!runValidateDraft(nonLastFinalDir).ok,
+		"CLI accepted non-last final acceptance",
 	);
 }
 
 async function flowBuilderScenario() {
 	const { buildFlowArtifact } = await importModule("flow/builder.js");
 	const { computeReadyBatch } = await importModule("flow/scheduler.js");
+	const { FLOW_SCHEMA_VERSION } = await importModule("flow/types.js");
 	const { validateFlowDir } = await importModule("flow/validator.js");
+	assert(FLOW_SCHEMA_VERSION === 17, "current Flow schema version changed");
 	const dir = join(out, "F4");
 	const semantic = {
 		title: "Semantic Flow",
@@ -331,15 +447,15 @@ async function flowBuilderScenario() {
 	writeJson(join(dir, "flow.semantic.json"), semantic);
 	for (const goal of semantic.goals)
 		writeFileSync(join(dir, goal.file), markdown());
+	writeFileSync(
+		join(dir, semantic.goals[0].file),
+		markdown().replace("\n## Notes\n\n## Handoff\n", "\n"),
+	);
 	const flow = buildFlowArtifact(
 		dir,
 		readJson(join(dir, "flow.semantic.json")),
 		"zh",
-		{
-			type: "prompt",
-			path: null,
-			originalRequest: "Flow semantic",
-		},
+		{ type: "prompt", text: "Flow semantic" },
 	);
 	for (const field of [
 		"schemaVersion",
@@ -351,6 +467,7 @@ async function flowBuilderScenario() {
 		"createdAt",
 		"updatedAt",
 		"startedAt",
+		"completedAt",
 		"currentGoal",
 		"parallelRun",
 		"repairAttempts",
@@ -362,8 +479,20 @@ async function flowBuilderScenario() {
 	assert(
 		persisted.id === "F4" &&
 			persisted.title === "Semantic Flow" &&
-			persisted.goals.length === 4,
-		"flow builder did not persist semantic title/goals",
+			persisted.completedAt === null &&
+			persisted.goals.length === 4 &&
+			persisted.goals.every(
+				(goal) => goal.startedAt === null && goal.completedAt === null,
+			),
+		"flow builder did not persist semantic title/goals/timestamps",
+	);
+	const normalizedPlan = readFileSync(
+		join(dir, semantic.goals[0].file),
+		"utf8",
+	);
+	assert(
+		normalizedPlan.endsWith("## Notes\n\n## Handoff\n"),
+		"flow builder did not append empty optional sections",
 	);
 	assert(
 		JSON.stringify(persisted.goals[1].dependsOn) === JSON.stringify([0]) &&
@@ -433,27 +562,6 @@ function assertValidationError(result, fragment, label) {
 	);
 }
 
-async function snapshotScenario() {
-	const { planSnapshotHash } = await importModule("plan/snapshot.js");
-	const base = markdown();
-	const mutableChange = base.replace("## Notes\n", "## Notes\nnew note\n");
-	const protectedChange = base.replace("Ship v2.", "Ship v3.");
-	assert(
-		planSnapshotHash(base) === planSnapshotHash(mutableChange),
-		"mutable section changed hash",
-	);
-	assert(
-		planSnapshotHash(base) !== planSnapshotHash(protectedChange),
-		"protected section did not change hash",
-	);
-	const uncheckedCriteria = base.replace("- Done.", "- [ ] Done.");
-	const checkedCriteria = base.replace("- Done.", "- [x] Done.");
-	assert(
-		planSnapshotHash(uncheckedCriteria) !== planSnapshotHash(checkedCriteria),
-		"success criteria checkbox state did not change hash",
-	);
-}
-
 async function viewScenario() {
 	const { checkboxProgress, parseSteps } = await importModule("plan/view.js");
 	const markdown = "- [x] A\n- [~] B\n- [!] C\n- [ ] D\n";
@@ -486,11 +594,9 @@ function readJson(path) {
 }
 
 function runValidateDraft(dir) {
-	const result = spawnSync(
-		"node",
-		[join(root, "scripts", "validate-draft.mjs"), dir],
-		{ encoding: "utf8" },
-	);
+	const result = spawnSync("node", [join(srcOut, "validate-draft.js"), dir], {
+		encoding: "utf8",
+	});
 	return {
 		ok: result.status === 0,
 		output: `${result.stdout}${result.stderr}`.trim(),
@@ -499,16 +605,19 @@ function runValidateDraft(dir) {
 
 function baseFlow(id, goals, overrides = {}) {
 	return {
-		schemaVersion: 9,
+		schemaVersion: 17,
 		language: "zh",
 		id,
 		title: "Flow CLI",
 		status: "draft",
-		source: { type: "prompt", path: null, originalRequest: "Flow CLI" },
+		source: { type: "prompt", text: "Flow CLI" },
 		createdAt: Date.now(),
 		updatedAt: Date.now(),
 		startedAt: null,
+		completedAt: null,
 		currentGoal: 0,
+		meta: null,
+		attention: null,
 		parallelRun: null,
 		repairAttempts: 0,
 		errors: [],
@@ -535,11 +644,12 @@ function baseFlowGoal(index, file, overrides = {}) {
 		role: "normal",
 		file,
 		status: "pending",
+		startedAt: null,
+		completedAt: null,
 		completionCursor: null,
 		sessionFile: null,
 		sessionName: null,
 		snapshot: null,
-		snapshotHash: null,
 		goalId: null,
 		result: {
 			summary: null,
@@ -548,6 +658,7 @@ function baseFlowGoal(index, file, overrides = {}) {
 			criteriaChanged: false,
 		},
 		checks: emptyChecks(),
+		pendingAdvisor: null,
 		...overrides,
 	};
 }

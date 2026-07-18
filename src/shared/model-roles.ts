@@ -11,25 +11,35 @@ import {
 import { formatError } from "./guards.js";
 import { formatUserNotice, notifyUser } from "./ui-language.js";
 
-export type ModelRole = "planner" | "executor";
+export type ModelRole = "advisor" | "executor";
+
+/** 当前会话实际模型与思考强度（provider/id 形式）；无模型时 undefined。 */
+export function currentSessionModel(
+	pi: Pick<ExtensionAPI, "getThinkingLevel">,
+	ctx: Pick<ExtensionContext, "model">,
+): RoleModelSelection | undefined {
+	const model = ctx.model;
+	if (!model) return undefined;
+	return {
+		model: `${model.provider}/${model.id}`,
+		thinking: pi.getThinkingLevel() as RoleModelSelection["thinking"],
+	};
+}
 
 type RoleModelContext = Pick<ExtensionContext, "ui"> & {
 	modelRegistry?: ExtensionContext["modelRegistry"];
 };
 
 const ROLE_COPY = {
-	planner: {
-		zh: { label: "计划模型", icon: "🧭" },
-		en: { label: "Planner model", icon: "🧭" },
+	advisor: {
+		zh: { label: "顾问模型" },
+		en: { label: "Advisor model" },
 	},
 	executor: {
-		zh: { label: "执行模型", icon: "⚒️" },
-		en: { label: "Executor model", icon: "⚒️" },
+		zh: { label: "执行模型" },
+		en: { label: "Executor model" },
 	},
-} satisfies Record<
-	ModelRole,
-	Record<Language, { label: string; icon: string }>
->;
+} satisfies Record<ModelRole, Record<Language, { label: string }>>;
 
 export async function switchToRoleModel(
 	pi: Pick<ExtensionAPI, "setModel" | "setThinkingLevel">,
@@ -102,25 +112,12 @@ async function applyRoleModel(
 		return false;
 	}
 	pi.setThinkingLevel(config.thinking);
-	notifyUser(ctx, roleStarted(role, config, language), "info", language);
 	return true;
 }
 
 function modelReference(reference: string): [string, string] {
 	const slashIndex = reference.indexOf("/");
 	return [reference.slice(0, slashIndex), reference.slice(slashIndex + 1)];
-}
-
-function roleStarted(
-	role: ModelRole,
-	config: RoleModelSelection,
-	language: Language,
-) {
-	const copy = ROLE_COPY[role][language];
-	const suffix = `${config.model}/${config.thinking}`;
-	return language === "en"
-		? formatUserNotice(copy.icon, `${copy.label} started`, [suffix])
-		: formatUserNotice(copy.icon, `${copy.label}已启动`, [suffix]);
 }
 
 function roleUnavailable(role: ModelRole, model: string, language: Language) {

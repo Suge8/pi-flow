@@ -2,6 +2,10 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+	type ConversationTurn,
+	formatTranscript,
+} from "../../shared/context-evidence.js";
 import { isRecord } from "../../shared/guards.js";
 import { sendOrchestrationPrompt } from "../../shared/internal-prompt.js";
 import { runtimeLanguage } from "../../shared/language.js";
@@ -10,7 +14,7 @@ import {
 	formatUserNotice,
 	notifyUser,
 } from "../../shared/ui-language.js";
-import { writeFlowErrorHtml } from "../html.js";
+import { refreshFlowErrorHtmlProjection } from "../html.js";
 import { repairPrompt } from "../prompt.js";
 import { touchFlowErrors } from "../store.js";
 import type { FlowLocation } from "../types.js";
@@ -23,10 +27,10 @@ export async function askRepair(
 ) {
 	const flow = touchFlowErrors(location.dir, location.flow, errors);
 	const language = flow.language ?? runtimeLanguage();
-	writeFlowErrorHtml(location.dir, {
+	refreshFlowErrorHtmlProjection(ctx, location.dir, {
 		title: safeFlowTitle(flow, location.id),
 		errors,
-		originalRequest: safeOriginalRequest(flow),
+		requestText: safeRequestText(flow),
 		language,
 	});
 	const shouldRepair = await confirmUser(
@@ -40,12 +44,12 @@ export async function askRepair(
 	);
 	if (!shouldRepair) return;
 	notifyUser(ctx, flowRepairingNotice(language), "info", language);
-	await sendOrchestrationPrompt(
+	sendOrchestrationPrompt(
 		pi,
 		ctx,
 		repairPrompt({
 			errors,
-			originalRequest: safeOriginalRequest(flow),
+			requestText: safeRequestText(flow),
 			flowPath: location.dir,
 			language,
 		}),
@@ -74,9 +78,31 @@ function safeFlowTitle(flow: unknown, fallback: string) {
 		: fallback;
 }
 
-function safeOriginalRequest(flow: unknown) {
+function safeRequestText(flow: unknown) {
 	if (!isRecord(flow) || !isRecord(flow.source)) return "";
-	return typeof flow.source.originalRequest === "string"
-		? flow.source.originalRequest
-		: "";
+	const source = flow.source;
+	if (
+		(source.type === "prompt" || source.type === "file") &&
+		typeof source.text === "string"
+	)
+		return source.text;
+	if (
+		source.type !== "conversation" ||
+		!Array.isArray(source.transcript) ||
+		!source.transcript.every(isConversationTurn)
+	)
+		return "";
+	const language = flow.language === "en" ? "en" : "zh";
+	return formatTranscript(source.transcript, language);
+}
+
+function isConversationTurn(value: unknown): value is ConversationTurn {
+	return (
+		isRecord(value) &&
+		(value.kind === "user" ||
+			value.kind === "visible_supplement" ||
+			value.kind === "assistant_final") &&
+		typeof value.at === "string" &&
+		typeof value.text === "string"
+	);
 }

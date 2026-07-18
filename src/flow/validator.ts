@@ -24,6 +24,7 @@ import type {
 import { FLOW_SCHEMA_VERSION } from "./types.js";
 
 const FLOW_ID_PATTERN = /^F[1-9]\d*$/u;
+const WRITE_SCOPE_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/u;
 const FLOW_STATUSES = new Set<FlowStatus>([
 	"aligning",
 	"generating",
@@ -35,6 +36,7 @@ const FLOW_STATUSES = new Set<FlowStatus>([
 const GOAL_STATUSES = new Set<FlowGoalStatus>([
 	"pending",
 	"running",
+	"paused",
 	"complete",
 ]);
 const GOAL_ROLES = new Set<FlowGoalRole>(["normal", "final_acceptance"]);
@@ -42,10 +44,32 @@ const STRING_OR_NULL_GOAL_FIELDS = [
 	"sessionFile",
 	"sessionName",
 	"snapshot",
-	"snapshotHash",
 	"goalId",
 ] as const;
 const MAX_EXECUTION_GOALS = 10;
+const FLOW_FIELDS = new Set([
+	"schemaVersion",
+	"language",
+	"id",
+	"title",
+	"status",
+	"source",
+	"createdAt",
+	"updatedAt",
+	"startedAt",
+	"completedAt",
+	"currentGoal",
+	"meta",
+	"attention",
+	"parallelRun",
+	"repairAttempts",
+	"errors",
+	"goals",
+]);
+const META_FIELDS = new Set(["plannedBy", "alignment"]);
+const PLANNED_BY_FIELDS = new Set(["model", "thinking"]);
+const ALIGNMENT_FIELDS = new Set(["kind", "turns"]);
+const ALIGNMENT_TURN_FIELDS = new Set(["question", "answer"]);
 
 export function validateFlowDir(dir: string, language?: Language) {
 	const artifact = readRequiredArtifact(
@@ -57,7 +81,7 @@ export function validateFlowDir(dir: string, language?: Language) {
 	if (!artifact.ok)
 		return {
 			ok: false,
-			errors: localizeErrors(artifact.errors, language ?? "zh"),
+			errors: localizeErrors(artifact.errors, language),
 		};
 
 	const errors: string[] = [];
@@ -74,7 +98,18 @@ export function validateFlowDir(dir: string, language?: Language) {
 	};
 }
 
+export function validateDraftDir(dir: string, language?: Language) {
+	const result = validateFlowDir(dir, language);
+	if (!result.ok || !result.flow || result.flow.goals.length > 0) return result;
+	return {
+		ok: false,
+		errors: localizeErrors(["至少需要 1 个执行步骤"], result.flow.language),
+		flow: result.flow,
+	};
+}
+
 export function validateFlowShape(flow: FlowState, errors: string[]) {
+	validateFields(flow, FLOW_FIELDS, "", errors);
 	if (flow.schemaVersion !== FLOW_SCHEMA_VERSION)
 		errors.push(`schemaVersion 必须为 ${FLOW_SCHEMA_VERSION}`);
 	validateLanguage(flow.language, errors);
@@ -88,8 +123,8 @@ export function validateFlowShape(flow: FlowState, errors: string[]) {
 		errors.push("currentGoal 必须是整数");
 	if (!Number.isInteger(flow.repairAttempts))
 		errors.push("repairAttempts 必须是整数");
-	validateForbiddenLifecycleFields(flow, errors);
 	validateSource(flow.source, errors);
+	validateMeta(flow.meta, errors);
 	validateErrorsArray(flow.errors, errors);
 	validateParallelRun(
 		flow.parallelRun,
@@ -100,7 +135,7 @@ export function validateFlowShape(flow: FlowState, errors: string[]) {
 		errors.push("goals 必须是数组");
 		return;
 	}
-	validateStartedAt(flow, flow.goals.length, errors);
+	validateFlowTimes(flow, flow.goals.length, errors);
 	if (isPreDraftFlow(flow) || isPreDraftOnlyStatus(flow.status)) {
 		validatePreDraftShape(flow, errors);
 		return;
@@ -111,11 +146,72 @@ export function validateFlowShape(flow: FlowState, errors: string[]) {
 		errors.push(
 			"执行步骤数量超过 10；final acceptance 不占执行步骤名额，必须拆成多个 flow",
 		);
-	validateFinalAcceptancePlacement(flow.goals, executionGoals, errors);
+	validateFinalAcceptancePlacement(flow.goals, errors);
 	if (flow.currentGoal < 0 || flow.currentGoal >= flow.goals.length)
 		errors.push("currentGoal 必须指向 goals 下标");
 	for (const [offset, goal] of flow.goals.entries())
 		validateGoalShape(goal, offset, errors);
+}
+
+function validateMeta(value: unknown, errors: string[]) {
+	if (value === null) return;
+	if (!isRecord(value)) {
+		errors.push("meta 必须是对象或 null");
+		return;
+	}
+	validateFields(value, META_FIELDS, "meta", errors);
+	validatePlannedBy(value.plannedBy, errors);
+	validateAlignment(value.alignment, errors);
+}
+
+function validatePlannedBy(value: unknown, errors: string[]) {
+	if (value === null) return;
+	if (!isRecord(value)) {
+		errors.push("meta.plannedBy 必须是对象或 null");
+		return;
+	}
+	validateFields(value, PLANNED_BY_FIELDS, "meta.plannedBy", errors);
+	if (!nonEmpty(value.model))
+		errors.push("meta.plannedBy.model 必须是非空字符串");
+	if (!nonEmpty(value.thinking))
+		errors.push("meta.plannedBy.thinking 必须是非空字符串");
+}
+
+function validateAlignment(value: unknown, errors: string[]) {
+	if (value === null) return;
+	if (!isRecord(value)) {
+		errors.push("meta.alignment 必须是对象或 null");
+		return;
+	}
+	validateFields(value, ALIGNMENT_FIELDS, "meta.alignment", errors);
+	if (value.kind !== "recorded") {
+		errors.push("meta.alignment.kind 必须是 recorded");
+		return;
+	}
+	validateAlignmentTurns(value.turns, errors);
+}
+
+function validateAlignmentTurns(value: unknown, errors: string[]) {
+	if (!Array.isArray(value) || value.length === 0) {
+		errors.push("meta.alignment.turns 必须是非空数组");
+		return;
+	}
+	for (const [index, turn] of value.entries()) {
+		if (!isRecord(turn)) {
+			errors.push(`meta.alignment.turns[${index}] 必须是对象`);
+			continue;
+		}
+		validateFields(
+			turn,
+			ALIGNMENT_TURN_FIELDS,
+			`meta.alignment.turns[${index}]`,
+			errors,
+		);
+		if (!nonEmpty(turn.question))
+			errors.push(`meta.alignment.turns[${index}].question 必须是非空字符串`);
+		if (!nonEmpty(turn.answer))
+			errors.push(`meta.alignment.turns[${index}].answer 必须是非空字符串`);
+	}
 }
 
 function validateFlowDirName(dir: string, flow: FlowState, errors: string[]) {
@@ -124,10 +220,16 @@ function validateFlowDirName(dir: string, flow: FlowState, errors: string[]) {
 		errors.push(`flow 目录名必须等于 id：${id}`);
 }
 
-function validateForbiddenLifecycleFields(flow: unknown, errors: string[]) {
-	if (!isRecord(flow)) return;
-	for (const field of ["pausedFrom", "stopped"])
-		if (field in flow) errors.push(`${field} 不是合法 Flow 字段`);
+function validateFields(
+	value: object,
+	allowed: ReadonlySet<string>,
+	path: string,
+	errors: string[],
+) {
+	for (const field of Object.keys(value)) {
+		if (allowed.has(field)) continue;
+		errors.push(`${path ? `${path}.` : ""}${field} 不是合法 Flow 字段`);
+	}
 }
 
 export function isFinalAcceptance(goal: unknown) {
@@ -142,22 +244,12 @@ function isNormalGoal(goal: unknown) {
 	return isRecord(goal) && goal.role === "normal";
 }
 
-function validateFinalAcceptancePlacement(
-	goals: unknown[],
-	executionGoals: number,
-	errors: string[],
-) {
+function validateFinalAcceptancePlacement(goals: unknown[], errors: string[]) {
 	const finalIndexes = goals.flatMap((goal, index) =>
 		isFinalAcceptance(goal) ? [index] : [],
 	);
-	if (executionGoals === 1) {
-		if (finalIndexes.length > 0) errors.push("单步 Flow 不使用最终验收步骤");
-		return;
-	}
-	if (finalIndexes.length !== 1)
-		errors.push("多步 Flow 必须有 1 个最终验收步骤（role: final_acceptance）");
-	if (!isFinalAcceptance(goals.at(-1)))
-		errors.push("最后一个步骤必须是最终验收（role: final_acceptance）");
+	if (finalIndexes.length > 1)
+		errors.push("最终验收步骤最多 1 个（role: final_acceptance）");
 	for (const index of finalIndexes) {
 		if (index !== goals.length - 1)
 			errors.push(`goals[${index}] 非最终步骤必须是 normal`);
@@ -183,7 +275,7 @@ function validatePreDraftShape(flow: FlowState, errors: string[]) {
 		errors.push("pre-draft Flow parallelRun 必须为 null");
 }
 
-function validateStartedAt(
+function validateFlowTimes(
 	flow: FlowState,
 	goalCount: number,
 	errors: string[],
@@ -195,17 +287,14 @@ function validateStartedAt(
 		(flow.status === "paused" && goalCount === 0)
 	) {
 		if (flow.startedAt !== null) errors.push("startedAt 计划必须为 null");
-		return;
-	}
-	if (flow.status === "paused") {
+	} else if (flow.status === "paused") {
 		if (flow.startedAt !== null && !Number.isFinite(flow.startedAt))
 			errors.push("startedAt 已暂停必须为 null 或时间戳");
-		if (flow.parallelRun !== null)
-			errors.push("paused Flow parallelRun 必须为 null");
-		return;
-	}
-	if (!Number.isFinite(flow.startedAt))
+	} else if (!Number.isFinite(flow.startedAt)) {
 		errors.push("startedAt 运行态必须是时间戳");
+	}
+	if (flow.completedAt !== null && !Number.isFinite(flow.completedAt))
+		errors.push("completedAt 必须是 null 或时间戳");
 }
 
 function validateGoalShape(
@@ -241,6 +330,7 @@ function validateGoalShape(
 		!GOAL_STATUSES.has(goal.status as FlowGoalStatus)
 	)
 		errors.push(`goals[${expectedIndex}] status 非法：${String(goal.status)}`);
+	else validateGoalTimes(goal, expectedIndex, errors);
 	validateCompletionCursor(
 		goal.completionCursor,
 		errors,
@@ -269,6 +359,54 @@ function validateGoalShape(
 			);
 	}
 	validateChecks(goal.checks, errors, `goals[${expectedIndex}].checks`);
+	validatePendingAdvisor(
+		goal.pendingAdvisor,
+		goal.checks,
+		`goals[${expectedIndex}].pendingAdvisor`,
+		errors,
+	);
+}
+
+function validateGoalTimes(
+	goal: Record<string, unknown>,
+	index: number,
+	errors: string[],
+) {
+	for (const field of ["startedAt", "completedAt"] as const) {
+		const value = goal[field];
+		if (value !== null && !Number.isFinite(value))
+			errors.push(`goals[${index}].${field} 必须是 null 或时间戳`);
+	}
+}
+
+function validatePendingAdvisor(
+	value: unknown,
+	checks: unknown,
+	path: string,
+	errors: string[],
+) {
+	if (value === null) return;
+	if (!isRecord(value)) {
+		errors.push(`${path} 必须是对象或 null`);
+		return;
+	}
+	if (value.phase !== "acceptance" && value.phase !== "quality")
+		errors.push(`${path}.phase 必须是 acceptance 或 quality`);
+	if (!Number.isInteger(value.round)) errors.push(`${path}.round 必须是整数`);
+	if (
+		(value.phase !== "acceptance" && value.phase !== "quality") ||
+		!Number.isInteger(value.round) ||
+		!isRecord(checks)
+	)
+		return;
+	const phase = checks[value.phase];
+	const rounds =
+		isRecord(phase) && Array.isArray(phase.rounds) ? phase.rounds : [];
+	const round = rounds.find(
+		(item) => isRecord(item) && item.round === value.round,
+	);
+	if (!isRecord(round) || round.result !== "failed" || !isRecord(round.advisor))
+		errors.push(`${path} 必须指向含顾问建议的未通过检查轮`);
 }
 
 function validateParallelRun(
@@ -294,6 +432,10 @@ function validateParallelRun(
 	}
 	if (!Number.isFinite(value.startedAt))
 		errors.push("parallelRun.startedAt 必须是时间戳");
+	if (!nonEmpty(value.consoleSessionFile))
+		errors.push("parallelRun.consoleSessionFile 必须是非空字符串");
+	if (!nonEmpty(value.consoleSessionName))
+		errors.push("parallelRun.consoleSessionName 必须是非空字符串");
 }
 
 function validateDependsOn(
@@ -339,8 +481,29 @@ function validateWriteScope(value: unknown, path: string, errors: string[]) {
 		errors.push(`${path} 必须是数组`);
 		return;
 	}
-	if (!value.every((item) => typeof item === "string"))
-		errors.push(`${path} 必须是字符串数组`);
+	for (const [index, scope] of value.entries()) {
+		const itemPath = `${path}[${index}]`;
+		if (typeof scope !== "string") {
+			errors.push(`${itemPath} 必须是字符串`);
+			continue;
+		}
+		if (!isCanonicalWriteScope(scope))
+			errors.push(`${itemPath} 必须是 ** 或以 /** 结尾的相对目录 glob`);
+	}
+}
+
+function isCanonicalWriteScope(scope: string) {
+	if (scope === "**") return true;
+	if (!scope.endsWith("/**")) return false;
+	return scope
+		.slice(0, -3)
+		.split("/")
+		.every(
+			(segment) =>
+				segment !== "." &&
+				segment !== ".." &&
+				WRITE_SCOPE_SEGMENT_PATTERN.test(segment),
+		);
 }
 
 function validateGoalFiles(dir: string, flow: FlowState, errors: string[]) {

@@ -6,7 +6,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { Language } from "./config.js";
+import type { AlignmentDepth, Language } from "./config.js";
 import {
 	type AlignmentTurn,
 	extractAlignmentQuestion,
@@ -14,11 +14,37 @@ import {
 } from "./generation-alignment.js";
 import { isRecord } from "./guards.js";
 
+const ALIGNMENT_STATE_FIELDS = new Set([
+	"version",
+	"stage",
+	"sessionFile",
+	"autoStart",
+	"depth",
+	"alignmentTurns",
+	"lastAlignmentQuestion",
+	"createdAt",
+	"updatedAt",
+]);
+const ALIGNMENT_TURN_FIELDS = new Set(["question", "answer"]);
+const GENERATION_STAGES = new Set<GenerationStage>([
+	"aligning",
+	"awaiting_alignment_input",
+	"awaiting_final_confirm",
+	"generating",
+	"awaiting_blocking_input",
+]);
+const ALIGNMENT_DEPTHS = new Set<AlignmentDepth>([
+	"coarse",
+	"standard",
+	"deep",
+]);
+
 export interface AlignmentState {
 	version: 1;
 	stage: GenerationStage;
 	sessionFile: string | null;
 	autoStart: boolean;
+	depth: AlignmentDepth;
 	alignmentTurns: AlignmentTurn[];
 	lastAlignmentQuestion: string | null;
 	createdAt: number;
@@ -35,6 +61,7 @@ export function createAlignmentState(
 		stage: GenerationStage;
 		sessionFile: string | null;
 		autoStart: boolean;
+		depth: AlignmentDepth;
 	},
 ) {
 	const now = Date.now();
@@ -43,6 +70,7 @@ export function createAlignmentState(
 		stage: input.stage,
 		sessionFile: input.sessionFile,
 		autoStart: input.autoStart,
+		depth: input.depth,
 		alignmentTurns: [],
 		lastAlignmentQuestion: null,
 		createdAt: now,
@@ -51,25 +79,24 @@ export function createAlignmentState(
 }
 
 export function readAlignmentState(flowDir: string): AlignmentState {
-	return normalizeAlignmentState(
+	return parseAlignmentState(
 		JSON.parse(readFileSync(alignmentJsonPath(flowDir), "utf8")) as unknown,
 	);
 }
 
-export function tryReadAlignmentState(flowDir: string) {
-	try {
-		if (!existsSync(alignmentJsonPath(flowDir))) return undefined;
-		return readAlignmentState(flowDir);
-	} catch {
-		return undefined;
-	}
+export function readAlignmentStateIfExists(flowDir: string) {
+	if (!existsSync(alignmentJsonPath(flowDir))) return undefined;
+	return readAlignmentState(flowDir);
 }
 
 export function writeAlignmentState(
 	flowDir: string,
 	alignment: AlignmentState,
 ) {
-	const next = { ...alignment, updatedAt: Date.now() };
+	const next = {
+		...alignment,
+		updatedAt: Math.max(Date.now(), alignment.updatedAt + 1),
+	};
 	const tmp = join(flowDir, "alignment.json.tmp");
 	writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
 	renameSync(tmp, alignmentJsonPath(flowDir));
@@ -87,54 +114,85 @@ export function deleteAlignmentState(flowDir: string) {
 	rmSync(alignmentJsonPath(flowDir), { force: true });
 }
 
-function normalizeAlignmentState(value: unknown): AlignmentState {
+function parseAlignmentState(value: unknown): AlignmentState {
 	if (!isRecord(value)) throw new Error("alignment.json 必须是对象");
-	const turns = Array.isArray(value.alignmentTurns)
-		? value.alignmentTurns.map(normalizeAlignmentTurn)
-		: [];
+	assertFields(value, ALIGNMENT_STATE_FIELDS, "alignment.json");
+	if (value.version !== 1) throw new Error("alignment.json version 必须为 1");
+	if (!isGenerationStage(value.stage))
+		throw new Error("alignment.json stage 不受支持");
+	if (typeof value.sessionFile !== "string" && value.sessionFile !== null)
+		throw new Error("alignment.json sessionFile 必须是字符串或 null");
+	if (typeof value.autoStart !== "boolean")
+		throw new Error("alignment.json autoStart 必须是布尔值");
+	if (!isAlignmentDepth(value.depth))
+		throw new Error("alignment.json depth 必须是 coarse、standard 或 deep");
+	if (!Array.isArray(value.alignmentTurns))
+		throw new Error("alignment.json alignmentTurns 必须是数组");
+	if (
+		typeof value.lastAlignmentQuestion !== "string" &&
+		value.lastAlignmentQuestion !== null
+	)
+		throw new Error("alignment.json lastAlignmentQuestion 必须是字符串或 null");
+	if (!Number.isFinite(value.createdAt))
+		throw new Error("alignment.json createdAt 必须是时间戳");
+	if (!Number.isFinite(value.updatedAt))
+		throw new Error("alignment.json updatedAt 必须是时间戳");
 	return {
 		version: 1,
-		stage: normalizeStage(value.stage),
-		sessionFile:
-			typeof value.sessionFile === "string" ? value.sessionFile : null,
-		autoStart: value.autoStart === true,
-		alignmentTurns: turns,
-		lastAlignmentQuestion:
-			typeof value.lastAlignmentQuestion === "string"
-				? value.lastAlignmentQuestion
-				: null,
-		createdAt: Number.isFinite(value.createdAt) ? Number(value.createdAt) : 0,
-		updatedAt: Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : 0,
+		stage: value.stage,
+		sessionFile: value.sessionFile,
+		autoStart: value.autoStart,
+		depth: value.depth,
+		alignmentTurns: value.alignmentTurns.map(parseAlignmentTurn),
+		lastAlignmentQuestion: value.lastAlignmentQuestion,
+		createdAt: Number(value.createdAt),
+		updatedAt: Number(value.updatedAt),
 	};
 }
 
-function normalizeAlignmentTurn(value: unknown): AlignmentTurn {
-	if (!isRecord(value)) return { question: "", answer: "" };
-	return {
-		question: typeof value.question === "string" ? value.question : "",
-		answer: typeof value.answer === "string" ? value.answer : "",
-	};
+function parseAlignmentTurn(value: unknown, index: number): AlignmentTurn {
+	if (!isRecord(value))
+		throw new Error(`alignment.json alignmentTurns[${index}] 必须是对象`);
+	assertFields(
+		value,
+		ALIGNMENT_TURN_FIELDS,
+		`alignment.json alignmentTurns[${index}]`,
+	);
+	if (typeof value.question !== "string")
+		throw new Error(
+			`alignment.json alignmentTurns[${index}].question 必须是字符串`,
+		);
+	if (typeof value.answer !== "string")
+		throw new Error(
+			`alignment.json alignmentTurns[${index}].answer 必须是字符串`,
+		);
+	return { question: value.question, answer: value.answer };
 }
 
-function normalizeStage(value: unknown): GenerationStage {
-	if (
-		value === "aligning" ||
-		value === "awaiting_alignment_input" ||
-		value === "awaiting_final_confirm" ||
-		value === "generating" ||
-		value === "awaiting_blocking_input"
-	)
-		return value;
-	return "generating";
+function isGenerationStage(value: unknown): value is GenerationStage {
+	return GENERATION_STAGES.has(value as GenerationStage);
+}
+
+function isAlignmentDepth(value: unknown): value is AlignmentDepth {
+	return ALIGNMENT_DEPTHS.has(value as AlignmentDepth);
+}
+
+function assertFields(
+	value: Record<string, unknown>,
+	allowed: ReadonlySet<string>,
+	path: string,
+) {
+	const field = Object.keys(value).find((key) => !allowed.has(key));
+	if (field) throw new Error(`${path}.${field} 不受支持`);
 }
 
 export function appendGenerationClarification(
-	originalRequest: string,
+	requestText: string,
 	clarification: string,
 	language: Language = "zh",
 ) {
 	const base =
-		originalRequest.trim() ||
+		requestText.trim() ||
 		(language === "en"
 			? "(user did not provide an initial request)"
 			: "（用户未给出初始需求）");

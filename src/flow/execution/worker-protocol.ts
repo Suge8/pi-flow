@@ -34,6 +34,17 @@ export function privateWorkerEnv(input: PrivateWorkerControl) {
 	};
 }
 
+export function hasPrivateWorkerEnvironment(
+	env: NodeJS.ProcessEnv = process.env,
+) {
+	return Object.values(PRIVATE_WORKER_ENV).some((name) => Boolean(env[name]));
+}
+
+/** 当前进程是否为私有并行 worker：单写者约束（worker 不写父 flow.json）的判定依据。 */
+export function isPrivateWorkerProcess(env: NodeJS.ProcessEnv = process.env) {
+	return Boolean(env[PRIVATE_WORKER_ENV.token]);
+}
+
 export function privateWorkerControlFromEnv(
 	env: NodeJS.ProcessEnv = process.env,
 ) {

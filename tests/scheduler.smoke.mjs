@@ -1,40 +1,38 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareTestDist } from "./prepare-dist.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const runId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const out = join(root, `.tmp-scheduler-test-${runId}`);
-const srcOut = join(out, "src");
+const out = join(tmpdir(), `pi-flow-scheduler-test-${runId}`);
+const srcOut = join(out, "dist");
 
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
-execFileSync(
-	join(root, "node_modules/.bin/tsc"),
-	[
-		"--ignoreConfig",
-		"--outDir",
-		srcOut,
-		"--rootDir",
-		"src",
-		"--noEmit",
-		"false",
-		"--target",
-		"ES2022",
-		"--module",
-		"NodeNext",
-		"--moduleResolution",
-		"NodeNext",
-		"--types",
-		"node",
-		"--strict",
-		"--skipLibCheck",
-		"src/flow/scheduler.ts",
-	],
-	{ cwd: root, stdio: "inherit" },
-);
+symlinkSync(join(root, "node_modules"), join(out, "node_modules"), "dir");
+prepareTestDist(root, srcOut, [
+	"--ignoreConfig",
+	"--outDir",
+	srcOut,
+	"--rootDir",
+	"src",
+	"--noEmit",
+	"false",
+	"--target",
+	"ES2022",
+	"--module",
+	"NodeNext",
+	"--moduleResolution",
+	"NodeNext",
+	"--types",
+	"node",
+	"--strict",
+	"--skipLibCheck",
+	"src/flow/scheduler.ts",
+]);
 
 const MULTI_WAVE_GOALS = [
 	{ dependsOn: [], writeScope: ["src/wave-1/**"] },
@@ -191,7 +189,13 @@ try {
 	assert.equal(
 		computeReadyBatch(
 			flow([{ status: "complete" }, { status: "pending" }], {
-				parallelRun: { id: "P1", goalIndexes: [1], startedAt: 0 },
+				parallelRun: {
+					id: "P1",
+					goalIndexes: [1],
+					startedAt: 0,
+					consoleSessionFile: "console.jsonl",
+					consoleSessionName: "parallel",
+				},
 			}),
 		),
 		null,
@@ -203,8 +207,69 @@ try {
 		"running goal should block scheduling",
 	);
 
+	assert.equal(scopesOverlap(["**"], ["src/api/**"]), true);
 	assert.equal(scopesOverlap(["src/**"], ["src/api/**"]), true);
 	assert.equal(scopesOverlap(["src/api/**"], ["src/ui/**"]), false);
+	assert.equal(scopesOverlap(["src/foo*"], ["src/foobar/**"]), true);
+	for (const invalidScope of [
+		"src/api/*/generated",
+		"src\\api\\**",
+		"/src/api/**",
+		"src/../api/**",
+		"src/api.ts",
+		null,
+	]) {
+		assert.equal(
+			scopesOverlap([invalidScope], ["src/ui/**"]),
+			true,
+			`invalid scope must fail closed: ${invalidScope}`,
+		);
+	}
+	const sparseScope = [];
+	sparseScope.length = 1;
+	for (const unsafeScope of [
+		"src/api/**",
+		null,
+		{ 0: "src/api/**", length: 1 },
+		[],
+		sparseScope,
+	]) {
+		const label = JSON.stringify(unsafeScope);
+		assert.equal(
+			scopesOverlap(unsafeScope, ["src/ui/**"]),
+			true,
+			`unsafe scope container must fail closed: ${label}`,
+		);
+		assert.equal(
+			scopesOverlap(["src/ui/**"], unsafeScope),
+			true,
+			`unsafe right scope container must fail closed: ${label}`,
+		);
+		for (const writeScopes of [
+			[unsafeScope, ["src/ui/**"]],
+			[["src/ui/**"], unsafeScope],
+		]) {
+			assert.deepEqual(
+				computeReadyBatch(
+					flow([
+						{ status: "complete" },
+						{
+							status: "pending",
+							dependsOn: [0],
+							writeScope: writeScopes[0],
+						},
+						{
+							status: "pending",
+							dependsOn: [0],
+							writeScope: writeScopes[1],
+						},
+					]),
+				),
+				{ mode: "serial", indices: [1] },
+				`unsafe scope container entered a parallel batch: ${label}`,
+			);
+		}
+	}
 
 	console.log("scheduler smoke ok");
 } finally {
@@ -223,16 +288,22 @@ function multiWaveFlow(completedIndices) {
 
 function flow(goals, overrides = {}) {
 	return {
-		schemaVersion: 9,
+		schemaVersion: 17,
 		language: "zh",
 		id: "F1",
 		title: "Scheduler",
 		status: "running",
-		source: { type: "conversation", path: null, originalRequest: "" },
+		source: {
+			type: "conversation",
+			transcript: [{ kind: "user", at: "2026-01-01", text: "Schedule" }],
+		},
 		createdAt: 0,
 		updatedAt: 0,
 		startedAt: 0,
+		completedAt: null,
 		currentGoal: firstActiveIndex(goals),
+		meta: null,
+		attention: null,
 		parallelRun: null,
 		repairAttempts: 0,
 		errors: [],
@@ -242,11 +313,12 @@ function flow(goals, overrides = {}) {
 			title: `G${index + 1}`,
 			role: index === goals.length - 1 ? "final_acceptance" : "normal",
 			file: `G${index + 1}.md`,
+			startedAt: goal.status === "pending" ? null : 0,
+			completedAt: goal.status === "complete" ? 0 : null,
 			completionCursor: null,
 			sessionFile: null,
 			sessionName: null,
 			snapshot: null,
-			snapshotHash: null,
 			goalId: null,
 			result: {
 				summary: null,

@@ -16,6 +16,7 @@ export function completeGoalWithFact(
 	const goals = replaceGoal(flow, goalIndex, {
 		...goal,
 		status: "complete",
+		completedAt: Date.now(),
 		completionCursor: null,
 		goalId: fact.goalId,
 		result: {
@@ -25,6 +26,10 @@ export function completeGoalWithFact(
 			criteriaChanged: handoffHasCriteriaDeviation(handoff.text),
 		},
 		checks: fact.checks ?? goal.checks,
+		pendingAdvisor: null,
+		...(fact.checkAttribution
+			? { checkAttribution: fact.checkAttribution }
+			: {}),
 	});
 	return { ...flow, goals };
 }

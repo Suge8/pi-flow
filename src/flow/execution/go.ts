@@ -2,10 +2,13 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import { formatError } from "../../shared/guards.js";
 import { runtimeLanguage } from "../../shared/language.js";
-import { liveReportUrl } from "../../shared/report-server.js";
+import { liveReportUrl } from "../../shared/report-client.js";
 import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
 import { writeFlowHtml } from "../html.js";
+import { withFlowLockSync } from "../lock.js";
+import { readFlow, writeFlow } from "../store.js";
 import {
 	flowTargetLookupFailedMessage,
 	flowTargetMessage,
@@ -35,9 +38,32 @@ export async function goFlow(
 		);
 		return;
 	}
-	if (location.flow.status === "running")
-		await openFlowReport(ctx, location).catch(() => undefined);
-	return advanceFlowExecution(pi, ctx, location);
+	if (location.flow.status === "running") await openFlowReport(ctx, location);
+	const target = shouldClassifyBeforeClearingAttention(location)
+		? location
+		: clearFlowAttention(location);
+	return advanceFlowExecution(pi, ctx, target);
+}
+
+function shouldClassifyBeforeClearingAttention(location: FlowLocation) {
+	return (
+		location.flow.status === "paused" &&
+		location.flow.startedAt !== null &&
+		location.flow.parallelRun === null &&
+		location.flow.goals[location.flow.currentGoal]?.status === "running"
+	);
+}
+
+/** 「go」是唯一接管入口：可安全推进前清空 attention，后续异常会重新写入。 */
+function clearFlowAttention(location: FlowLocation): FlowLocation {
+	if (!location.flow.attention) return location;
+	const cleared = withFlowLockSync(
+		location.dir,
+		`clear attention ${location.flow.id}`,
+		() =>
+			writeFlow(location.dir, { ...readFlow(location.dir), attention: null }),
+	);
+	return cleared.ok ? { ...location, flow: cleared.value } : location;
 }
 
 async function goTargetOrNotify(
@@ -83,7 +109,7 @@ async function notifyCompleteFlow(
 	ctx: ExtensionCommandContext,
 	location: FlowLocation,
 ) {
-	const report = await openFlowReport(ctx, location).catch(() => undefined);
+	const report = await openFlowReport(ctx, location);
 	const id = flowCommandId(location.flow.id);
 	notifyUser(
 		ctx,
@@ -118,10 +144,27 @@ function missingGenerationStateNotice(
 		: formatUserNotice("⚠️", "Flow 无法推进", ["生成状态缺失"]);
 }
 
-function openFlowReport(ctx: ExtensionCommandContext, location: FlowLocation) {
-	return liveReportUrl(
-		ctx,
-		writeFlowHtml(location.dir, location.flow),
-		location.flow.language,
-	);
+async function openFlowReport(
+	ctx: ExtensionCommandContext,
+	location: FlowLocation,
+) {
+	try {
+		return await liveReportUrl(
+			ctx,
+			writeFlowHtml(location.dir, location.flow),
+			location.flow.language,
+		);
+	} catch (error) {
+		notifyUser(
+			ctx,
+			location.flow.language === "en"
+				? formatUserNotice("⚠️", "Flow report could not open", [
+						formatError(error),
+					])
+				: formatUserNotice("⚠️", "Flow 报告打开失败", [formatError(error)]),
+			"info",
+			location.flow.language,
+		);
+		return undefined;
+	}
 }

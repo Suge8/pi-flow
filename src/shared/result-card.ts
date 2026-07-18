@@ -3,15 +3,14 @@ import type {
 	ExtensionContext,
 	Theme,
 } from "@earendil-works/pi-coding-agent";
-import {
-	type Component,
-	truncateToWidth,
-	visibleWidth,
-} from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
+import type { CheckRoundAdvisor } from "../goal/types.js";
 import { notifyCentered } from "./activity-frame.js";
 import type { Language } from "./config.js";
-import { formatError } from "./guards.js";
+import { formatError, isRecord } from "./guards.js";
 import { runtimeLanguage } from "./language.js";
+import { registerRuntimePart } from "./runtime-registration.js";
+import { truncateToWidth, visibleWidth } from "./tui.js";
 import {
 	formatUserNotice,
 	localizeUserText,
@@ -32,11 +31,56 @@ export interface ResultCardDetails {
 	lines: string[];
 	icon?: string;
 	language?: Language;
+	context?: "check-start" | "check-result";
+	deliveryId?: string;
+	advisor?: CheckRoundAdvisor;
 }
 
 export type ResultCardElapsedKind = "elapsed" | "totalElapsed";
 
 export const RESULT_CARD_TYPE = "pi-flow-result-card";
+
+export type ResultCardDelivery =
+	| { delivered: true }
+	| { delivered: false; error: string };
+
+export function checkResultDeliveryId(
+	phase: "acceptance" | "quality",
+	runId: string,
+	kind: "passed" | "failed" | "repair" | "stopped" = "failed",
+) {
+	return `${phase}:${runId}:${kind}`;
+}
+
+export function deliveredResultCardDetails(
+	ctx: Pick<ExtensionContext, "sessionManager">,
+	deliveryId: string,
+): Record<string, unknown> | undefined {
+	const sessionManager = ctx.sessionManager as
+		| { getBranch?: () => unknown[]; getEntries?: () => unknown[] }
+		| undefined;
+	const entries =
+		sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (
+			isRecord(entry) &&
+			entry.type === "custom_message" &&
+			entry.customType === RESULT_CARD_TYPE &&
+			isRecord(entry.details) &&
+			entry.details.deliveryId === deliveryId
+		)
+			return entry.details;
+	}
+	return undefined;
+}
+
+export function resultCardDelivered(
+	ctx: Pick<ExtensionContext, "sessionManager">,
+	deliveryId: string,
+) {
+	return deliveredResultCardDetails(ctx, deliveryId) !== undefined;
+}
 
 export function composeResultCardLines(
 	sections: readonly (readonly string[])[],
@@ -79,10 +123,12 @@ function trimBlankEdges(lines: readonly string[]) {
 }
 
 export function registerResultCardRenderer(pi: ExtensionAPI) {
-	pi.registerMessageRenderer<ResultCardDetails>(
-		RESULT_CARD_TYPE,
-		(message, _options, theme) => new ResultCard(message.details, theme),
-	);
+	registerRuntimePart(pi, "result-card:renderer", () => {
+		pi.registerMessageRenderer<ResultCardDetails>(
+			RESULT_CARD_TYPE,
+			(message, _options, theme) => new ResultCard(message.details, theme),
+		);
+	});
 }
 
 export function sendResultCard(
@@ -93,7 +139,7 @@ export function sendResultCard(
 	content: string,
 	details: ResultCardDetails,
 	options: { triggerTurn?: boolean; deliverAs?: "followUp" | "nextTurn" } = {},
-) {
+): ResultCardDelivery {
 	const sendMessage = ctx.sendMessage ?? pi?.sendMessage?.bind(pi);
 	const localizedDetails = resultCardDetails(details);
 	if (!sendMessage) {
@@ -102,7 +148,7 @@ export function sendResultCard(
 			localizedDetails.title,
 			levelFor(details.result),
 		);
-		return;
+		return { delivered: false, error: "sendMessage unavailable" };
 	}
 	try {
 		sendMessage(
@@ -114,14 +160,17 @@ export function sendResultCard(
 			},
 			options,
 		);
+		return { delivered: true };
 	} catch (error) {
 		const language = details.language ?? runtimeLanguage();
+		const message = formatError(error);
 		notifyUser(
 			ctx,
-			resultCardSendFailedNotice(formatError(error), language),
+			resultCardSendFailedNotice(message, language),
 			"info",
 			language,
 		);
+		return { delivered: false, error: message };
 	}
 }
 
@@ -132,7 +181,7 @@ function resultCardSendFailedNotice(error: string, language: Language) {
 }
 
 export const FINAL_REPLY_INSTRUCTION =
-	"请基于上面的完成验收和质量检查，给用户一个简洁最终回复：说明完成了什么、验证了什么、剩余风险。不要继续改代码，除非发现检查结果与当前事实冲突。";
+	"请基于上面的验收和质检，给用户一个简洁最终回复：说明完成了什么、验证了什么、剩余风险。不要继续改代码，除非发现检查结果与当前事实冲突。";
 
 export function finalReplyInstruction(language: Language) {
 	return language === "en"
@@ -176,14 +225,19 @@ function cardLines(line: string, width: number) {
 		.map((item) => padLine(item, width));
 }
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, {
+	granularity: "grapheme",
+});
+
 function wrapLine(line: string, width: number) {
 	if (!line) return [""];
 	// truncateToWidth 截断时会追加 ANSI reset，返回值不是源前缀；
-	// 按字符累积可见宽度切分，避免换行点丢字。
+	// 按 grapheme 累积可见宽度切分：code point 遍历会把 emoji 变体序列
+	// （如 ⚠️ = ⚠ + U+FE0F）拆开测宽，导致行宽低估、渲染时超出终端宽度。
 	const lines: string[] = [];
 	let current = "";
 	let currentWidth = 0;
-	for (const char of line) {
+	for (const { segment: char } of graphemeSegmenter.segment(line)) {
 		if (current === "" && lines.length > 0 && char === " ") continue;
 		const charWidth = visibleWidth(char);
 		if (charWidth > width) {

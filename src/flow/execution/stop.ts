@@ -1,19 +1,24 @@
 import { existsSync } from "node:fs";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { pauseGoalFromFlow } from "../../goal.js";
-import { tryReadAlignmentState } from "../../shared/generation-state.js";
-import { settledChecks } from "../../shared/report-review.js";
+import { readAlignmentStateIfExists } from "../../shared/generation-state.js";
 import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
 import { recordFlowGoalCompletionBoundary } from "../completion.js";
-import { writeFlowHtml } from "../html.js";
+import { cancelFlowGeneration } from "../generation.js";
+import { refreshFlowHtmlProjection } from "../html.js";
 import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { currentSessionFile } from "../ownership.js";
 import {
 	activeParallelBatchForDir,
 	cancelParallelBatch,
 } from "../parallel/batch-runner.js";
+import { quoteCommand } from "../parallel/console.js";
 import { stopParallelRunFlow } from "../parallel/stop-state.js";
-import { deleteCompletionFact, rememberFlowContext } from "../runtime.js";
+import {
+	deleteCompletionFact,
+	releaseFlowContext,
+	rememberFlowContext,
+} from "../runtime.js";
 import { currentGoal, writeFlow } from "../store.js";
 import type { FlowState } from "../types.js";
 import { validateFlowDir } from "../validator.js";
@@ -22,10 +27,9 @@ import { flowTargetOrNotify, flowValidationFailedNotice } from "./shared.js";
 
 interface StopFlowResult {
 	alreadyComplete: boolean;
-	planSessionFile: string | null;
+	releaseSessionFiles: string[];
 	saved: FlowState;
 	shouldAbortCurrentAgent: boolean;
-	shouldPauseGoal: boolean;
 }
 
 export async function stopFlow(ctx: ExtensionCommandContext, id?: string) {
@@ -57,10 +61,11 @@ export async function stopFlow(ctx: ExtensionCommandContext, id?: string) {
 		return;
 	}
 	const result = stopped.value;
-	if (result.shouldPauseGoal)
-		await pauseTargetGoal(ctx, result.planSessionFile);
 	if (result.shouldAbortCurrentAgent) abortCurrentAgent(ctx);
 	if (activeBatch) await activeBatch.wait();
+	cancelFlowGeneration(ctx, location.dir, result.saved.id);
+	for (const sessionFile of result.releaseSessionFiles)
+		releaseFlowContext(sessionFile);
 	notifyUser(
 		ctx,
 		result.alreadyComplete
@@ -77,7 +82,8 @@ async function pauseTargetGoal(
 ) {
 	if (!sessionFile) return false;
 	if (sessionFile === currentSessionFile(ctx)) {
-		const paused = pauseGoalFromFlow(ctx);
+		const paused = await pauseGoalFromFlow(ctx);
+		if (paused) abortCurrentAgent(ctx);
 		recordStopCompletionBoundary(ctx, sessionFile);
 		return paused;
 	}
@@ -86,7 +92,8 @@ async function pauseTargetGoal(
 	await ctx.switchSession(sessionFile, {
 		withSession: async (sessionCtx) => {
 			rememberFlowContext(sessionCtx);
-			paused = pauseGoalFromFlow(sessionCtx);
+			paused = await pauseGoalFromFlow(sessionCtx);
+			if (paused) abortCurrentAgent(sessionCtx);
 			recordStopCompletionBoundary(sessionCtx, sessionFile);
 		},
 	});
@@ -101,11 +108,11 @@ function recordStopCompletionBoundary(
 	recordFlowGoalCompletionBoundary(ctx, { reason: "stop" });
 }
 
-function stopFlowTransaction(
+async function stopFlowTransaction(
 	ctx: ExtensionCommandContext,
 	dir: string,
 	language: "zh" | "en",
-): StopFlowResult | undefined {
+): Promise<StopFlowResult | undefined> {
 	const validation = validateFlowDir(dir, language);
 	if (!validation.ok || !validation.flow) {
 		notifyUser(
@@ -120,30 +127,35 @@ function stopFlowTransaction(
 	if (flow.status === "complete")
 		return {
 			alreadyComplete: true,
-			planSessionFile: null,
+			releaseSessionFiles: [],
 			saved: flow,
 			shouldAbortCurrentAgent: false,
-			shouldPauseGoal: false,
 		};
 	cancelParallelBatch(dir);
 	const plan = currentGoal(flow);
+	const releaseSessionFiles = stoppedSessionFiles(flow, plan?.sessionFile);
 	const shouldPauseGoal =
 		flow.status === "running" &&
 		flow.parallelRun === null &&
 		plan?.status === "running";
-	const shouldAbortCurrentAgent =
-		preDraftOwnedByCurrentSession(ctx, dir, flow) ||
-		(shouldPauseGoal && plan?.sessionFile === currentSessionFile(ctx));
+	const shouldAbortCurrentAgent = preDraftOwnedByCurrentSession(ctx, dir, flow);
+	if (shouldPauseGoal) await pauseTargetGoal(ctx, plan?.sessionFile ?? null);
 	const saved = writeFlow(dir, stopFlowState(dir, flow));
 	closeFlowGoalWatcher(dir);
-	writeFlowHtml(dir, saved);
+	refreshFlowHtmlProjection(ctx, dir, saved);
 	return {
 		alreadyComplete: saved.status === "complete",
-		planSessionFile: plan?.sessionFile ?? null,
+		releaseSessionFiles,
 		saved,
 		shouldAbortCurrentAgent,
-		shouldPauseGoal,
 	};
+}
+
+function stoppedSessionFiles(flow: FlowState, goalSessionFile?: string | null) {
+	const files = [flow.parallelRun?.consoleSessionFile, goalSessionFile].filter(
+		(file): file is string => Boolean(file),
+	);
+	return [...new Set(files)];
 }
 
 function stopFlowState(dir: string, flow: FlowState): FlowState {
@@ -153,10 +165,7 @@ function stopFlowState(dir: string, flow: FlowState): FlowState {
 		status: "paused",
 		parallelRun: null,
 		errors: [],
-		goals: flow.goals.map((goal) => ({
-			...goal,
-			checks: settledChecks(goal.checks),
-		})),
+		goals: flow.goals,
 	};
 }
 
@@ -168,7 +177,7 @@ function preDraftOwnedByCurrentSession(
 	return (
 		flow.goals.length === 0 &&
 		(flow.status === "aligning" || flow.status === "generating") &&
-		tryReadAlignmentState(dir)?.sessionFile === currentSessionFile(ctx)
+		readAlignmentStateIfExists(dir)?.sessionFile === currentSessionFile(ctx)
 	);
 }
 
@@ -179,14 +188,15 @@ function abortCurrentAgent(ctx: ExtensionCommandContext) {
 }
 
 function flowPausedMessage(id: string, language: "zh" | "en") {
+	const command = quoteCommand(`/flow go ${id}`);
 	return language === "en"
 		? formatUserNotice("⚠️", "Flow paused", [
 				`ID: ${id}`,
-				`Run /flow go ${id} to continue`,
+				`Run ${command} to continue`,
 			])
 		: formatUserNotice("⚠️", "Flow 已暂停", [
 				`编号：${id}`,
-				`运行 /flow go ${id} 继续`,
+				`运行 ${command} 继续`,
 			]);
 }
 

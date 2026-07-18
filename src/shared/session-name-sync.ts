@@ -2,7 +2,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { writeFlowHtml } from "../flow/html.js";
+import { refreshFlowHtmlProjection } from "../flow/html.js";
 import { flowLockBusyMessage, withFlowLockSync } from "../flow/lock.js";
 import { listFlows, readFlow, writeFlow } from "../flow/store.js";
 import { formatError } from "./guards.js";
@@ -11,19 +11,26 @@ import { currentSessionFile } from "./session.js";
 import { formatUserNotice, notifyUser } from "./ui-language.js";
 
 export function registerSessionNameSync(pi: ExtensionAPI) {
-	pi.on("session_info_changed", (event, ctx) => {
-		try {
-			syncSessionName(ctx, sessionNameOrNull(event.name));
-		} catch (error) {
-			const language = runtimeLanguage();
-			notifyUser(
-				ctx,
-				sessionNameSyncFailedNotice(formatError(error), language),
-				"info",
-				language,
-			);
-		}
-	});
+	pi.on("session_info_changed", (event, ctx) =>
+		handleSessionNameChange(event, ctx),
+	);
+}
+
+export function handleSessionNameChange(
+	event: { name?: unknown },
+	ctx: ExtensionContext,
+) {
+	try {
+		syncSessionName(ctx, sessionNameOrNull(event.name));
+	} catch (error) {
+		const language = runtimeLanguage();
+		notifyUser(
+			ctx,
+			sessionNameSyncFailedNotice(formatError(error), language),
+			"info",
+			language,
+		);
+	}
 }
 
 function sessionNameSyncFailedNotice(error: string, language: "zh" | "en") {
@@ -35,21 +42,27 @@ function sessionNameSyncFailedNotice(error: string, language: "zh" | "en") {
 function syncSessionName(ctx: ExtensionContext, sessionName: string | null) {
 	const sessionFile = currentSessionFile(ctx);
 	if (!sessionFile) return;
-	syncFlowSessionName(ctx.cwd, sessionFile, sessionName);
+	syncFlowSessionName(ctx, sessionFile, sessionName);
 }
 
 function syncFlowSessionName(
-	cwd: string,
+	ctx: ExtensionContext,
 	sessionFile: string,
 	sessionName: string | null,
 ) {
-	for (const location of listFlows(cwd)) {
+	for (const location of listFlows(ctx.cwd)) {
 		if (!location.flow.goals.some((goal) => goal.sessionFile === sessionFile))
 			continue;
 		const synced = withFlowLockSync(
 			location.dir,
 			`sync session name ${location.flow.id}`,
-			() => syncFlowSessionNameWithLock(location.dir, sessionFile, sessionName),
+			() =>
+				syncFlowSessionNameWithLock(
+					ctx,
+					location.dir,
+					sessionFile,
+					sessionName,
+				),
 		);
 		if (!synced.ok)
 			throw new Error(
@@ -59,6 +72,7 @@ function syncFlowSessionName(
 }
 
 function syncFlowSessionNameWithLock(
+	ctx: ExtensionContext,
 	dir: string,
 	sessionFile: string,
 	sessionName: string | null,
@@ -73,7 +87,7 @@ function syncFlowSessionNameWithLock(
 	});
 	if (!changed) return;
 	const saved = writeFlow(dir, { ...flow, goals });
-	writeFlowHtml(dir, saved);
+	refreshFlowHtmlProjection(ctx, dir, saved);
 }
 
 function sessionNameOrNull(name: unknown) {

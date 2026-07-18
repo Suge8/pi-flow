@@ -1,11 +1,13 @@
-import { join } from "node:path";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { flowStepLabel } from "../../shared/progress-labels.js";
 import { completeGoalWithFact } from "../goal-completion.js";
-import { writeFlowHtml } from "../html.js";
+import { refreshFlowHtmlProjection } from "../html.js";
+import { computeReadyBatch } from "../scheduler.js";
 import { writeFlow } from "../store.js";
 import type { FlowState, GoalCompletionFact } from "../types.js";
 import { replaceGoal } from "../util.js";
 import { readCompletionFact } from "./result-watcher.js";
+import { workerArtifactPath } from "./worker-artifact.js";
 
 export interface ParallelWorkerResult {
 	goalIndex: number;
@@ -30,6 +32,7 @@ export interface SettleParallelRunOptions {
 }
 
 export function settleParallelRun(
+	ctx: ExtensionCommandContext,
 	dir: string,
 	flow: FlowState,
 	results: ParallelWorkerResult[],
@@ -51,12 +54,13 @@ export function settleParallelRun(
 	let settled = flow;
 	for (const result of normalized) {
 		if (isSuccessfulWorker(result, options.requireSuccessfulExit)) {
-			settled = completeGoalWithFact(
-				dir,
-				settled,
-				result.goalIndex,
-				result.fact,
-			);
+			if (settled.goals[result.goalIndex]?.status !== "complete")
+				settled = completeGoalWithFact(
+					dir,
+					settled,
+					result.goalIndex,
+					result.fact,
+				);
 			completedIndexes.push(result.goalIndex);
 		} else {
 			settled = resetFailedWorkerGoal(settled, result.goalIndex);
@@ -64,25 +68,19 @@ export function settleParallelRun(
 		}
 	}
 	const allSuccess = resetIndexes.length === 0;
-	const final = allSuccess
-		? settled.goals.every((goal) => goal.status === "complete")
-		: false;
-	const saved = writeFlow(dir, {
-		...settled,
-		status: final ? "complete" : "running",
-		currentGoal: nextCurrentGoal(
-			settled,
-			normalized,
-			allSuccess,
-			final,
-			options.requireSuccessfulExit,
-		),
-		parallelRun: null,
-		errors: allSuccess
-			? []
-			: failureLines(flow, normalized, completedIndexes, options.recovery),
-	});
-	writeFlowHtml(dir, saved);
+	const saved = writeFlow(
+		dir,
+		allSuccess
+			? completedParallelFlow(settled)
+			: pausedParallelFlow(
+					settled,
+					flow,
+					normalized,
+					completedIndexes,
+					options.recovery,
+				),
+	);
+	refreshFlowHtmlProjection(ctx, dir, saved);
 	return {
 		allSuccess,
 		completedIndexes,
@@ -151,22 +149,47 @@ function matchingFact(fact: GoalCompletionFact | null, parallelRunId: string) {
 	return fact?.parallelRunId === parallelRunId ? fact : undefined;
 }
 
-function nextCurrentGoal(
-	flow: FlowState,
+function completedParallelFlow(flow: FlowState): FlowState {
+	const final = flow.goals.every((goal) => goal.status === "complete");
+	const ready = final
+		? null
+		: computeReadyBatch({ ...flow, parallelRun: null });
+	return {
+		...flow,
+		status: final ? "complete" : "running",
+		completedAt: final ? Date.now() : null,
+		currentGoal: final
+			? flow.goals.length - 1
+			: (ready?.indices[0] ??
+				firstIncompleteGoalIndex(flow) ??
+				flow.currentGoal),
+		parallelRun: null,
+		errors: [],
+	};
+}
+
+function pausedParallelFlow(
+	settled: FlowState,
+	original: FlowState,
 	results: ParallelWorkerResult[],
-	allSuccess: boolean,
-	final: boolean,
-	requireSuccessfulExit: boolean,
-) {
-	if (final) return flow.goals.length - 1;
-	if (!allSuccess)
-		return (
-			firstFailedGoalIndex(results, requireSuccessfulExit) ?? flow.currentGoal
-		);
-	return Math.min(
-		Math.max(...results.map((result) => result.goalIndex)) + 1,
-		flow.goals.length - 1,
-	);
+	completedIndexes: number[],
+	recovery = false,
+): FlowState {
+	return {
+		...settled,
+		status: "paused" as const,
+		currentGoal:
+			firstFailedGoalIndex(results, false) ??
+			firstIncompleteGoalIndex(settled) ??
+			settled.currentGoal,
+		parallelRun: original.parallelRun,
+		errors: failureLines(original, results, completedIndexes, recovery),
+		goals: settled.goals,
+	};
+}
+
+function firstIncompleteGoalIndex(flow: FlowState) {
+	return flow.goals.find((goal) => goal.status !== "complete")?.index;
 }
 
 function resetFailedWorkerGoal(flow: FlowState, goalIndex: number) {
@@ -176,11 +199,7 @@ function resetFailedWorkerGoal(flow: FlowState, goalIndex: number) {
 		...flow,
 		goals: replaceGoal(flow, goalIndex, {
 			...goal,
-			status: "pending",
-			sessionFile: null,
-			sessionName: null,
-			snapshot: null,
-			snapshotHash: null,
+			status: "paused",
 		}),
 	};
 }
@@ -235,8 +254,12 @@ function workerResultSummary(
 	language: FlowState["language"],
 ) {
 	if (result.fact)
-		return language === "en" ? "result.json present" : "已写 result.json";
-	return language === "en" ? "missing result.json" : "缺少 result.json";
+		return language === "en"
+			? "worker completion present"
+			: "已写 worker completion";
+	return language === "en"
+		? "missing worker completion"
+		: "缺少 worker completion";
 }
 
 function workerStderrSummary(
@@ -263,9 +286,5 @@ function emptyResult(goalIndex: number): ParallelWorkerResult {
 }
 
 function workerResultPath(dir: string, goalIndex: number) {
-	return join(workerDir(dir, goalIndex), "result.json");
-}
-
-function workerDir(dir: string, goalIndex: number) {
-	return join(dir, "workers", `G${goalIndex}`);
+	return workerArtifactPath(dir, goalIndex);
 }

@@ -49,13 +49,20 @@ export function readCompletionFact(path: string, parallelRunId?: string) {
 	if (!existsSync(path)) return undefined;
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-		if (!isGoalCompletionFact(parsed)) return undefined;
-		if (parallelRunId !== undefined && parsed.parallelRunId !== parallelRunId)
+		const fact = completionFactFromParsed(parsed);
+		if (!fact) return undefined;
+		if (parallelRunId !== undefined && fact.parallelRunId !== parallelRunId)
 			return undefined;
-		return parsed;
+		return fact;
 	} catch {
 		return undefined;
 	}
+}
+
+function completionFactFromParsed(value: unknown) {
+	if (isGoalCompletionFact(value)) return value;
+	if (!isRecord(value)) return undefined;
+	return isGoalCompletionFact(value.completion) ? value.completion : undefined;
 }
 
 function isGoalCompletionFact(value: unknown): value is GoalCompletionFact {

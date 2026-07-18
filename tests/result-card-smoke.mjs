@@ -1,21 +1,19 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { prepareTestDist } from "./prepare-dist.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const runId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const out = join(root, `.tmp-result-card-test-${runId}`);
-const srcOut = join(out, "src");
+const out = join(tmpdir(), `pi-flow-result-card-test-${runId}`);
+const srcOut = join(out, "dist");
 
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
-execFileSync(
-	join(root, "node_modules/.bin/tsc"),
-	["--outDir", srcOut, "--rootDir", "src", "--noEmit", "false"],
-	{ cwd: root, stdio: "inherit" },
-);
+symlinkSync(join(root, "node_modules"), join(out, "node_modules"), "dir");
+prepareTestDist(root, srcOut);
 
 try {
 	const {
@@ -41,10 +39,10 @@ try {
 			details: {
 				tone: "quality-review",
 				result: "未通过",
-				title: "第 1 轮质量检查未通过",
+				title: "第 1 轮质检未通过",
 				lines: [
 					"## 审查未通过",
-					"- 问题: `完成验收` 的系统失败/超时/启动失败被压成普通“未通过”，会继续走 triggerTurn:true 的原目标推进",
+					"- 问题: `验收` 的系统失败/超时/启动失败被压成普通“未通过”，会继续走 triggerTurn:true 的原目标推进",
 				],
 			},
 		},
@@ -67,7 +65,7 @@ try {
 		wrapped
 			.replace(/\s+/gu, "")
 			.includes(
-				"问题:完成验收的系统失败/超时/启动失败被压成普通“未通过”，会继续走triggerTurn:true的原目标推进",
+				"问题:验收的系统失败/超时/启动失败被压成普通“未通过”，会继续走triggerTurn:true的原目标推进",
 			),
 		`wrap dropped characters:\n${wrapped}`,
 	);
@@ -120,6 +118,31 @@ try {
 		summarizeReviewText("FAIL\n", "") === "",
 		"status-only failures should be representable as empty summaries",
 	);
+
+	// 回归：⚠️（⚠ + U+FE0F）等 emoji 变体序列整体宽 2，逐 code point 测宽只有 1，
+	// 曾导致渲染行超出终端宽度使 pi 崩溃。
+	const emojiCard = render(
+		{
+			details: {
+				tone: "quality-review",
+				result: "未通过",
+				title: "质检",
+				lines: [
+					'npm test 全量偶发失败经核实为并行 agent 在 src/flow/execution/advance.ts / src/shared/ui-language.ts 上的未完成中间态（"⚠️ Flow 已更新...推进Next" 断裂字符串），与本任务改动文件无关',
+				],
+			},
+		},
+		{},
+		{ fg: (_color, text) => text },
+	);
+	for (const width of [40, 112, 124]) {
+		for (const line of emojiCard.render(width).map(stripAnsi)) {
+			assert(
+				visibleWidth(line) <= width,
+				`emoji line exceeds width ${width}: ${visibleWidth(line)} > ${width}: ${line}`,
+			);
+		}
+	}
 
 	for (const width of [1, 2, 10, 40, 124]) {
 		const lines = card.render(width).map(stripAnsi);

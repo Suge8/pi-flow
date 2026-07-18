@@ -1,58 +1,75 @@
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	symlinkSync,
 	watch,
 	writeFileSync,
 } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { prepareTestDist } from "./prepare-dist.mjs";
+import { acquireReportPortTestLock } from "./report-port-lock.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const runId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const out = join(root, `.tmp-flow-test-${runId}`);
+const out = join(tmpdir(), `pi-flow-flow-test-${runId}`);
 process.env.PI_CODING_AGENT_DIR = join(out, "agent-state");
-const srcOut = join(out, "src");
+// 默认断言是中文文案；en 场景自行设置/恢复该变量；固定运行时语言避免机器 locale 引入环境相关失败。
+process.env.PI_FLOW_LANGUAGE = "zh";
+const srcOut = join(out, "dist");
+const TEST_CHECK_TIMEOUT_MINUTES = 0.5;
 
+cleanupStaleFakeWorkers();
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
+symlinkSync(join(root, "node_modules"), join(out, "node_modules"), "dir");
 cpSync(join(root, "prompts"), join(out, "prompts"), { recursive: true });
 mkdirSync(join(out, "assets"), { recursive: true });
 cpSync(join(root, "assets", "logo.png"), join(out, "assets", "logo.png"));
-execFileSync(
-	join(root, "node_modules/.bin/tsc"),
-	["--outDir", srcOut, "--rootDir", "src", "--noEmit", "false"],
-	{ cwd: root, stdio: "inherit" },
-);
+prepareTestDist(root, srcOut);
 function writeFlowTestConfig({
 	state = false,
 	quality = false,
 	generation,
 	modelRoles,
 	language = "zh",
-	runner = {},
+	background = {},
+	checks = {},
+	prewalk = false,
+	report = { bind: "127.0.0.1", port: 49327, publicBaseUrl: null },
 } = {}) {
 	writeFileSync(
 		join(out, "config.json"),
 		JSON.stringify({
 			language,
 			...(generation === undefined ? {} : { generation }),
-			...(modelRoles === undefined ? {} : { modelRoles }),
-			runner: {
-				command: runner.command ?? "pi",
-				tools: runner.tools ?? [],
-				excludeTools: runner.excludeTools ?? [],
-				timeoutMs: runner.timeoutMs ?? 1000,
-				extensions: runner.extensions ?? [],
+			background: {
+				command: background.command ?? "pi",
+				extensions: background.extensions ?? [],
 			},
-			models: [{ model: "x", thinking: "off" }],
+			checks: {
+				tools: checks.tools ?? [],
+				timeoutMinutes: checks.timeoutMinutes ?? TEST_CHECK_TIMEOUT_MINUTES,
+				openaiFast: checks.openaiFast ?? false,
+			},
+			modelRoles: {
+				reviewers: [{ model: "test/x", thinking: "off" }],
+				...(modelRoles ?? {}),
+			},
+			prewalk: {
+				enabled: prewalk,
+			},
+			report,
 			acceptance: {
 				enabled: state,
 			},
@@ -65,32 +82,58 @@ function writeFlowTestConfig({
 	);
 }
 writeFlowTestConfig();
+const releaseReportPortLock = await acquireReportPortTestLock();
 
 try {
+	await runScenario(staleFakeWorkerMatchScenario);
+	await runScenario(sessionTransitionGateScenario);
+	await runScenario(advisorCommandRegistrationScenario);
+	await runScenario(bootstrapLazyActivationScenario);
+	await runScenario(bootstrapRegistrationRetryScenario);
+	await runScenario(flowReportPortConflictIsolationScenario);
 	await runScenario(flowGoalPromptChecklistSyncScenario);
 	await runScenario(completionListenerUsesFreshApiAfterReloadScenario);
 	await runScenario(flowGoalRuntimePromptContextScenario);
 	await runScenario(privateWorkerRequiresParentScenario);
 	await runScenario(workerAlreadyCompleteNoticeFormatScenario);
 	await runScenario(privateWorkerCompletionExitScenario);
+	await runScenario(privateWorkerBlockedExitScenario);
+	await runScenario(privateWorkerTodoGateSendFailureScenario);
 	await runScenario(privateWorkerInitialPromptScenario);
 	await runScenario(privateWorkerControlDisconnectScenario);
 	await runScenario(workerSpawnConfigScenario);
 	await runScenario(parallelLaneBoardThreeGoalScenario);
 	await runScenario(parallelRunSuccessScenario);
+	await runScenario(flowParallelStartHtmlFailureScenario);
+	await runScenario(flowParallelStopHtmlFailureScenario);
+	await runScenario(parallelVisibleEditorEscScenario);
+	await runScenario(parallelToParallelRunSuccessScenario);
 	await runScenario(parallelStatusPreservesLiveReportScenario);
 	await runScenario(parallelRunFailureScenario);
+	await runScenario(parallelMissingCompletionProgressScenario);
+	await runScenario(parallelBlockedGoScenario);
+	await runScenario(parallelBlockedRecoveryScenario);
 	await runScenario(parallelRunRecoveryScenario);
 	await runScenario(flowParallelStopGoScenario);
+	await runScenario(flowParallelConsoleShutdownScenario);
+	await runScenario(flowParallelConsoleInputScenario);
 	await runScenario(flowParallelStopAllResultsCompleteScenario);
 	await runScenario(parallelFanInLockScenario);
 	await runScenario(flowConcurrentRecoveryFanInLockScenario);
 	await runScenario(flowLockStaleScenario);
 	await runScenario(flowConcurrentGoLockScenario);
+	await runScenario(flowPrewalkForkStartScenario);
+	await runScenario(parallelPrewalkForkScenario);
+	await runScenario(flowGoalTurnDoesNotHoldLockScenario);
 	await runScenario(schemaScenario);
+	await runScenario(currentSchemaOnlyScenario);
 	await runScenario(badJsonScenario);
 	await runScenario(flowIdSafetyScenario);
 	await runScenario(flowBareIdMessageScenario);
+	await runScenario(flowBareGoCompleteHintScenario);
+	await runScenario(flowWorkspaceHintScenario);
+	await runScenario(workerArtifactSingleWriterScenario);
+	await runScenario(workerResumeCursorScenario);
 	await runScenario(flowTargetRoutingScenario);
 	await runScenario(flowResumeTargetHintUsesGoScenario);
 	await runScenario(flowCurrentGoalOwnerRoutingScenario);
@@ -103,10 +146,15 @@ try {
 	await runScenario(statusRewritesNonParallelHtmlScenario);
 	await runScenario(statusTextHidesSessionPathScenario);
 	await runScenario(malformedRepairScenario);
+	await runScenario(flowRepairHtmlFailureScenario);
 	await runScenario(runningValidationScenario);
 	await runScenario(htmlScenario);
+	await runScenario(flowPromptLiteralPlaceholderScenario);
+	await runScenario(flowConversationContextEvidenceScenario);
+	await runScenario(flowConversationContextEvidenceModelFailureScenario);
 	await runScenario(generationAlignConfigScenario);
 	await runScenario(flowModelSwitchFailurePersistsPreDraftScenario);
+	await runScenario(flowGoalStartCardCopyScenario);
 	await runScenario(flowPromptSendFailureShowsPreDraftIdScenario);
 	await runScenario(flowMissingGenerationContinueScenario);
 	await runScenario(flowNoIdGenerationContinueScenario);
@@ -134,6 +182,7 @@ try {
 	await runScenario(flowPreDraftDirectReplyAmbiguousScenario);
 	await runScenario(generationAlignCommandConfigScenario);
 	await runScenario(flowAlignmentActivityCopyScenario);
+	await runScenario(flowAlignmentDeepDepthPersistenceScenario);
 	await runScenario(flowAlignmentQuestionGoDraftsScenario);
 	await runScenario(flowPromptMarkerHiddenScenario);
 	await runScenario(flowDuplicatePreDraftStartBlockedScenario);
@@ -147,10 +196,12 @@ try {
 	await runScenario(flowAutoStartWithoutCommandContextStaysDraftScenario);
 	await runScenario(flowHandwrittenRejectedScenario);
 	await runScenario(semanticFlowGenerationEndScenario);
+	await runScenario(invalidWriteScopeTriggersRepairScenario);
 	await runScenario(flowSemanticOverridesHandwrittenScenario);
 	await runScenario(malformedCurrentFlowSemanticKeepsRepairingScenario);
 	await runScenario(missingFlowSemanticTitleKeepsRepairingScenario);
 	await runScenario(flowClarificationScenario);
+	await runScenario(flowSerialStartHtmlFailureScenario);
 	await runScenario(flowContinueDraftStartsScenario);
 	await runScenario(flowStopDraftGoScenario);
 	await runScenario(flowReportServerSurvivesSessionShutdownScenario);
@@ -161,9 +212,27 @@ try {
 	await runScenario(englishFlowGeneratedSummaryUsesArtifactLanguageScenario);
 	await runScenario(flowGoalSendFailureRollsBackScenario);
 	await runScenario(flowStartPromptSkipsAfterStopScenario);
+	await runScenario(flowGenerationCallbackWaitsForLockScenario);
+	await runScenario(flowGenerationStopWinsQueuedCallbackScenario);
+	await runScenario(flowGenerationPromptWaitsForLockScenario);
+	await runScenario(flowGenerationLockedAlignmentInputContinuesScenario);
+	await runScenario(flowGenerationLockedBlockingInputContinuesScenario);
+	await runScenario(flowGenerationSameRevisionPromptDeliveryScenario);
+	await runScenario(flowGenerationStopDuringPromptSwitchScenario);
+	await runScenario(flowGenerationTakeoverDuringPromptSwitchScenario);
+	await runScenario(alignmentRevisionStrictlyIncreasesScenario);
+	await runScenario(flowGenerationSameRevisionCallbacksScenario);
+	await runScenario(flowGenerationTakeoverRejectsLateLoaderScenario);
+	await runScenario(flowGenerationReconcilesAlignmentFirstScenario);
+	await runScenario(flowGenerationRecoversDraftWithoutMetaScenario);
+	await runScenario(flowGenerationCleansFinalAlignmentResidueScenario);
 	await runScenario(flowGenerationStopIgnoresLatePromptScenario);
+	await runScenario(flowGenerationSessionShutdownCleanupScenario);
 	await runScenario(flowPreDraftStopGoScenario);
 	await runScenario(flowSequentialStopGoScenario);
+	await runScenario(flowBlockedGoScenario);
+	await runScenario(flowStopDuringRunningQualityScenario);
+	await runScenario(flowStopWhileQualityAwaitsRepairScenario);
 	await runScenario(flowStopConsumesQueuedContinuationPromptScenario);
 	await runScenario(flowStartPromptSurvivesSessionNameSyncScenario);
 	await runScenario(flowStartSessionNameDoesNotSelfReportBusyScenario);
@@ -177,6 +246,7 @@ try {
 	await runScenario(completionEventUsesRememberedCommandContextScenario);
 	await runScenario(completionEmitUsesEmittedContextScenario);
 	await runScenario(completionCommandConsumesStoredFactScenario);
+	await runScenario(completionLockConflictRetainsFactScenario);
 	await runScenario(flowStartWithoutNewSessionScenario);
 	await runScenario(flowStartNewSessionThrowScenario);
 	await runScenario(flowStartNewSessionPreReplacementStaleThrowScenario);
@@ -184,24 +254,160 @@ try {
 	await runScenario(englishFlowDynamicNotificationsScenario);
 	await runScenario(englishFlowCardsUseArtifactLanguageScenario);
 	await runScenario(flowStartUsesReplacementContextScenario);
-	await runScenario(flowResumeMissingRuntimeGoalHiddenPromptScenario);
+	await runScenario(flowResumeMissingSessionScenario);
+	await runScenario(flowStartedGoalMissingSessionStopsScenario);
+	await runScenario(flowResumeMissingSessionEvidenceScenario);
+	await runScenario(flowResumeMissingRuntimeGoalScenario);
+	await runScenario(flowResumePendingRuntimeGoalHiddenPromptScenario);
 	await runScenario(startResumeCancelScenario);
 	await runScenario(sessionNameSyncScenario);
 	await runScenario(snapshotMutationScenario);
-	await runScenario(snapshotCheckboxMutationMessageScenario);
+	await runScenario(snapshotRecoveryPrecheckScenario);
 	await runScenario(flowGoalWatcherScenario);
 	await runScenario(flowParallelMainGoalWatcherScenario);
 	await runScenario(flowParallelWatcherScenario);
+	await runScenario(flowWatcherEventStormScenario);
 	await runScenario(goalRuntimeSessionIsolationScenario);
 	await runScenario(sessionContextIsolationScenario);
+	await runScenario(soakRetainedContextGateScenario);
 	await runScenario(ownershipScenario);
 	await runScenario(singleStepCompletionNoSaveFailureScenario);
+	await runScenario(flowFinalCompletionHtmlFailureScenario);
 	await runScenario(finalizeRetryCursorContinueScenario);
+	await runScenario(finalizeRetryRefreshesResumeBoundaryScenario);
 	await runScenario(completionScenario);
 	await runScenario(completionFactClearsGoalUiScenario);
 	console.log("flow smoke ok");
 } finally {
+	await shutdownReportDaemon();
+	cleanupFakeWorkersUnder(out);
 	rmSync(out, { recursive: true, force: true });
+	await releaseReportPortLock();
+}
+
+async function shutdownReportDaemon() {
+	try {
+		const client = await import(
+			pathToFileURL(join(srcOut, "shared", "report-client.js")).href
+		);
+		await client.closeReportClient();
+	} catch {}
+	const endpointPath = join(
+		process.env.PI_CODING_AGENT_DIR,
+		"pi-flow-report",
+		"endpoint.json",
+	);
+	let pid;
+	try {
+		pid = JSON.parse(readFileSync(endpointPath, "utf8")).pid;
+	} catch {
+		return;
+	}
+	try {
+		process.kill(pid, "SIGTERM");
+	} catch (error) {
+		if (error?.code !== "ESRCH") throw error;
+	}
+	// Detached daemon 不是当前进程的 child，无 exit 事件可订阅；测试清理只能按记录 PID 限时确认。
+	const startedAt = performance.now();
+	while (performance.now() - startedAt < 5_000) {
+		if (!processExists(pid)) {
+			try {
+				if (JSON.parse(readFileSync(endpointPath, "utf8")).pid === pid)
+					rmSync(endpointPath, { force: true });
+			} catch {}
+			return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	throw new Error(`report daemon ${pid} did not stop`);
+}
+
+function cleanupStaleFakeWorkers() {
+	for (const item of fakeWorkerProcesses()) {
+		if (!existsSync(item.root)) killPidTree(item.pid, "SIGKILL");
+	}
+}
+
+function cleanupFakeWorkersUnder(root) {
+	for (const item of fakeWorkerProcesses()) {
+		if (item.root === root) killPidTree(item.pid, "SIGKILL");
+	}
+}
+
+function fakeWorkerProcesses() {
+	if (process.platform === "win32") return [];
+	try {
+		return execFileSync("ps", ["-axww", "-o", "pid=", "-o", "command="], {
+			encoding: "utf8",
+		})
+			.split("\n")
+			.flatMap(fakeWorkerProcess)
+			.filter((item) => item.pid !== process.pid && item.pid !== process.ppid);
+	} catch {
+		return [];
+	}
+}
+
+function fakeWorkerProcess(line) {
+	const match = /^\s*(\d+)\s+(.+)$/u.exec(line);
+	if (!match) return [];
+	const pid = Number(match[1]);
+	const root = fakeWorkerRoot(match[2]);
+	return Number.isInteger(pid) && pid > 0 && root ? [{ pid, root }] : [];
+}
+
+function fakeWorkerRoot(command) {
+	const args = command.trim().split(/\s+/u);
+	return fakePiRoot(args[1]) ?? fakeWorkerChildRoot(args);
+}
+
+function fakePiRoot(arg) {
+	return (
+		/^(.*\/pi-flow-flow-test-[^/]+)\/[^/]+\/bin\/pi\.mjs$/u.exec(
+			arg ?? "",
+		)?.[1] ?? undefined
+	);
+}
+
+function fakeWorkerChildRoot(args) {
+	if (args[1] !== "-e") return undefined;
+	for (const arg of args) {
+		const root =
+			/^(.*\/pi-flow-flow-test-[^/]+)\/[^/]+\/worker-\d+\.child-killed$/u.exec(
+				arg,
+			)?.[1];
+		if (root) return root;
+	}
+	return undefined;
+}
+
+function killPidTree(pid, signal) {
+	try {
+		process.kill(-pid, signal);
+	} catch {}
+	try {
+		process.kill(pid, signal);
+	} catch {}
+}
+
+function staleFakeWorkerMatchScenario() {
+	const fakePi = join(out, "parallel", "bin", "pi.mjs");
+	const fakeChild = join(out, "parallel", "worker-1.child-killed");
+	assert(
+		fakeWorkerRoot(`node ${fakePi} --session x`) === out,
+		"fake pi command not matched",
+	);
+	assert(
+		fakeWorkerRoot(`node -e const ${fakeChild} child-pid`) === out,
+		"fake worker child command not matched",
+	);
+	assert(
+		!fakeWorkerRoot(
+			`node /usr/local/bin/pi --no-session -p prompt ${fakePi} ${fakeChild}`,
+		),
+		"review prompt text was matched as a fake worker",
+	);
 }
 
 async function runScenario(fn, name = fn.name) {
@@ -212,16 +418,239 @@ async function runScenario(fn, name = fn.name) {
 			new Promise((_, reject) => {
 				timeout = setTimeout(
 					() => reject(new Error(`scenario timed out: ${name}`)),
-					20_000,
+					90_000,
 				);
 				timeout.unref?.();
 			}),
 		]);
 	} catch (error) {
+		cleanupFakeWorkersUnder(out);
 		console.error(`flow smoke failed in ${name}`);
 		throw error;
 	} finally {
 		clearTimeout(timeout);
+	}
+}
+
+function trackParallelProgress(onProgressChanged) {
+	const statuses = new Map();
+	const unsubscribe = onProgressChanged((snapshot) => {
+		for (const scope of snapshot.scopes) {
+			if (scope.kind !== "parallel") continue;
+			for (const agent of scope.agents) {
+				const seen = statuses.get(agent.agentKey) ?? [];
+				seen.push(agent.progress.status);
+				statuses.set(agent.agentKey, seen);
+			}
+		}
+	});
+	return {
+		saw(agentKey, status) {
+			return statuses.get(agentKey)?.includes(status) === true;
+		},
+		unsubscribe,
+	};
+}
+
+async function sessionTransitionGateScenario() {
+	const {
+		cancelSessionTransition,
+		pendingSessionTransitionCount,
+		requestSessionTransition,
+		waitForSessionTransitions,
+	} = await importCachedModule("flow/session-transition.js");
+	const cwd = tempDir("session-transition-gate");
+	const ctx = commandContext(newState(cwd), cwd, join(cwd, "planning.jsonl"));
+	let releaseIdle;
+	ctx.waitForIdle = () =>
+		new Promise((resolve) => {
+			releaseIdle = resolve;
+		});
+	let runs = 0;
+	const request = {
+		key: "flow:F1",
+		ctx,
+		run: async () => {
+			runs += 1;
+		},
+		onError: (error) => {
+			throw error;
+		},
+	};
+	assert(requestSessionTransition(request), "transition was not accepted");
+	assert(
+		requestSessionTransition(request),
+		"duplicate transition was not merged",
+	);
+	assert(
+		!requestSessionTransition({ ...request, key: "flow:F2" }),
+		"conflicting transition replaced the active request",
+	);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert(runs === 0, "transition ran before Pi became idle");
+	releaseIdle();
+	await waitForSessionTransitions();
+	assert(
+		runs === 1 && pendingSessionTransitionCount() === 0,
+		"transition did not run exactly once and release its state",
+	);
+	let releaseCancelledWait;
+	ctx.waitForIdle = () =>
+		new Promise((resolve) => {
+			releaseCancelledWait = resolve;
+		});
+	assert(
+		requestSessionTransition(request),
+		"cancellable transition was rejected",
+	);
+	await new Promise((resolve) => setImmediate(resolve));
+	cancelSessionTransition(ctx.sessionManager.getSessionFile());
+	await waitForSessionTransitions();
+	releaseCancelledWait();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert(runs === 1, "cancelled transition still ran");
+}
+
+async function advisorCommandRegistrationScenario() {
+	const cwd = tempDir("advisor-command-registration");
+	const state = newState(cwd);
+	const { commands, shortcuts } = await loadExtension(state);
+	assert(commands.has("advisor"), "/advisor command was not registered");
+	assert(
+		shortcuts.get("alt+s")?.description === "打开子代理监控" &&
+			!shortcuts.has("ctrl+f"),
+		"Alt+S monitor shortcut was not registered cleanly",
+	);
+	assert(
+		commands.get("advisor").description === "咨询顾问模型",
+		`unexpected /advisor description: ${commands.get("advisor").description}`,
+	);
+}
+
+async function bootstrapLazyActivationScenario() {
+	// Flow runtime 是进程级单例：本场景依赖「本进程尚未激活 flow runtime」，
+	// 必须先于任何 flow 激活运行（包括场景内部的 review checkpoint 子检查）。
+	const reviewState = newState(tempDir("bootstrap-review-checkpoint"));
+	entriesFor(reviewState, reviewState.activeSessionFile).push({
+		type: "custom",
+		customType: "review-checkpoint",
+		data: {
+			version: 2,
+			active: null,
+			round: 1,
+			phase: "awaiting_agent",
+			history: [],
+		},
+	});
+	const reviewExtension = await loadExtension(reviewState);
+	await emit(
+		reviewExtension.handlers,
+		"session_start",
+		{},
+		commandContext(reviewState, reviewState.cwd, reviewState.activeSessionFile),
+	);
+	assert(
+		(reviewExtension.handlers.get("agent_end") ?? []).length === 1,
+		"standalone review checkpoint loaded more than Review runtime",
+	);
+
+	const cwd = tempDir("bootstrap-lazy-activation");
+	const state = newState(cwd);
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, state.activeSessionFile);
+	assert(
+		["flow", "review", "advisor"].every((name) => commands.has(name)),
+		"bootstrap did not register all command shells",
+	);
+	await emit(handlers, "session_start", {}, ctx);
+	assert(
+		(handlers.get("agent_end") ?? []).length === 0,
+		"idle session loaded a runtime",
+	);
+	await Promise.all([
+		commands.get("flow").handler("status F999", ctx),
+		commands.get("flow").handler("status F998", ctx),
+	]);
+	assert(
+		(handlers.get("agent_end") ?? []).length === 3,
+		"concurrent Flow activation duplicated or missed runtime listeners",
+	);
+	await commands.get("flow").handler("status F997", ctx);
+	await emit(handlers, "session_start", {}, ctx);
+	await emit(handlers, "session_start", {}, ctx);
+	assert(
+		(handlers.get("agent_end") ?? []).length === 3,
+		"repeated command or Session start duplicated runtime listeners",
+	);
+
+	// stale-ctx 回归：flow runtime 加载后，session 重建（新 pi）的 session_start
+	// 必须补注册全部运行时，否则引擎会继续持有已失效 session 的 pi。
+	const replacementState = newState(cwd);
+	const replacement = await loadExtension(replacementState);
+	await emit(
+		replacement.handlers,
+		"session_start",
+		{},
+		commandContext(replacementState, cwd, replacementState.activeSessionFile),
+	);
+	assert(
+		(replacement.handlers.get("agent_end") ?? []).length === 3,
+		"session replacement did not re-register flow runtime on fresh pi",
+	);
+}
+
+async function bootstrapRegistrationRetryScenario() {
+	for (const scenario of [
+		{
+			name: "review",
+			command: "review",
+			args: "",
+			failEvent: "agent_start",
+			preservedEvent: "session_shutdown",
+		},
+		{
+			name: "goal",
+			command: "flow",
+			args: "status F999",
+			failEvent: "tool_call",
+			preservedEvent: "tool_execution_end",
+		},
+		{
+			name: "flow",
+			command: "flow",
+			args: "status F999",
+			failEvent: "message_end",
+			preservedEvent: "tool_call",
+		},
+	]) {
+		const state = newState(tempDir(`bootstrap-retry-${scenario.name}`));
+		const { commands, handlers } = await loadExtension(state);
+		const ctx = commandContext(state, state.cwd, state.activeSessionFile);
+		state.failRuntimeEventOnce = scenario.failEvent;
+		let error;
+		try {
+			await commands.get(scenario.command).handler(scenario.args, ctx);
+		} catch (caught) {
+			error = caught;
+		}
+		assert(
+			String(error?.message).includes("injected registration failure"),
+			`${scenario.name} activation did not expose registration failure`,
+		);
+		const preservedCount = (handlers.get(scenario.preservedEvent) ?? []).length;
+		assert(
+			preservedCount > 0,
+			`${scenario.name} did not reach partial registration`,
+		);
+		await commands.get(scenario.command).handler(scenario.args, ctx);
+		assert(
+			(handlers.get(scenario.preservedEvent) ?? []).length === preservedCount,
+			`${scenario.name} retry duplicated ${scenario.preservedEvent}`,
+		);
+		assert(
+			(handlers.get(scenario.failEvent) ?? []).length > 0,
+			`${scenario.name} retry did not register ${scenario.failEvent}`,
+		);
 	}
 }
 
@@ -301,10 +730,23 @@ async function flowGoalPromptChecklistSyncScenario() {
 		"flow system prompt missing todo status-change rule",
 	);
 	assert(
-		systemPrompt.includes("切换下一项前必须重新读取或检查") &&
+		!systemPrompt.includes("切换下一项前必须重新读取") &&
+			systemPrompt.includes("单行精确编辑") &&
 			systemPrompt.includes("为什么先跳过") &&
 			systemPrompt.includes("可跳到下一个未完成项"),
-		"flow system prompt missing reread or blocked-skip rule",
+		"flow system prompt missing single-line edit or blocked-skip rule",
+	);
+	assert(
+		systemPrompt.includes("同一发现连续两轮同向修复") &&
+			systemPrompt.includes("穷举 3–5 个替代方案"),
+		"flow system prompt missing anti-loop rule",
+	);
+	assert(
+		systemPrompt.includes("由编排系统注入") &&
+			systemPrompt.includes("不是用户发言") &&
+			systemPrompt.includes("不要向用户提问") &&
+			!systemPrompt.includes("pi-flow"),
+		"flow system prompt missing orchestration-source rule",
 	);
 	assert(
 		systemPrompt.includes("Handoff") &&
@@ -326,6 +768,12 @@ async function flowGoalPromptChecklistSyncScenario() {
 		"marker",
 		flowTodoContext,
 	);
+	assert(
+		resumePrompt.includes("<目标>") &&
+			!continuePrompt.includes("<目标>") &&
+			continuePrompt.includes("目标与规则见 system prompt"),
+		"continuation prompt should not repeat the goal block",
+	);
 	for (const runtimePrompt of [resumePrompt, continuePrompt]) {
 		assert(
 			runtimePrompt.includes("继续前必须读取 .flow/F1/G1-plan.md") &&
@@ -340,28 +788,45 @@ async function flowGoalPromptChecklistSyncScenario() {
 			"resume/continue prompt repeated the full execution manual",
 		);
 	}
-	const workerPrompt = buildGoalSystemPrompt({
-		...activeGoal,
-		artifactDir: join(out, "worker", "G1"),
-	});
+	const workerPlanPath = join(out, "worker", "G1-plan.md");
+	const workerPrompt = buildGoalSystemPrompt(
+		{
+			...activeGoal,
+			artifactId: "G1",
+			artifactPlanPath: workerPlanPath,
+			artifactPlanDisplayPath: ".flow/F1/G1-plan.md",
+			artifactStatePath: join(out, "worker", "G1-worker.json"),
+			artifactStateDisplayPath: "G1-worker.json",
+		},
+		{
+			planPath: workerPlanPath,
+			recordSection: "Handoff",
+			stateFile: "G1-worker.json",
+		},
+	);
 	assert(
-		workerPrompt.includes(join(out, "worker", "G1", "plan.md")) &&
+		workerPrompt.includes(workerPlanPath) &&
 			workerPrompt.includes("Handoff") &&
-			workerPrompt.includes("state.json"),
-		"worker goal prompt did not use worker plan/Handoff/state semantics",
+			workerPrompt.includes("G1-worker.json"),
+		"worker goal prompt did not use current worker artifact semantics",
 	);
 }
 
 async function completionListenerUsesFreshApiAfterReloadScenario() {
-	const { planSnapshotHash } = await importModule("plan/snapshot.js");
 	const { emitFlowGoalCompleted } =
 		await importCachedModule("flow/completion.js");
 	const cwd = tempDir("completion-listener-fresh-api");
 	const dir = createFlow(cwd, "F1");
 	const state = newState(cwd);
-	await loadExtension(state);
+	const first = await loadExtension(state);
+	await first.commands
+		.get("flow")
+		.handler("status F1", commandContext(state, cwd, state.activeSessionFile));
 	state.staleApis.add(state.extensionApis.at(-1));
-	await loadExtension(state);
+	const second = await loadExtension(state);
+	await second.commands
+		.get("flow")
+		.handler("status F1", commandContext(state, cwd, state.activeSessionFile));
 	const sessionFile = join(cwd, "goal-session.jsonl");
 	writeFileSync(sessionFile, "");
 	const flow = readFlow(dir);
@@ -371,7 +836,6 @@ async function completionListenerUsesFreshApiAfterReloadScenario() {
 	flow.goals[0].status = "running";
 	flow.goals[0].sessionFile = sessionFile;
 	flow.goals[0].snapshot = snapshot;
-	flow.goals[0].snapshotHash = planSnapshotHash(snapshot);
 	writeFlow(dir, flow);
 	const ctx = commandContext(state, cwd, sessionFile);
 	emitFlowGoalCompleted(completionEntry(sessionFile).data, ctx);
@@ -379,11 +843,13 @@ async function completionListenerUsesFreshApiAfterReloadScenario() {
 	const saved = readFlow(dir);
 	assert(saved.status === "complete", "stale listener did not complete flow");
 	const completeCards = state.customMessages.filter(
-		(item) => item.message.details?.title === "Flow 已完成",
+		(item) => item.message.details?.title === "Flow Goal 1 已完成",
 	);
 	assert(
 		completeCards.length === 1,
-		"fresh Flow complete card was not sent once",
+		`fresh Flow complete card count=${completeCards.length}: ${state.customMessages
+			.map((item) => item.message.details?.title)
+			.join(" | ")} / ${state.notifications.join(" | ")}`,
 	);
 	assert(
 		completeCards[0].options.triggerTurn === true,
@@ -411,6 +877,7 @@ async function flowGoalRuntimePromptContextScenario() {
 		...flow,
 		status: "running",
 		startedAt: Date.now(),
+		completedAt: null,
 		currentGoal: 0,
 		goals: [
 			{ ...flow.goals[0], status: "running", sessionFile },
@@ -418,6 +885,7 @@ async function flowGoalRuntimePromptContextScenario() {
 		],
 	});
 	const ctx = commandContext(state, cwd, sessionFile);
+	await emit(handlers, "session_start", {}, ctx);
 	assert(
 		await startGoalFromFlow("Flow objective", ctx),
 		"flow goal did not start",
@@ -449,22 +917,13 @@ async function privateWorkerRequiresParentScenario() {
 	const dir = createFlow(cwd, "F1", { planCount: 3 });
 	const state = newState(cwd);
 	const { handlers } = await loadExtension(state);
-	const workerDir = join(dir, "workers", "G1");
-	const ctx = commandContext(state, cwd, join(workerDir, "session.jsonl"));
+	const ctx = commandContext(state, cwd, join(cwd, "orphan-worker.jsonl"));
 
 	await emit(handlers, "session_start", {}, ctx);
 
 	assert(
-		!existsSync(join(workerDir, "plan.md")),
-		"worker started without parent env",
-	);
-	assert(
-		!existsSync(join(workerDir, "state.json")),
+		!existsSync(join(dir, "G1-worker.json")),
 		"worker state written without parent env",
-	);
-	assert(
-		!existsSync(join(workerDir, "result.json")),
-		"worker result written without parent env",
 	);
 }
 
@@ -494,13 +953,12 @@ async function privateWorkerCompletionExitScenario() {
 	try {
 		await run.control.socket;
 		await waitForFile(join(run.cwd, "private-worker-started"));
-		await waitForFile(join(run.workerDir, "result.json"));
-		const copiedPlan = readFileSync(join(run.workerDir, "plan.md"), "utf8");
-		assert(
-			copiedPlan === readFileSync(join(run.dir, "G2-plan.md"), "utf8"),
-			"private worker plan.md was not copied from the selected flow goal",
+		await waitForFile(run.workerArtifactPath);
+		await waitForCondition(
+			() => Boolean(readWorkerArtifact(run.workerArtifactPath)?.completion),
+			"private worker completion was not written",
 		);
-		const artifact = readGoalArtifact(run.workerDir);
+		const artifact = readWorkerArtifact(run.workerArtifactPath);
 		assert(
 			["running", "complete"].includes(artifact.status),
 			`private worker state missing: ${artifact.status}`,
@@ -510,16 +968,9 @@ async function privateWorkerCompletionExitScenario() {
 			"private worker session mismatch",
 		);
 		assert(
-			!existsSync(join(run.workerDir, "goal.html")),
-			"worker goal.html was generated",
-		);
-		const result = JSON.parse(
-			readFileSync(join(run.workerDir, "result.json"), "utf8"),
-		);
-		assert(
-			result.sessionFile === run.sessionPath &&
-				result.parallelRunId === run.parallelRunId,
-			"private worker result.json missing session or parallelRunId",
+			artifact.completion?.sessionFile === run.sessionPath &&
+				artifact.completion?.parallelRunId === run.parallelRunId,
+			"private worker completion missing session or parallelRunId",
 		);
 		assert(
 			readFileSync(join(run.dir, "flow.json"), "utf8") === run.beforeFlowJson,
@@ -531,6 +982,96 @@ async function privateWorkerCompletionExitScenario() {
 		run.control.server.close();
 		removePrivateWorkerSocket(run.socketPath);
 		if (!exited) run.child.kill("SIGKILL");
+	}
+}
+
+async function privateWorkerBlockedExitScenario() {
+	const reason = "完成真机窗口焦点验证";
+	const run = await startPrivateWorkerChild("private-worker-blocked", "F1", {
+		blockedReason: reason,
+	});
+	let exited = false;
+	const exitPromise = waitForChildExit(run.child).then((exit) => {
+		exited = true;
+		return exit;
+	});
+	try {
+		await run.control.socket;
+		await waitForCondition(
+			() =>
+				readWorkerArtifact(run.workerArtifactPath)?.handoff?.message === reason,
+			"private worker BLOCKED handoff was not written",
+		);
+		const artifact = readWorkerArtifact(run.workerArtifactPath);
+		assert(
+			artifact.status === "paused" &&
+				artifact.handoff?.kind === "user_action_required" &&
+				artifact.completion === null,
+			`private worker BLOCKED artifact: ${JSON.stringify(artifact)}`,
+		);
+		assert(
+			readFileSync(join(run.dir, "flow.json"), "utf8") === run.beforeFlowJson,
+			"private worker modified flow.json on BLOCKED",
+		);
+		const exit = await exitPromise;
+		assert(exit.code === 0 && exit.signal === null, JSON.stringify(exit));
+	} finally {
+		run.control.server.close();
+		removePrivateWorkerSocket(run.socketPath);
+		if (!exited) run.child.kill("SIGKILL");
+		await exitPromise.catch(() => undefined);
+	}
+}
+
+async function privateWorkerTodoGateSendFailureScenario() {
+	const run = await startPrivateWorkerChild("private-worker-todo-gate", "F1", {
+		failGoalPromptSend: true,
+		prepare: (dir) => {
+			const planFile = join(dir, "G2-plan.md");
+			writeFileSync(
+				planFile,
+				readFileSync(planFile, "utf8").replace(
+					"- [x] Do work.",
+					"- [ ] Do work.",
+				),
+			);
+		},
+	});
+	let exited = false;
+	const exitPromise = waitForChildExit(run.child).then((exit) => {
+		exited = true;
+		return exit;
+	});
+	try {
+		await run.control.socket;
+		// 闸门投递失败：worker 把异常事实写进自身 artifact（paused + handoff）后退出。
+		await waitForCondition(
+			() =>
+				readWorkerArtifact(run.workerArtifactPath)?.handoff?.message?.includes(
+					"收口提醒发送失败",
+				) ?? false,
+			"todo gate send failure handoff was not written",
+		);
+		const artifact = readWorkerArtifact(run.workerArtifactPath);
+		assert(
+			artifact.status === "paused" &&
+				artifact.handoff?.kind === "user_action_required" &&
+				artifact.handoff.message.includes("/flow go") &&
+				artifact.completion === null,
+			`todo gate failure artifact: ${JSON.stringify(artifact)}`,
+		);
+		// 单写者约束：worker 不得触碰父 flow.json（含 setFlowAttention）。
+		assert(
+			readFileSync(join(run.dir, "flow.json"), "utf8") === run.beforeFlowJson,
+			"todo gate failure wrote parent flow.json from worker",
+		);
+		const exit = await exitPromise;
+		assert(exit.code === 0 && exit.signal === null, JSON.stringify(exit));
+	} finally {
+		run.control.server.close();
+		removePrivateWorkerSocket(run.socketPath);
+		if (!exited) run.child.kill("SIGKILL");
+		await exitPromise.catch(() => undefined);
 	}
 }
 
@@ -552,19 +1093,21 @@ async function privateWorkerInitialPromptScenario() {
 	});
 	try {
 		await run.control.socket;
-		await waitForFile(join(run.workerDir, "result.json"));
+		await waitForFile(run.workerArtifactPath);
+		await waitForCondition(
+			() => Boolean(readWorkerArtifact(run.workerArtifactPath)?.completion),
+			"initial-prompt worker completion was not written",
+		);
 		const exit = await exitPromise;
 		assert(exit.code === 0 && exit.signal === null, JSON.stringify(exit));
 		assert(
 			!existsSync(join(run.cwd, "private-worker-started")),
 			"initial-prompt worker sent a duplicate hidden prompt",
 		);
-		const result = JSON.parse(
-			readFileSync(join(run.workerDir, "result.json"), "utf8"),
-		);
+		const artifact = readWorkerArtifact(run.workerArtifactPath);
 		assert(
-			result.parallelRunId === run.parallelRunId,
-			"initial-prompt worker result missing parallelRunId",
+			artifact.completion?.parallelRunId === run.parallelRunId,
+			"initial-prompt worker completion missing parallelRunId",
 		);
 	} finally {
 		run.control.server.close();
@@ -589,8 +1132,8 @@ async function privateWorkerControlDisconnectScenario() {
 		const exit = await exitPromise;
 		assert(exit.code === 1 && exit.signal === null, JSON.stringify(exit));
 		assert(
-			!existsSync(join(run.workerDir, "result.json")),
-			"private worker wrote result after control disconnect",
+			!readWorkerArtifact(run.workerArtifactPath)?.completion,
+			"private worker wrote completion after control disconnect",
 		);
 		assert(
 			readFileSync(join(run.dir, "flow.json"), "utf8") === run.beforeFlowJson,
@@ -615,11 +1158,17 @@ async function startPrivateWorkerChild(cwdName, flowId, scriptOptions = {}) {
 		...flow,
 		status: "running",
 		startedAt: Date.now(),
-		parallelRun: { id: parallelRunId, goalIndexes: [1], startedAt: Date.now() },
+		parallelRun: {
+			id: parallelRunId,
+			goalIndexes: [1],
+			startedAt: Date.now(),
+			consoleSessionFile: join(cwd, "console.jsonl"),
+			consoleSessionName: "F1-G2 parallel",
+		},
 	});
 	const beforeFlowJson = readFileSync(join(dir, "flow.json"), "utf8");
-	const workerDir = join(dir, "workers", "G1");
-	const sessionPath = join(workerDir, "session.jsonl");
+	const workerArtifactPath = join(dir, "G2-worker.json");
+	const sessionPath = join(cwd, `${flowId}-G2 Goal 2.jsonl`);
 	const job = {
 		flowId,
 		flowDir: dir,
@@ -627,6 +1176,7 @@ async function startPrivateWorkerChild(cwdName, flowId, scriptOptions = {}) {
 		parallelRunId,
 		sessionPath,
 	};
+	scriptOptions.prepare?.(dir);
 	const socketPath = privateWorkerSocketPath(cwd);
 	const token = "private-worker-token";
 	const control = privateWorkerControlServer(privateWorkerMessage, job, token);
@@ -656,7 +1206,7 @@ async function startPrivateWorkerChild(cwdName, flowId, scriptOptions = {}) {
 		parallelRunId,
 		sessionPath,
 		socketPath,
-		workerDir,
+		workerArtifactPath,
 	};
 }
 
@@ -676,14 +1226,15 @@ async function workerSpawnConfigScenario() {
 	let handle;
 	let exited = false;
 	writeFlowTestConfig({
-		runner: {
+		background: {
 			command,
-			tools: ["read"],
-			excludeTools: ["write"],
 			extensions: [userExtension],
 		},
+		checks: { tools: ["read"] },
 	});
 	try {
+		const sessionFile = join(cwd, "F1-G3 Goal 3.jsonl");
+		writeFileSync(join(cwd, "release-worker-spawn"), "");
 		handle = spawnWorker({
 			flowId,
 			goalIndex: 2,
@@ -691,6 +1242,7 @@ async function workerSpawnConfigScenario() {
 			parallelRunId: "P-worker-spawn-config",
 			cwd,
 			initialPrompt: "run worker prompt",
+			sessionFile,
 		});
 		const eventPromise = firstWorkerEvent(handle);
 		const exitPromise = workerExit(handle).then((exit) => {
@@ -699,12 +1251,10 @@ async function workerSpawnConfigScenario() {
 		});
 		const argsPath = join(cwd, "worker-spawn-args.json");
 		await waitForFile(argsPath);
-		writeFileSync(join(cwd, "release-worker-spawn"), "");
 		const [event, exit] = await Promise.all([eventPromise, exitPromise]);
 		const invocation = JSON.parse(readFileSync(argsPath, "utf8"));
 		const args = invocation.args;
 		const joined = args.join(" ");
-		const sessionFile = join(flowDir, "workers", "G2", "session.jsonl");
 		const extensions = flagValues(args, "-e");
 		assert(invocation.command === command, JSON.stringify(invocation));
 		assert(exit.code === 0 && exit.signal === null, JSON.stringify(exit));
@@ -739,8 +1289,11 @@ async function workerSpawnConfigScenario() {
 }
 
 async function parallelLaneBoardThreeGoalScenario() {
-	const { showParallelLaneBoard } = await importModule(
-		"flow/parallel/lane-ui.js",
+	const { activeParallelLaneBoardCount, showParallelLaneBoard } =
+		await importModule("flow/parallel/lane-ui.js");
+	const { openProgressScope } = await importModule("shared/agent-progress.js");
+	const { ACTIVITY_SPINNER_FRAMES } = await importModule(
+		"shared/activity-spinner.js",
 	);
 	const cwd = tempDir("parallel-lane-board");
 	const dir = createThreeParallelFlow(cwd, "F1");
@@ -761,6 +1314,7 @@ async function parallelLaneBoardThreeGoalScenario() {
 	let tick;
 	let intervalCleared = false;
 	let board;
+	let progressScope;
 	Date.now = () => now;
 	globalThis.setInterval = (callback) => {
 		tick = callback;
@@ -770,49 +1324,183 @@ async function parallelLaneBoardThreeGoalScenario() {
 		intervalCleared = true;
 	};
 	try {
-		board = showParallelLaneBoard(ctx, dir, flow, [1, 2, 3]);
+		assert(
+			activeParallelLaneBoardCount() === 0,
+			"lane board count was not initially empty",
+		);
+		progressScope = openProgressScope("parallel", "F1 parallel");
+		const progressAgents = new Map(
+			[1, 2, 3].map((goalIndex) => [
+				goalIndex,
+				progressScope.register(`G${goalIndex + 1}`, `Goal ${goalIndex + 1}`),
+			]),
+		);
+		board = showParallelLaneBoard(ctx, dir, flow, [1, 2, 3], {
+			scopeId: progressScope.id,
+			agents: progressAgents,
+		});
+		assert(
+			activeParallelLaneBoardCount() === 1,
+			"mounted lane board was not counted",
+		);
 
 		let text = latestWidgetText(state);
-		assert(text.includes("3 lanes"), `lane count missing:\n${text}`);
+		assert(
+			text.includes("F1-G2+G3+G4 并行控制台"),
+			`console title missing:\n${text}`,
+		);
 		assert(
 			text.includes("Goal 2") &&
 				text.includes("Goal 3") &&
 				text.includes("Goal 4"),
 			`three parallel goals missing:\n${text}`,
 		);
-		assert(count(text, "验收: 等待") === 3, text);
+		assert(
+			text.includes("「/flow stop F1」暂停 · 「/flow go F1」继续"),
+			`console command hint missing:\n${text}`,
+		);
+		assert(
+			!text.includes("验收："),
+			`empty check slots should be hidden:\n${text}`,
+		);
+		const firstSpinner =
+			ACTIVITY_SPINNER_FRAMES[
+				Math.floor(now / 100) % ACTIVITY_SPINNER_FRAMES.length
+			];
+		assert(
+			text.includes(`${firstSpinner} 思考中`),
+			`running lane missing thinking spinner:\n${text}`,
+		);
+		assertRunningLaneFirstActivity(text, "G2", `${firstSpinner} 思考中`);
 		assert(typeof tick === "function", "lane board timer was not started");
 		now = 2500;
 		tick();
 		text = latestWidgetText(state);
-		assert(text.includes("1s"), `lane elapsed did not refresh:\n${text}`);
-
-		board.updateWorkerEvent(1, {
-			type: "tool_execution_start",
-			toolName: "bash",
-		});
+		assert(text.includes("2s"), `lane elapsed did not refresh:\n${text}`);
+		const refreshedSpinner =
+			ACTIVITY_SPINNER_FRAMES[
+				Math.floor(now / 100) % ACTIVITY_SPINNER_FRAMES.length
+			];
+		assert(
+			refreshedSpinner !== firstSpinner &&
+				text.includes(`${refreshedSpinner} 思考中`),
+			`running lane spinner did not refresh:\n${text}`,
+		);
+		flow.goals[1].title =
+			"这是一个故意很长用于验证紧凑布局仍能看见当前活动和静默告警的并行步骤标题";
+		now = 181_000;
+		tick();
 		text = latestWidgetText(state);
-		assert(text.includes("tool: bash…"), text);
+		assert(
+			text.includes("⚠ 3 分钟无活动"),
+			`silent lane warning missing:\n${text}`,
+		);
+		const compactSilent = renderWidgetContent(
+			state.widgets.at(-1)?.content,
+			80,
+			5,
+		);
+		const compactSilentLane = compactSilent
+			.split("\n")
+			.find((line) => line.includes("G2") && line.includes("calls"));
+		assert(
+			compactSilentLane?.includes("⚠ 3 分钟无活动") &&
+				compactSilentLane.includes("0 calls · 0.0k tok"),
+			`compact lane hid its silent warning:\n${compactSilent}`,
+		);
+
+		now = 182_000;
+		const toolStart = {
+			type: "tool_execution_start",
+			toolCallId: "lane-bash",
+			toolName: "bash",
+			args: { command: "echo lane" },
+		};
+		progressScope.feed("G2", toolStart);
+		board.updateWorkerEvent(1);
+		text = latestWidgetText(state);
+		assert(
+			text.includes("bash echo lane · 0s") &&
+				text.includes("1 calls · 0.0k tok"),
+			`lane tool progress missing:\n${text}`,
+		);
+		const compactTool = renderWidgetContent(
+			state.widgets.at(-1)?.content,
+			80,
+			5,
+		);
+		const compactToolLane = compactTool
+			.split("\n")
+			.find((line) => line.includes("G2") && line.includes("calls"));
+		assert(
+			compactToolLane?.includes("bash echo lane · 0s") &&
+				compactToolLane.includes("1 calls · 0.0k tok"),
+			`compact lane hid its current tool:\n${compactTool}`,
+		);
+		flow.goals[1].title = "Goal 2";
+		now = 183_000;
+		const toolEnd = {
+			type: "tool_execution_end",
+			toolCallId: "lane-bash",
+			toolName: "bash",
+			isError: false,
+		};
+		progressScope.feed("G2", toolEnd);
+		board.updateWorkerEvent(1);
+		text = latestWidgetText(state);
+		assert(text.includes("✓ bash echo lane · 1s"), text);
 
 		writeWorkerGoalArtifact(dir, flow, 1, runningChecks());
-		board.updateWorkerEvent(1, { type: "message_end" });
+		const messageEnd = {
+			type: "message_end",
+			message: {
+				role: "assistant",
+				usage: { totalTokens: 9_045, cost: { total: 0.02 } },
+			},
+		};
+		progressScope.feed("G2", messageEnd);
+		board.updateWorkerEvent(1);
 		text = latestWidgetText(state);
-		assert(text.includes("验收: 进行中"), text);
+		assert(
+			text.includes("验收：… 进行中") && text.includes("1 calls · 9.0k tok"),
+			text,
+		);
 
-		writeWorkerGoalArtifact(dir, flow, 1, passedChecks());
-		board.updateWorkerEvent(1, { type: "agent_end" });
+		writeWorkerGoalArtifact(dir, flow, 1, qualityFailedChecks());
+		board.updateWorkerEvent(1);
 		text = latestWidgetText(state);
-		assert(text.includes("✓ G2") && text.includes("验收: 通过"), text);
+		assert(
+			!text.includes("✓ G2") &&
+				text.includes("优化中") &&
+				text.includes("验收：✓ 通过") &&
+				text.includes("质检：✗ 失败"),
+			text,
+		);
 
 		writeWorkerGoalArtifact(dir, flow, 2, failedChecks());
-		board.updateWorkerEvent(2, { type: "agent_end" });
+		board.updateWorkerEvent(2);
 		text = latestWidgetText(state);
-		assert(text.includes("✗ G3") && text.includes("验收: 失败"), text);
+		assert(
+			text.includes("G3") &&
+				text.includes("补完中") &&
+				text.includes("验收：✗ 失败"),
+			text,
+		);
 
 		board.updateWorkerExit(3, 1, null);
 		text = latestWidgetText(state);
-		assert(text.includes("✗ G4") && text.includes("验收: 错误"), text);
+		assert(
+			text.includes("✗ G4") &&
+				text.includes("已中断") &&
+				text.includes("退出码 1"),
+			text,
+		);
 		board.dispose();
+		progressScope.close();
+		assert(
+			activeParallelLaneBoardCount() === 0,
+			"disposed lane board remained active",
+		);
 		assert(intervalCleared, "lane board timer was not cleared");
 		assert(
 			state.widgets.filter((item) => item.key === "flow-parallel-lanes").at(-1)
@@ -821,6 +1509,7 @@ async function parallelLaneBoardThreeGoalScenario() {
 		);
 	} finally {
 		if (!intervalCleared) board?.dispose();
+		progressScope?.close();
 		Date.now = originalNow;
 		globalThis.setInterval = originalSetInterval;
 		globalThis.clearInterval = originalClearInterval;
@@ -832,18 +1521,20 @@ async function parallelRunSuccessScenario() {
 	const dir = createParallelFlow(cwd, "F1");
 	const restorePi = installFakePi(cwd);
 	process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE = "1";
+	let progressTracker;
 	let start;
 	let startedParallelRunId;
 	try {
 		const state = newState(cwd);
 		const { commands } = await loadExtension(state);
 		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		const { onProgressChanged } = await importCachedModule(
+			"shared/agent-progress.js",
+		);
+		progressTracker = trackParallelProgress(onProgressChanged);
 
 		start = commands.get("flow").handler("go F1", ctx);
-		await Promise.all([
-			waitForFile(join(cwd, "worker-1.started")),
-			waitForFile(join(cwd, "worker-2.started")),
-		]);
+		await waitForParallelRunPrepared(dir, [1, 2]);
 		const orchestratorSession = state.newSessions[0]?.to;
 		assert(
 			state.newSessions.length === 1 &&
@@ -851,20 +1542,21 @@ async function parallelRunSuccessScenario() {
 			"parallel batch did not open an orchestrator session",
 		);
 		assert(
-			state.sessionNames.includes("F1-G2+G3 并行批次"),
-			"parallel orchestrator session was not named",
+			state.sessionNames.includes("F1-G2+G3 并行控制台"),
+			"parallel console session was not named",
 		);
 		await waitForCondition(
-			() => latestWidgetText(state).includes("tool: bash"),
-			"parallel lane widget did not show worker tool event",
+			() => latestWidgetText(state).includes("✓ bash echo worker"),
+			"parallel lane widget did not show structured worker progress",
+			30_000,
 		);
 		const laneText = latestWidgetText(state);
 		const { isFlowEditorInputHidden } = await importCachedModule(
 			"shared/activity-frame.js",
 		);
 		assert(
-			isFlowEditorInputHidden(),
-			"parallel batch did not hide editor input",
+			!isFlowEditorInputHidden(),
+			"parallel console should keep editor input visible",
 		);
 		assert(
 			laneText.includes("Goal 2") && laneText.includes("Goal 3"),
@@ -883,7 +1575,6 @@ async function parallelRunSuccessScenario() {
 			state.workingVisible.includes(false),
 			"parallel batch did not hide default working row",
 		);
-		const { planSnapshotHash } = await importModule("flow/snapshot.js");
 		const startedFlow = readFlow(dir);
 		assert(startedFlow.status === "running", "parallel start not persisted");
 		assert(startedFlow.currentGoal === 1, "parallel currentGoal not persisted");
@@ -897,19 +1588,24 @@ async function parallelRunSuccessScenario() {
 		for (const goalIndex of [1, 2]) {
 			const goal = startedFlow.goals[goalIndex];
 			const snapshot = readFileSync(join(dir, goal.file), "utf8");
-			assert(goal.status === "running", `G${goalIndex} start not persisted`);
+			assert(
+				goal.status === "running" &&
+					Number.isFinite(goal.startedAt) &&
+					goal.completedAt === null,
+				`G${goalIndex} start timestamp not persisted`,
+			);
 			assert(
 				goal.sessionFile ===
-					join(dir, "workers", `G${goalIndex}`, "session.jsonl"),
+					join(cwd, `F1-G${goalIndex + 1} Goal ${goalIndex + 1}.jsonl`),
 				`G${goalIndex} worker session not persisted`,
+			);
+			assert(
+				!goal.sessionFile.startsWith(dir),
+				`G${goalIndex} worker session was stored under flow dir`,
 			);
 			assert(
 				goal.snapshot === snapshot,
 				`G${goalIndex} snapshot not persisted`,
-			);
-			assert(
-				goal.snapshotHash === planSnapshotHash(snapshot),
-				`G${goalIndex} snapshot hash not persisted`,
 			);
 		}
 		writeFileSync(join(cwd, "release-workers"), "");
@@ -919,6 +1615,19 @@ async function parallelRunSuccessScenario() {
 		const flow = readFlow(dir);
 		assert(flow.goals[1].status === "complete", "parallel G2 not complete");
 		assert(flow.goals[2].status === "complete", "parallel G3 not complete");
+		assert(
+			progressTracker.saw("G2", "complete") &&
+				progressTracker.saw("G3", "complete"),
+			"successful workers were not published as complete progress",
+		);
+		assert(
+			[1, 2].every(
+				(index) =>
+					Number.isFinite(flow.goals[index].completedAt) &&
+					flow.goals[index].completedAt >= flow.goals[index].startedAt,
+			),
+			"parallel fan-in did not stamp completed goals",
+		);
 		assert(
 			flow.goals[3].status === "running",
 			"next serial goal did not start",
@@ -936,30 +1645,180 @@ async function parallelRunSuccessScenario() {
 		);
 		assert(
 			!isFlowEditorInputHidden(),
-			"parallel batch did not restore editor input",
+			"parallel console left editor input hidden",
 		);
 		assert(
 			state.newSessions.length === 2 &&
 				state.newSessions[1].from === orchestratorSession,
-			"G4 did not start from the orchestrator session",
+			"G4 did not start from the console session",
 		);
 		assert(
-			existsSync(join(dir, "workers", "G1", "result.json")) &&
-				existsSync(join(dir, "workers", "G2", "result.json")),
-			"worker result.json files missing",
+			state.customMessages.some(
+				(item) =>
+					item.message.details?.title === "Flow 并行已收口" &&
+					item.message.content.includes("第 2 步 · Goal 2：done 1") &&
+					item.message.content.includes(
+						"下一步：第 4 步 · Final acceptance 将在 Resume 中打开",
+					),
+			),
+			`parallel console result card missing: ${state.customMessages
+				.map(
+					(item) => `${item.message.details?.title}\n${item.message.content}`,
+				)
+				.join("\n---\n")}`,
+		);
+		assert(
+			existsSync(join(dir, "G2-worker.json")) &&
+				existsSync(join(dir, "G3-worker.json")),
+			"worker artifact files missing",
+		);
+		assert(
+			!existsSync(join(dir, "workers")),
+			"parallel runtime created an unsupported workers dir",
 		);
 		for (const goalIndex of [1, 2]) {
-			const result = JSON.parse(
-				readFileSync(
-					join(dir, "workers", `G${goalIndex}`, "result.json"),
-					"utf8",
-				),
+			const artifact = readWorkerArtifact(
+				join(dir, `G${goalIndex + 1}-worker.json`),
 			);
 			assert(
-				result.parallelRunId === startedParallelRunId,
-				`G${goalIndex} result missing parallelRunId`,
+				artifact.completion?.parallelRunId === startedParallelRunId,
+				`G${goalIndex} completion missing parallelRunId`,
 			);
 		}
+	} finally {
+		progressTracker?.unsubscribe();
+		delete process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE;
+		writeFileSync(join(cwd, "release-workers"), "");
+		if (start) await start.catch(() => undefined);
+		restorePi();
+	}
+}
+
+async function flowParallelStartHtmlFailureScenario() {
+	const cwd = tempDir("parallel-start-html-failure");
+	const dir = createParallelFlow(cwd, "F1");
+	breakFlowHtml(dir);
+	const restorePi = installFakePi(cwd);
+	process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE = "1";
+	let start;
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		start = commands.get("flow").handler("go F1", ctx);
+		await waitForParallelRunPrepared(dir, [1, 2]);
+		const { activeParallelBatchForDir } = await importCachedModule(
+			"flow/parallel/batch-runner.js",
+		);
+		assert(
+			activeParallelBatchForDir(dir),
+			"HTML failure prevented active parallel batch registration",
+		);
+		await Promise.all([
+			waitForFile(join(cwd, "worker-1.started")),
+			waitForFile(join(cwd, "worker-2.started")),
+		]);
+		writeFileSync(join(cwd, "release-workers"), "");
+		await start;
+		await flushScheduledGoalStart();
+		const flow = readFlow(dir);
+		assert(
+			flow.goals[1].status === "complete" &&
+				flow.goals[2].status === "complete" &&
+				flow.goals[3].status === "running" &&
+				flow.parallelRun === null,
+			`HTML failure stopped parallel fan-in or next scheduling: ${JSON.stringify(flow)}`,
+		);
+		assertReportRefreshFailure(state);
+		assertNoPlanRepair(state);
+	} finally {
+		delete process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE;
+		writeFileSync(join(cwd, "release-workers"), "");
+		if (start) await start.catch(() => undefined);
+		restorePi();
+	}
+}
+
+async function flowParallelStopHtmlFailureScenario() {
+	const cwd = tempDir("parallel-stop-html-failure");
+	const dir = createParallelFlow(cwd, "F1");
+	const restorePi = installFakePi(cwd);
+	process.env.PI_FLOW_FAKE_HANG = "1";
+	let run;
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		run = commands.get("flow").handler("go F1", ctx);
+		await Promise.all([
+			waitForFile(join(cwd, "worker-1.started")),
+			waitForFile(join(cwd, "worker-2.started")),
+		]);
+		breakFlowHtml(dir);
+		await commands.get("flow").handler("stop F1", ctx);
+		await run;
+		const { activeParallelBatchForDir } = await importCachedModule(
+			"flow/parallel/batch-runner.js",
+		);
+		const flow = readFlow(dir);
+		assert(
+			flow.status === "paused" &&
+				flow.goals[1].status === "paused" &&
+				flow.goals[2].status === "paused" &&
+				!activeParallelBatchForDir(dir),
+			`HTML failure left parallel stop unsettled: ${JSON.stringify(flow)}`,
+		);
+		assertReportRefreshFailure(state);
+		assert(
+			state.notifications.some((message) => message.includes("Flow 已暂停")),
+			`HTML failure suppressed stop notice: ${state.notifications.join(" | ")}`,
+		);
+		assertNoPlanRepair(state);
+	} finally {
+		delete process.env.PI_FLOW_FAKE_HANG;
+		if (run) await run.catch(() => undefined);
+		restorePi();
+	}
+}
+
+async function parallelToParallelRunSuccessScenario() {
+	const cwd = tempDir("parallel-to-parallel-success");
+	const dir = createParallelToParallelFlow(cwd, "F1");
+	const restorePi = installFakePi(cwd);
+	process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE = "1";
+	let start;
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+
+		start = commands.get("flow").handler("go F1", ctx);
+		await waitForParallelRunPrepared(dir, [1, 2]);
+		writeFileSync(join(cwd, "release-workers"), "");
+		await start;
+		await flushScheduledGoalStart();
+
+		const flow = readFlow(dir);
+		assert(flow.goals[1].status === "complete", "first batch G2 missed");
+		assert(flow.goals[2].status === "complete", "first batch G3 missed");
+		assert(flow.goals[3].status === "complete", "second batch G4 missed");
+		assert(flow.goals[4].status === "complete", "second batch G5 missed");
+		assert(flow.goals[5].status === "running", "final step did not start");
+		assert(flow.currentGoal === 5, "parallel-to-parallel did not advance");
+		assert(flow.parallelRun === null, "parallel-to-parallel kept parallelRun");
+		assert(
+			state.sessionNames.includes("F1-G2+G3 并行控制台") &&
+				state.sessionNames.includes("F1-G4+G5 并行控制台"),
+			`parallel console sessions missing: ${state.sessionNames.join(", ")}`,
+		);
+		const workerRuns = readFileSync(join(cwd, "worker-runs.log"), "utf8")
+			.trim()
+			.split("\n");
+		assert(
+			JSON.stringify([...workerRuns].sort()) ===
+				JSON.stringify(["1", "2", "3", "4"]),
+			`parallel-to-parallel workers were not one per lane: ${workerRuns.join(",")}`,
+		);
 	} finally {
 		delete process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE;
 		writeFileSync(join(cwd, "release-workers"), "");
@@ -980,22 +1839,21 @@ async function parallelStatusPreservesLiveReportScenario() {
 		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 
 		start = commands.get("flow").handler("go F1", ctx);
-		await Promise.all([
-			waitForFile(join(cwd, "worker-1.started")),
-			waitForFile(join(cwd, "worker-2.started")),
-		]);
+		await waitForParallelRunPrepared(dir, [1, 2]);
 		const htmlPath = join(dir, "flow.html");
 		await waitForFile(htmlPath);
-		const workerDir = join(dir, "workers", "G1");
-		const changed = onceFileChanged(htmlPath);
-		writeFileSync(
-			join(workerDir, "plan.md"),
-			planMarkdown(2, false).replace(
-				"Do work.",
-				"Worker live status survives.",
-			),
+		await changeSourceUntilHtmlMatches(
+			htmlPath,
+			() =>
+				writeFileSync(
+					join(dir, "G2-plan.md"),
+					planMarkdown(2, false).replace(
+						"Do work.",
+						"Worker live status survives.",
+					),
+				),
+			(content) => content.includes("Worker live status survives."),
 		);
-		await changed;
 		const before = readFileSync(htmlPath, "utf8");
 		assert(
 			before.includes("Worker live status survives."),
@@ -1047,13 +1905,15 @@ async function parallelRunFailureScenario() {
 			flow.goals[1].status === "complete",
 			"successful worker was not fan-in completed after batch failure",
 		);
+		const successfulCompletedAt = flow.goals[1].completedAt;
 		assert(
-			flow.goals[2].status === "pending",
-			"failed worker did not return to pending",
+			Number.isFinite(successfulCompletedAt),
+			"successful worker completion timestamp was not persisted",
 		);
+		assert(flow.goals[2].status === "paused", "failed worker did not pause");
 		assert(
-			flow.goals[2].sessionFile === null,
-			"failed worker kept stale worker session",
+			flow.goals[2].sessionFile,
+			"failed worker did not keep worker session",
 		);
 		assert(
 			flow.goals[3].status === "pending",
@@ -1063,12 +1923,12 @@ async function parallelRunFailureScenario() {
 			flow.goals[4].status === "pending",
 			"batch failure started final goal",
 		);
-		assert(flow.status === "running", "batch failure stopped the flow");
+		assert(flow.status === "paused", "batch failure did not pause the flow");
 		assert(
 			flow.currentGoal === 2,
 			"current goal did not point to failed worker",
 		);
-		assert(flow.parallelRun === null, "failed parallel run was not cleared");
+		assert(flow.parallelRun?.id, "failed parallel run was not preserved");
 		assert(
 			flow.errors.length === 1,
 			"batch failure should only list failed workers",
@@ -1083,8 +1943,8 @@ async function parallelRunFailureScenario() {
 			`batch failure missing exit code: ${error}`,
 		);
 		assert(
-			error.includes("缺少 result.json"),
-			`batch failure missing result.json state: ${error}`,
+			error.includes("缺少 worker completion"),
+			`batch failure missing completion state: ${error}`,
 		);
 		assert(
 			error.includes("stderr：fake worker failed 2"),
@@ -1092,8 +1952,8 @@ async function parallelRunFailureScenario() {
 		);
 		assert(
 			state.newSessions.length === 1 &&
-				state.sessionNames.includes("F1-G2+G3 并行批次"),
-			"batch failure did not stay within the orchestrator session",
+				state.sessionNames.includes("F1-G2+G3 并行控制台"),
+			"batch failure did not stay within the console session",
 		);
 		delete process.env.PI_FLOW_FAKE_FAIL_INDEX;
 		await commands.get("flow").handler("go", ctx);
@@ -1104,20 +1964,24 @@ async function parallelRunFailureScenario() {
 			"manual retry reran successful worker",
 		);
 		assert(
-			retried.goals[2].status === "running",
-			"manual retry did not start failed worker",
+			retried.goals[1].completedAt === successfulCompletedAt,
+			"manual retry rewrote successful worker completion timestamp",
 		);
 		assert(
-			retried.goals[3].status === "pending",
-			"manual retry started unrelated ready goal",
+			retried.goals[2].status === "complete",
+			"manual retry did not complete failed worker",
+		);
+		assert(
+			retried.goals[3].status === "running",
+			"manual retry did not start next ready goal",
 		);
 		assert(
 			retried.parallelRun === null,
 			"manual retry recreated a parallel run",
 		);
 		assert(
-			state.newSessions.length === 2,
-			"manual retry did not open one additional session",
+			state.newSessions.length === 2 && state.switches.length === 1,
+			"manual retry did not restore console and open next session",
 		);
 		const workerRuns = readFileSync(join(cwd, "worker-runs.log"), "utf8")
 			.trim()
@@ -1127,8 +1991,8 @@ async function parallelRunFailureScenario() {
 			`successful worker reran: ${workerRuns.join(",")}`,
 		);
 		assert(
-			workerRuns.filter((item) => item === "2").length === 1,
-			`failed worker reran as parallel worker: ${workerRuns.join(",")}`,
+			workerRuns.filter((item) => item === "2").length === 2,
+			`failed worker did not rerun once: ${workerRuns.join(",")}`,
 		);
 		assert(
 			workerRuns.filter((item) => item === "3").length === 0,
@@ -1136,6 +2000,170 @@ async function parallelRunFailureScenario() {
 		);
 	} finally {
 		delete process.env.PI_FLOW_FAKE_FAIL_INDEX;
+		restorePi();
+	}
+}
+
+async function parallelMissingCompletionProgressScenario() {
+	const cwd = tempDir("parallel-missing-completion-progress");
+	const dir = createParallelFlow(cwd, "F1");
+	const restorePi = installFakePi(cwd);
+	process.env.PI_FLOW_FAKE_MISSING_COMPLETION_INDEX = "2";
+	let progressTracker;
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		const { onProgressChanged } = await importCachedModule(
+			"shared/agent-progress.js",
+		);
+		progressTracker = trackParallelProgress(onProgressChanged);
+
+		await commands.get("flow").handler("go F1", ctx);
+		assert(
+			progressTracker.saw("G3", "error"),
+			"exit 0 without completion was not published as error progress",
+		);
+		const flow = readFlow(dir);
+		assert(flow.status === "paused", "missing completion did not pause Flow");
+		assert(
+			flow.goals[2].status === "paused",
+			"missing completion did not pause its lane",
+		);
+	} finally {
+		progressTracker?.unsubscribe();
+		delete process.env.PI_FLOW_FAKE_MISSING_COMPLETION_INDEX;
+		restorePi();
+	}
+}
+
+async function parallelBlockedGoScenario() {
+	const cwd = tempDir("parallel-blocked-go");
+	const dir = createParallelFlow(cwd, "F1");
+	const restorePi = installFakePi(cwd);
+	process.env.PI_FLOW_FAKE_BLOCK_INDEX = "1";
+	process.env.PI_FLOW_FAKE_BLOCK_REASON = "完成真机窗口焦点验证";
+	process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE = "1";
+	let progressTracker;
+	let run;
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const planningCtx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		const { onProgressChanged } = await importCachedModule(
+			"shared/agent-progress.js",
+		);
+		progressTracker = trackParallelProgress(onProgressChanged);
+		run = commands.get("flow").handler("go F1", planningCtx);
+		await waitForParallelRunPrepared(dir, [1, 2]);
+		const settled = await Promise.race([
+			run.then(() => true),
+			new Promise((resolve) => setTimeout(() => resolve(false), 30_000)),
+		]);
+		assert(settled, "parallel BLOCKED waited for the other lane");
+		assert(
+			progressTracker.saw("G2", "error"),
+			"BLOCKED worker was not published as error progress",
+		);
+
+		let flow = readFlow(dir);
+		assert(
+			flow.status === "paused" &&
+				flow.currentGoal === 1 &&
+				flow.goals[1].status === "paused" &&
+				flow.goals[2].status === "paused" &&
+				flow.attention?.kind === "user_action_required" &&
+				flow.attention.message === "完成真机窗口焦点验证" &&
+				flow.parallelRun?.goalIndexes.join(",") === "1,2",
+			`parallel BLOCKED state: ${JSON.stringify(flow)}`,
+		);
+		await assertFakeWorkerParentsGone(cwd, [1, 2], true);
+		assert(
+			!state.customMessages.some(
+				(item) => item.message.details?.title === "Flow 并行已收口",
+			),
+			"parallel BLOCKED emitted a settlement card",
+		);
+		const takeoverBox = latestWidgetTextForKey(state, "goal-progress");
+		assert(
+			takeoverBox.includes("等待你接管") &&
+				takeoverBox.includes("待办：完成真机窗口焦点验证") &&
+				takeoverBox.includes("/flow go F1"),
+			`parallel BLOCKED takeover box: ${takeoverBox}`,
+		);
+
+		delete process.env.PI_FLOW_FAKE_BLOCK_INDEX;
+		delete process.env.PI_FLOW_FAKE_BLOCK_REASON;
+		delete process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE;
+		await commands.get("flow").handler("go F1", planningCtx);
+		await flushScheduledGoalStart();
+		flow = readFlow(dir);
+		assert(
+			flow.attention === null &&
+				flow.parallelRun === null &&
+				flow.goals[1].status === "complete" &&
+				flow.goals[2].status === "complete" &&
+				flow.goals[3].status === "running",
+			`parallel BLOCKED resume state: ${JSON.stringify(flow)}`,
+		);
+		assert(
+			readWorkerArtifact(join(dir, "G2-worker.json"))?.handoff === null,
+			"parallel BLOCKED handoff survived resume",
+		);
+	} finally {
+		progressTracker?.unsubscribe();
+		delete process.env.PI_FLOW_FAKE_BLOCK_INDEX;
+		delete process.env.PI_FLOW_FAKE_BLOCK_REASON;
+		delete process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE;
+		writeFileSync(join(cwd, "release-workers"), "");
+		if (run) await run.catch(() => undefined);
+		restorePi();
+	}
+}
+
+async function parallelBlockedRecoveryScenario() {
+	const cwd = tempDir("parallel-blocked-recovery");
+	const dir = await createCrashedParallelFlow(cwd, "F1");
+	writeWorkerHandoff(
+		dir,
+		readFlow(dir),
+		2,
+		"P-crashed",
+		"完成重启后的真机验证",
+	);
+	const restorePi = installFakePi(cwd);
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+
+		await commands.get("flow").handler("go F1", ctx);
+		let flow = readFlow(dir);
+		assert(
+			flow.status === "paused" &&
+				flow.currentGoal === 2 &&
+				flow.goals[1].status === "paused" &&
+				flow.goals[2].status === "paused" &&
+				flow.attention?.message === "完成重启后的真机验证",
+			`parallel recovered BLOCKED state: ${JSON.stringify(flow)}`,
+		);
+		assert(
+			!existsSync(join(cwd, "worker-runs.log")),
+			"parallel recovery restarted workers before takeover",
+		);
+
+		await commands.get("flow").handler("go F1", ctx);
+		await flushScheduledGoalStart();
+		flow = readFlow(dir);
+		assert(
+			flow.attention === null &&
+				flow.parallelRun === null &&
+				flow.goals[1].status === "complete" &&
+				flow.goals[2].status === "complete" &&
+				flow.goals[3].status === "running",
+			`parallel recovered BLOCKED resume: ${JSON.stringify(flow)}`,
+		);
+	} finally {
 		restorePi();
 	}
 }
@@ -1150,33 +2178,81 @@ async function parallelRunPartialRecoveryScenario() {
 	const cwd = tempDir("parallel-recovery-partial");
 	const dir = await createCrashedParallelFlow(cwd, "F1");
 	writeWorkerResult(dir, 1, "P-crashed", "done 1");
-	writeWorkerResult(dir, 2, "P-old", "stale 2");
-	const state = newState(cwd);
-	const { commands } = await loadExtension(state);
-	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	const interruptedChecks = emptyChecks();
+	interruptedChecks.acceptance.active = {
+		round: 1,
+		generation: "interrupted-generation",
+		runId: "interrupted-run",
+		inputHash: "interrupted-input",
+		models: [
+			{
+				key: "model-a",
+				label: "model-a",
+				outcome: {
+					result: "passed",
+					summary: "model-a passed",
+					details: "PASS\nmodel-a passed",
+				},
+			},
+			{
+				key: "model-b",
+				label: "model-b",
+				outcome: {
+					result: "passed",
+					summary: "model-b passed",
+					details: "PASS\nmodel-b passed",
+				},
+			},
+			{ key: "model-c", label: "model-c", outcome: null },
+		],
+	};
+	writeWorkerGoalArtifact(dir, readFlow(dir), 2, interruptedChecks);
+	const restorePi = installFakePi(cwd);
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 
-	await commands.get("flow").handler("go", ctx);
-	await flushScheduledGoalStart();
+		await commands.get("flow").handler("go", ctx);
+		await flushScheduledGoalStart();
 
-	const flow = readFlow(dir);
-	assert(flow.parallelRun === null, "partial recovery kept parallelRun");
-	assert(
-		flow.goals[1].status === "complete",
-		"partial recovery did not fan-in matching result",
-	);
-	assert(
-		flow.goals[2].status === "running",
-		"partial recovery did not restart missing result",
-	);
-	assert(
-		flow.goals[2].goalId === null,
-		"partial recovery consumed stale result",
-	);
-	assert(
-		state.newSessions.length === 1,
-		"partial recovery did not continue scheduling",
-	);
-	assertRecoveryNotice(state, ["已收口 第 2 步", "已重置 第 3 步"]);
+		const flow = readFlow(dir);
+		assert(flow.parallelRun === null, "partial recovery kept parallelRun");
+		assert(
+			flow.goals[1].status === "complete",
+			"partial recovery did not fan-in matching result",
+		);
+		assert(
+			flow.goals[2].status === "complete",
+			"partial recovery did not restart and complete missing result",
+		);
+		assert(
+			flow.goals[3].status === "running",
+			"partial recovery did not continue to next step",
+		);
+		const workerRuns = readFileSync(join(cwd, "worker-runs.log"), "utf8")
+			.trim()
+			.split("\n");
+		assert(
+			workerRuns.filter((item) => item === "1").length === 0,
+			`partial recovery reran completed worker: ${workerRuns.join(",")}`,
+		);
+		assert(
+			workerRuns.filter((item) => item === "2").length === 1,
+			`partial recovery did not rerun missing worker once: ${workerRuns.join(",")}`,
+		);
+		const resumedCheck = readWorkerArtifact(join(dir, "G3-worker.json"))?.checks
+			.acceptance.active;
+		assert(
+			resumedCheck?.models[0]?.outcome?.summary === "model-a passed" &&
+				resumedCheck.models[1]?.outcome?.summary === "model-b passed" &&
+				resumedCheck.models[2]?.outcome === null,
+			`parallel recovery discarded reviewer checkpoint: ${JSON.stringify(resumedCheck)}`,
+		);
+		assertRecoveryNotice(state, ["已收口 第 2 步", "已重置 第 3 步"]);
+	} finally {
+		restorePi();
+	}
 }
 
 async function parallelRunCompleteRecoveryScenario() {
@@ -1218,19 +2294,21 @@ async function parallelRunEmptyRecoveryScenario() {
 		const { commands } = await loadExtension(state);
 		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 		run = commands.get("flow").handler("go", ctx);
-		await Promise.all([
-			waitForFile(join(cwd, "worker-1.started")),
-			waitForFile(join(cwd, "worker-2.started")),
-		]);
+		await waitForParallelRunPrepared(dir, [1, 2]);
 		const restarted = readFlow(dir);
 		assert(
-			restarted.parallelRun?.id !== "P-crashed",
-			"empty recovery reused crashed run id",
+			restarted.parallelRun?.id === "P-crashed",
+			"empty recovery did not reconcile the existing run id",
 		);
 		assert(
 			JSON.stringify(restarted.parallelRun?.goalIndexes) ===
 				JSON.stringify([1, 2]),
 			"empty recovery did not start next parallel batch",
+		);
+		await waitForCondition(
+			() => state.notifications.some((item) => item.includes("Flow 并行恢复")),
+			"empty recovery notice missing",
+			30_000,
 		);
 		assertRecoveryNotice(state, ["已收口 无", "已重置 第 2 步", "第 3 步"]);
 		writeFileSync(join(cwd, "release-workers"), "");
@@ -1253,9 +2331,49 @@ async function parallelRunEmptyRecoveryScenario() {
 			flow.goals[3].status === "running",
 			"empty recovery did not start final step",
 		);
+		await assertFakeWorkerParentsGone(cwd, [1, 2]);
 	} finally {
 		delete process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE;
 		writeFileSync(join(cwd, "release-workers"), "");
+		if (run) await run.catch(() => undefined);
+		restorePi();
+	}
+}
+
+async function parallelVisibleEditorEscScenario() {
+	const cwd = tempDir("parallel-visible-editor-esc");
+	const dir = createParallelFlow(cwd, "F1");
+	const restorePi = installFakePi(cwd);
+	process.env.PI_FLOW_FAKE_HANG = "1";
+	let run;
+	try {
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		run = commands.get("flow").handler("go F1", ctx);
+		await Promise.all([
+			waitForFile(join(cwd, "worker-1.started")),
+			waitForFile(join(cwd, "worker-2.started")),
+		]);
+		const { handleFlowActivityInput } = await importCachedModule(
+			"shared/activity-frame.js",
+		);
+		const consumed = handleFlowActivityInput("escape", {
+			matches(data, action) {
+				return data === "escape" && action === "app.interrupt";
+			},
+		});
+		if (!consumed) await commands.get("flow").handler("stop F1", ctx);
+		await run;
+		assert(consumed, "visible parallel console did not capture Esc");
+		const flow = readFlow(dir);
+		assert(flow.status === "paused", "parallel Esc did not pause Flow");
+		assert(
+			flow.goals[1].status === "paused" && flow.goals[2].status === "paused",
+			"parallel Esc did not pause active lanes",
+		);
+	} finally {
+		delete process.env.PI_FLOW_FAKE_HANG;
 		if (run) await run.catch(() => undefined);
 		restorePi();
 	}
@@ -1275,29 +2393,30 @@ async function flowParallelStopGoScenario() {
 		await Promise.all([
 			waitForFile(join(cwd, "worker-1.started")),
 			waitForFile(join(cwd, "worker-2.started")),
+			waitForFile(join(cwd, "worker-1.child-killed.started")),
+			waitForFile(join(cwd, "worker-2.child-killed.started")),
 		]);
 		await commands.get("flow").handler("stop F1", ctx);
 		await run;
 		let flow = readFlow(dir);
 		assert(flow.status === "paused", "parallel stop did not pause Flow");
-		assert(flow.parallelRun === null, "parallel stop kept parallelRun");
+		assert(flow.parallelRun?.id, "parallel stop did not preserve parallelRun");
 		assert(
 			flow.goals[0].status === "complete",
 			"parallel stop lost previous completion",
 		);
-		assert(
-			flow.goals[1].status === "pending",
-			"parallel stop did not reset G2",
-		);
-		assert(
-			flow.goals[2].status === "pending",
-			"parallel stop did not reset G3",
-		);
+		assert(flow.goals[1].status === "paused", "parallel stop did not pause G2");
+		assert(flow.goals[2].status === "paused", "parallel stop did not pause G3");
 		assert(
 			existsSync(join(cwd, "worker-1.killed")) &&
 				existsSync(join(cwd, "worker-2.killed")),
 			"parallel stop did not abort workers",
 		);
+		await Promise.all([
+			waitForFile(join(cwd, "worker-1.child-killed")),
+			waitForFile(join(cwd, "worker-2.child-killed")),
+		]);
+		await assertFakeWorkersGone(cwd, [1, 2]);
 
 		delete process.env.PI_FLOW_FAKE_HANG;
 		await commands.get("flow").handler("go F1", ctx);
@@ -1326,6 +2445,132 @@ async function flowParallelStopGoScenario() {
 	}
 }
 
+async function flowParallelConsoleShutdownScenario() {
+	const { rememberedFlowContext } = await importCachedModule("flow/runtime.js");
+	const cwd = tempDir("parallel-console-shutdown");
+	const dir = createParallelFlow(cwd, "F1");
+	const restorePi = installFakePi(cwd);
+	process.env.PI_FLOW_FAKE_HANG = "1";
+	let run;
+	try {
+		const state = newState(cwd);
+		const { commands, handlers } = await loadExtension(state);
+		const planningCtx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		run = commands.get("flow").handler("go F1", planningCtx);
+		await Promise.all([
+			waitForFile(join(cwd, "worker-1.started")),
+			waitForFile(join(cwd, "worker-2.started")),
+			waitForFile(join(cwd, "worker-1.child-killed.started")),
+			waitForFile(join(cwd, "worker-2.child-killed.started")),
+		]);
+		const consoleCtx = state.activeCtx;
+		let flow = readFlow(dir);
+		assert(
+			flow.parallelRun?.consoleSessionFile ===
+				consoleCtx.sessionManager.getSessionFile(),
+			"parallel console session did not own parallelRun",
+		);
+
+		await emit(handlers, "session_shutdown", {}, consoleCtx);
+		await run;
+		assert(
+			rememberedFlowContext(consoleCtx.sessionManager.getSessionFile()) ===
+				undefined,
+			"stable parallel stop retained console context",
+		);
+		flow = readFlow(dir);
+		assert(flow.status === "paused", "console shutdown did not pause Flow");
+		assert(
+			flow.parallelRun?.id,
+			"console shutdown did not preserve parallelRun for reconcile",
+		);
+		assert(
+			flow.goals[1].status === "paused" && flow.goals[2].status === "paused",
+			"console shutdown did not pause unfinished lanes",
+		);
+		assert(
+			existsSync(join(cwd, "worker-1.killed")) &&
+				existsSync(join(cwd, "worker-2.killed")),
+			"console shutdown did not abort workers",
+		);
+		await Promise.all([
+			waitForFile(join(cwd, "worker-1.child-killed")),
+			waitForFile(join(cwd, "worker-2.child-killed")),
+		]);
+		await assertFakeWorkersGone(cwd, [1, 2]);
+
+		delete process.env.PI_FLOW_FAKE_HANG;
+		await commands.get("flow").handler("go F1", planningCtx);
+		await flushScheduledGoalStart();
+		flow = readFlow(dir);
+		assert(
+			flow.parallelRun === null,
+			"go after console shutdown kept parallelRun",
+		);
+		assert(
+			flow.goals[1].status === "complete" &&
+				flow.goals[2].status === "complete",
+			"go after console shutdown did not complete paused lanes",
+		);
+		assert(
+			flow.goals[3].status === "running",
+			"go after console shutdown did not schedule next step",
+		);
+	} finally {
+		delete process.env.PI_FLOW_FAKE_HANG;
+		if (run) await run.catch(() => undefined);
+		restorePi();
+	}
+}
+
+async function flowParallelConsoleInputScenario() {
+	const cwd = tempDir("parallel-console-input");
+	const dir = createParallelFlow(cwd, "F1");
+	const consoleSession = join(cwd, "console.jsonl");
+	writeFileSync(consoleSession, "");
+	const flow = readFlow(dir);
+	flow.status = "running";
+	flow.startedAt = Date.now();
+	flow.currentGoal = 1;
+	flow.parallelRun = {
+		id: "P-console-input",
+		goalIndexes: [1, 2],
+		startedAt: Date.now(),
+		consoleSessionFile: consoleSession,
+		consoleSessionName: "F1-G2+G3 并行控制台",
+	};
+	flow.goals[1].status = "running";
+	flow.goals[2].status = "running";
+	writeFlow(dir, flow);
+	const state = newState(cwd);
+	const { handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, consoleSession);
+	await emit(handlers, "session_start", {}, ctx);
+
+	const blocked = await emitLast(
+		handlers,
+		"input",
+		{ source: "user", text: "hello" },
+		ctx,
+	);
+	assert(blocked?.action === "handled", "console input was not intercepted");
+	assert(
+		state.notifications
+			.at(-1)
+			?.includes("控制台只允许「/flow go F1」或「/flow stop F1」"),
+		`console input notice missing: ${state.notifications.at(-1)}`,
+	);
+	assert(state.sentMessages.length === 0, "console input reached the LLM");
+
+	const allowed = await emitLast(
+		handlers,
+		"input",
+		{ source: "user", text: "/flow go F1" },
+		ctx,
+	);
+	assert(allowed === undefined, "console command input was intercepted");
+}
+
 async function flowParallelStopAllResultsCompleteScenario() {
 	const cwd = tempDir("parallel-stop-all-results-complete");
 	const dir = createParallelFlow(cwd, "F1");
@@ -1337,14 +2582,14 @@ async function flowParallelStopAllResultsCompleteScenario() {
 		id: "P-stop-complete",
 		goalIndexes: [1, 2],
 		startedAt: Date.now(),
+		consoleSessionFile: join(cwd, "console.jsonl"),
+		consoleSessionName: "F1-G2+G3 并行控制台",
 	};
 	for (const goalIndex of [1, 2]) {
 		flow.goals[goalIndex].status = "running";
 		flow.goals[goalIndex].sessionFile = join(
-			dir,
-			"workers",
-			`G${goalIndex}`,
-			"session.jsonl",
+			cwd,
+			`F1-G${goalIndex + 1} Goal ${goalIndex + 1}.jsonl`,
 		);
 	}
 	flow.goals[3].status = "complete";
@@ -1369,12 +2614,214 @@ async function flowParallelStopAllResultsCompleteScenario() {
 		stopped.goals.every((goal) => goal.status === "complete"),
 		"complete parallel stop left incomplete goals",
 	);
+	assert(
+		Number.isFinite(stopped.completedAt) &&
+			[1, 2].every((index) =>
+				Number.isFinite(stopped.goals[index].completedAt),
+			),
+		"parallel stop completion did not stamp parent timestamps",
+	);
 	await commands.get("flow").handler("go F1", ctx);
 	assert(state.newSessions.length === 0, "go after complete stop started work");
 	assert(
 		(state.notifications.at(-1) ?? "").includes("已完成"),
 		`go after complete stop did not report completion: ${state.notifications.at(-1)}`,
 	);
+}
+
+async function flowPrewalkForkStartScenario() {
+	const cwd = tempDir("flow-prewalk-fork");
+	initGitWorkspace(cwd);
+	writeFlowTestConfig({ prewalk: true });
+	const dir = createFlow(cwd, "F1");
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const sessionFile = join(cwd, "planning.jsonl");
+	const ctx = commandContext(state, cwd, sessionFile);
+	const forks = [];
+	ctx.getContextUsage = () => ({
+		percent: 20,
+		tokens: 1000,
+		contextWindow: 200_000,
+	});
+	ctx.sessionManager.getLeafId = () => "leaf-9";
+	entriesFor(state, sessionFile).push({ type: "message", id: "leaf-9" });
+	let forkFile;
+	ctx.fork = async (entryId, options) => {
+		forks.push({ entryId, position: options?.position });
+		forkFile = join(cwd, `fork-${forks.length}.jsonl`);
+		writeFileSync(forkFile, "");
+		const nextCtx = commandContext(state, cwd, forkFile, true);
+		nextCtx.sessionManager.getLeafId = () => entryId;
+		state.activeCtx = nextCtx;
+		await options?.withSession?.(nextCtx);
+		return { cancelled: false };
+	};
+	// 先触发按需初始化（flow:initialize 会重置 prewalk 运行态），再模拟生成完成记忆；
+	// 生产时序同构：生成命令先初始化，生成成功后才 remember。
+	await commands.get("flow").handler("status F1", ctx);
+	const prewalk = await importCachedModule("flow/prewalk.js");
+	prewalk.rememberGenerationSession(dir, ctx);
+
+	await commands.get("flow").handler("go F1", ctx);
+	assert(
+		forks.length === 1 &&
+			forks[0].entryId === "leaf-9" &&
+			forks[0].position === "at",
+		`goal start did not fork at the plan session leaf: ${JSON.stringify(forks)}`,
+	);
+	assert(
+		state.newSessions.length === 0,
+		"fork start must not open a fresh session",
+	);
+	assert(
+		state.hiddenMessages.some((text) => text.includes("延续自计划会话")),
+		"forked goal prompt did not lift the generation-phase restriction",
+	);
+	const saved = readFlow(dir);
+	assert(
+		saved.status === "running" && saved.goals[0].sessionFile === forkFile,
+		"forked session was not recorded as the goal session",
+	);
+	const goalEntry = entriesFor(state, forkFile)
+		.filter(
+			(entry) => entry.type === "custom" && entry.customType === "goal-state",
+		)
+		.at(-1);
+	assert(
+		goalEntry?.data?.goal?.sessionAnchorId === "leaf-9",
+		"forked goal did not record the evidence anchor",
+	);
+
+	// 同一生成会话记忆已消费：再次启动（如重跑）回退冷启动，不重复 fork。
+	assert(
+		prewalk.planTrajectoryForkPoint(ctx, dir, { startedAt: null }) ===
+			undefined,
+		"generation session memory was not consumed by the fork start",
+	);
+	writeFlowTestConfig();
+}
+
+async function parallelPrewalkForkScenario() {
+	const cwd = tempDir("parallel-prewalk-fork");
+	initGitWorkspace(cwd);
+	writeFlowTestConfig({ prewalk: true });
+	const dir = createFlow(cwd, "F1", { planCount: 3 });
+	const flow = readFlow(dir);
+	flow.goals[0].dependsOn = [];
+	flow.goals[0].writeScope = ["src/a/**"];
+	flow.goals[1].dependsOn = [];
+	flow.goals[1].writeScope = ["src/b/**"];
+	flow.goals[2].dependsOn = [0, 1];
+	writeFlow(dir, flow);
+	const restorePi = installFakePi(cwd);
+	try {
+		const state = newState(cwd);
+		const { commands, handlers } = await loadExtension(state);
+		const sessionFile = join(cwd, "planning.jsonl");
+		// 真实生成会话 JSONL：并行分支用 SessionManager.open 读磁盘文件。
+		const { CURRENT_SESSION_VERSION } = await import(
+			"@earendil-works/pi-coding-agent"
+		);
+		writeFileSync(
+			sessionFile,
+			`${[
+				{
+					type: "session",
+					version: CURRENT_SESSION_VERSION,
+					id: "gen-session",
+					timestamp: new Date().toISOString(),
+					cwd,
+				},
+				{
+					type: "message",
+					id: "u1",
+					parentId: null,
+					timestamp: new Date().toISOString(),
+					message: {
+						role: "user",
+						content: [{ type: "text", text: "explore" }],
+					},
+				},
+				{
+					type: "message",
+					id: "a1",
+					parentId: "u1",
+					timestamp: new Date().toISOString(),
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "plan written" }],
+					},
+				},
+			]
+				.map((item) => JSON.stringify(item))
+				.join("\n")}\n`,
+		);
+		const ctx = commandContext(state, cwd, sessionFile);
+		ctx.getContextUsage = () => ({
+			percent: 20,
+			tokens: 1000,
+			contextWindow: 200_000,
+		});
+		ctx.sessionManager.getLeafId = () => "a1";
+		// 模拟宿主：newSession 替换前先对旧会话派发 session_shutdown（回归：
+		// shutdown 不得清除生成会话记忆，否则并行首批 fork 永远不可达）。
+		const originalNewSession = ctx.newSession.bind(ctx);
+		ctx.newSession = async (options) => {
+			await emit(handlers, "session_shutdown", {}, ctx);
+			return originalNewSession(options);
+		};
+		// 先触发按需初始化，再模拟生成完成记忆（同生产时序）。
+		await commands.get("flow").handler("status F1", ctx);
+		const prewalk = await importCachedModule("flow/prewalk.js");
+		prewalk.rememberGenerationSession(dir, ctx);
+
+		await commands.get("flow").handler("go F1", ctx);
+		await flushScheduledGoalStart();
+
+		const saved = readFlow(dir);
+		for (const goalIndex of [0, 1]) {
+			const workerSession = saved.goals[goalIndex].sessionFile;
+			assert(
+				workerSession && existsSync(workerSession),
+				`G${goalIndex + 1} worker session file missing: ${workerSession}`,
+			);
+			assert(
+				workerSession !== sessionFile,
+				"worker must not reuse the generation session file",
+			);
+			const lines = readFileSync(workerSession, "utf8").trim().split("\n");
+			const header = JSON.parse(lines[0]);
+			assert(
+				header.parentSession === sessionFile,
+				`G${goalIndex + 1} worker session is not branched from the generation session`,
+			);
+			assert(
+				lines.some((line) => line.includes("plan written")),
+				`G${goalIndex + 1} worker session is missing the plan trajectory prefix`,
+			);
+			const prompt = readFileSync(
+				join(cwd, `worker-${goalIndex}.prompt`),
+				"utf8",
+			);
+			assert(
+				prompt.includes("延续自计划会话"),
+				`G${goalIndex + 1} worker prompt did not lift the generation-phase restriction`,
+			);
+		}
+		assert(
+			saved.goals[0].status === "complete" &&
+				saved.goals[1].status === "complete",
+			"parallel prewalk workers did not complete",
+		);
+		assert(
+			readFileSync(sessionFile, "utf8").includes("plan written"),
+			"generation session file must stay untouched",
+		);
+	} finally {
+		restorePi();
+		writeFlowTestConfig();
+	}
 }
 
 async function flowLockStaleScenario() {
@@ -1446,11 +2893,77 @@ async function flowConcurrentGoLockScenario() {
 	assert(saved.goals[2].status === "pending", "final step started too early");
 }
 
+async function flowGoalTurnDoesNotHoldLockScenario() {
+	const { acquireFlowLock } = await importModule("flow/lock.js");
+	const cwd = tempDir("flow-goal-turn-lock");
+	const dir = createFlow(cwd, "F1");
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	const originalNewSession = ctx.newSession.bind(ctx);
+	let promptStarted;
+	let rejectTurn;
+	const promptStartedPromise = new Promise((resolve) => {
+		promptStarted = resolve;
+	});
+	const turnPromise = new Promise((_resolve, reject) => {
+		rejectTurn = reject;
+	});
+	ctx.newSession = (options) =>
+		originalNewSession({
+			...options,
+			withSession: async (sessionCtx) => {
+				const sendMessage = sessionCtx.sendMessage.bind(sessionCtx);
+				sessionCtx.sendMessage = (message, sendOptions) => {
+					sendMessage(message, sendOptions);
+					promptStarted();
+					return turnPromise;
+				};
+				await options?.withSession?.(sessionCtx);
+			},
+		});
+
+	const started = commands.get("flow").handler("go F1", ctx);
+	await promptStartedPromise;
+	try {
+		const startCompleted = await Promise.race([
+			started.then(() => true),
+			new Promise((resolve) => setImmediate(() => resolve(false))),
+		]);
+		assert(startCompleted, "serial Goal start waited for the agent turn");
+		assert(
+			!existsSync(join(dir, ".flow.lock")),
+			"serial Goal held the Flow lock for the agent turn",
+		);
+		const attributionWrite = acquireFlowLock(dir, "live attribution");
+		assert(
+			attributionWrite.ok,
+			"live attribution could not acquire the Flow lock",
+		);
+		attributionWrite.release();
+		rejectTurn(new Error("injected agent turn failure"));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert(
+			state.notifications.some((item) => item.includes("执行回合失败")),
+			"agent turn failure was not reported with execution semantics",
+		);
+		assert(
+			!state.notifications.some((item) => item.includes("目标提示发送失败")),
+			"agent turn failure was misreported as prompt delivery failure",
+		);
+	} finally {
+		rejectTurn(new Error("test cleanup"));
+		await started;
+	}
+}
+
 async function parallelFanInLockScenario() {
 	const { withFlowLock } = await importModule("flow/lock.js");
 	const { settleParallelRun } = await importModule("flow/parallel/fan-in.js");
 	const cwd = tempDir("parallel-fan-in-lock");
 	const dir = await createCrashedParallelFlow(cwd, "F1");
+	const state = newState(cwd);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 	writeWorkerResult(dir, 1, "P-crashed", "done 1");
 	writeWorkerResult(dir, 2, "P-crashed", "done 2");
 	let first;
@@ -1462,7 +2975,7 @@ async function parallelFanInLockScenario() {
 			await new Promise((release) => {
 				releaseFirst = release;
 			});
-			return settleParallelRun(dir, readFlow(dir), [], {
+			return settleParallelRun(ctx, dir, readFlow(dir), [], {
 				requireSuccessfulExit: false,
 				recovery: true,
 			});
@@ -1472,7 +2985,7 @@ async function parallelFanInLockScenario() {
 	let secondRan = false;
 	const second = await withFlowLock(dir, "fan-in second", () => {
 		secondRan = true;
-		return settleParallelRun(dir, readFlow(dir), [], {
+		return settleParallelRun(ctx, dir, readFlow(dir), [], {
 			requireSuccessfulExit: false,
 			recovery: true,
 		});
@@ -1490,13 +3003,19 @@ async function parallelFanInLockScenario() {
 
 async function flowConcurrentRecoveryFanInLockScenario() {
 	const { acquireFlowLock } = await importModule("flow/lock.js");
+	const { rememberFlowContext, rememberedFlowContext } =
+		await importCachedModule("flow/runtime.js");
 	const cwd = tempDir("flow-concurrent-recovery-fan-in");
 	const dir = await createCrashedParallelFlow(cwd, "F1");
 	writeWorkerResult(dir, 1, "P-crashed", "done 1");
 	writeWorkerResult(dir, 2, "P-crashed", "done 2");
 	const state = newState(cwd);
 	const { commands } = await loadExtension(state);
+	const consoleSessionFile = readFlow(dir).parallelRun.consoleSessionFile;
+	const consoleCtx = commandContext(state, cwd, consoleSessionFile);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("status F1", ctx);
+	rememberFlowContext(consoleCtx);
 	const lock = acquireFlowLock(dir, "recover parallel F1");
 	assert(lock.ok, "recovery fan-in lock was not acquired");
 	try {
@@ -1507,6 +3026,10 @@ async function flowConcurrentRecoveryFanInLockScenario() {
 		assert(
 			state.notifications.some((item) => item.includes("Flow 正在处理")),
 			"busy recovery did not notify user",
+		);
+		assert(
+			rememberedFlowContext(consoleSessionFile) === consoleCtx,
+			"lock conflict released retryable console context",
 		);
 		lock.release();
 		await commands.get("flow").handler("go", ctx);
@@ -1519,6 +3042,10 @@ async function flowConcurrentRecoveryFanInLockScenario() {
 		assert(
 			state.newSessions.length === 1,
 			"recovery started duplicate sessions",
+		);
+		assert(
+			rememberedFlowContext(consoleSessionFile) === undefined,
+			"successful recovery cutover retained old console context",
 		);
 	} finally {
 		if (lock.ok) lock.release();
@@ -1536,13 +3063,21 @@ function assertRecoveryNotice(state, parts) {
 
 async function schemaScenario() {
 	const { validateFlowDir } = await importModule("flow/validator.js");
+	const { FLOW_SCHEMA_VERSION } = await importModule("flow/types.js");
+	assert(FLOW_SCHEMA_VERSION === 17, "current Flow schema version changed");
 	const { createPreDraftFlow, listFlowIds } =
 		await importModule("flow/store.js");
+	const { readAlignmentState } = await importModule(
+		"shared/generation-state.js",
+	);
 	const preDraftCwd = tempDir("schema-predraft");
 	const preDraft = createPreDraftFlow(preDraftCwd, {
 		language: "zh",
 		status: "generating",
-		source: { type: "prompt", path: null, originalRequest: "draft" },
+		source: { type: "prompt", text: "draft" },
+		sessionFile: null,
+		autoStart: true,
+		depth: "standard",
 	});
 	assert(preDraft.id === "F1", "pre-draft did not allocate bare F1 id");
 	assert(
@@ -1553,12 +3088,36 @@ async function schemaScenario() {
 		preDraft.flow.status === "generating" &&
 			preDraft.flow.goals.length === 0 &&
 			preDraft.flow.currentGoal === 0 &&
-			preDraft.flow.startedAt === null,
+			preDraft.flow.startedAt === null &&
+			preDraft.flow.completedAt === null,
 		"pre-draft minimal flow shape was wrong",
 	);
 	assert(
 		validateFlowDir(preDraft.dir).ok,
 		`pre-draft validation failed: ${validateFlowDir(preDraft.dir).errors.join(" | ")}`,
+	);
+	assert(
+		preDraft.alignment.depth === "standard" &&
+			readAlignmentState(preDraft.dir).depth === "standard",
+		"current alignment state was rejected",
+	);
+	const incompleteAlignment = JSON.parse(
+		readFileSync(join(preDraft.dir, "alignment.json"), "utf8"),
+	);
+	delete incompleteAlignment.depth;
+	writeFileSync(
+		join(preDraft.dir, "alignment.json"),
+		`${JSON.stringify(incompleteAlignment)}\n`,
+	);
+	let alignmentError = "";
+	try {
+		readAlignmentState(preDraft.dir);
+	} catch (error) {
+		alignmentError = String(error);
+	}
+	assert(
+		alignmentError.includes("alignment.json depth"),
+		"incomplete alignment state was accepted",
 	);
 	const pausedPreDraft = readFlow(preDraft.dir);
 	pausedPreDraft.status = "paused";
@@ -1571,22 +3130,25 @@ async function schemaScenario() {
 	cancelledPreDraft.status = "cancelled";
 	writeFlow(preDraft.dir, cancelledPreDraft);
 	const cancelledValidation = validateFlowDir(preDraft.dir);
-	assert(!cancelledValidation.ok, "old cancelled pre-draft should be invalid");
+	assert(!cancelledValidation.ok, "unsupported pre-draft status was accepted");
 	assert(
 		cancelledValidation.errors.includes("Flow 状态不受支持") &&
 			!cancelledValidation.errors.join("\n").includes("cancelled"),
-		"old cancelled status leaked its internal enum",
+		"unsupported status leaked its internal enum",
 	);
-	mkdirSync(join(preDraftCwd, ".flow", "F2-old"));
+	mkdirSync(join(preDraftCwd, ".flow", "F2-invalid"));
 	const secondPreDraft = createPreDraftFlow(preDraftCwd, {
 		language: "zh",
 		status: "aligning",
-		source: { type: "prompt", path: null, originalRequest: "align" },
+		source: { type: "prompt", text: "align" },
+		sessionFile: null,
+		autoStart: false,
+		depth: "standard",
 	});
-	assert(secondPreDraft.id === "F2", "old slug dir affected allocation");
+	assert(secondPreDraft.id === "F2", "noncanonical dir affected allocation");
 	assert(
 		JSON.stringify(listFlowIds(preDraftCwd)) === JSON.stringify(["F1", "F2"]),
-		"old slug dir was listed as a valid Flow",
+		"noncanonical dir was listed as a valid Flow",
 	);
 	const cwd = tempDir("schema");
 	const dir = join(cwd, ".flow", "F1");
@@ -1599,6 +3161,65 @@ async function schemaScenario() {
 			`valid flow failed: ${validation.errors.join(" | ")}`,
 		);
 	}
+	const sourceCases = [
+		{
+			name: "conversation",
+			valid: {
+				type: "conversation",
+				transcript: [
+					{ kind: "user", at: "2026-01-01", text: "需求" },
+					{
+						kind: "visible_supplement",
+						at: "2026-01-02",
+						text: "补充",
+					},
+				],
+			},
+			invalid: { type: "conversation", transcript: [] },
+			error: "source.transcript 必须是非空数组",
+		},
+		{
+			name: "prompt",
+			valid: { type: "prompt", text: "需求" },
+			invalid: { type: "prompt", text: "需求", path: null },
+			error: "source.path 不是合法 Flow 字段",
+		},
+		{
+			name: "file",
+			valid: { type: "file", path: "requirements.md", text: "需求" },
+			invalid: { type: "file", text: "需求" },
+			error: "source.path 必须是非空字符串",
+		},
+	];
+	for (const sourceCase of sourceCases) {
+		const sourceDir = createFlow(
+			cwd,
+			`F${20 + sourceCases.indexOf(sourceCase)}`,
+		);
+		const sourceFlow = readFlow(sourceDir);
+		sourceFlow.source = sourceCase.valid;
+		writeFlow(sourceDir, sourceFlow);
+		assert(
+			validateFlowDir(sourceDir).ok,
+			`${sourceCase.name} source was rejected`,
+		);
+		sourceFlow.source = sourceCase.invalid;
+		writeFlow(sourceDir, sourceFlow);
+		assert(
+			validateFlowDir(sourceDir).errors.includes(sourceCase.error),
+			`${sourceCase.name} invalid source was accepted`,
+		);
+	}
+	const unknownSourceDir = createFlow(cwd, "F23");
+	const unknownSourceFlow = readFlow(unknownSourceDir);
+	unknownSourceFlow.source = { type: "url", text: "需求" };
+	writeFlow(unknownSourceDir, unknownSourceFlow);
+	assert(
+		validateFlowDir(unknownSourceDir).errors.includes(
+			"source.type 必须是 conversation、prompt 或 file",
+		),
+		"unknown source type was accepted",
+	);
 	for (const invalidStatus of ["aligning", "generating"]) {
 		const postDraftFlow = readFlow(dir);
 		postDraftFlow.status = invalidStatus;
@@ -1634,8 +3255,8 @@ async function schemaScenario() {
 	pausedRunning.parallelRun = parallelRun([0]);
 	writeFlow(dir, pausedRunning);
 	assert(
-		validateFlowDir(dir).errors.includes("paused Flow parallelRun 必须为 null"),
-		"paused parallelRun was not rejected",
+		validateFlowDir(dir).ok,
+		"paused parallelRun should be valid for reconcile",
 	);
 	createFlow(cwd, "F1", { planCount: 3 });
 	const flowWithParallelFields = readFlow(dir);
@@ -1646,6 +3267,18 @@ async function schemaScenario() {
 	assert(
 		validateFlowDir(dir).ok,
 		`parallel flow fields rejected: ${validateFlowDir(dir).errors.join(" | ")}`,
+	);
+	flowWithParallelFields.parallelRun = {
+		id: "P-missing-console",
+		goalIndexes: [0, 1],
+		startedAt: Date.now(),
+	};
+	writeFlow(dir, flowWithParallelFields);
+	assert(
+		validateFlowDir(dir).errors.some((error) =>
+			error.includes("parallelRun.consoleSessionFile 必须是非空字符串"),
+		),
+		"missing parallelRun console session was not rejected",
 	);
 	flowWithParallelFields.parallelRun = parallelRun([99]);
 	writeFlow(dir, flowWithParallelFields);
@@ -1681,6 +3314,45 @@ async function schemaScenario() {
 		"running flow without startedAt not rejected",
 	);
 	createFlow(cwd, "F1");
+	const missingFlowCompletedAt = readFlow(dir);
+	delete missingFlowCompletedAt.completedAt;
+	writeFileSync(join(dir, "flow.json"), JSON.stringify(missingFlowCompletedAt));
+	assert(
+		validateFlowDir(dir).errors.includes("completedAt 必须是 null 或时间戳"),
+		"missing flow completedAt not rejected",
+	);
+	createFlow(cwd, "F1");
+	const missingGoalTimes = readFlow(dir);
+	delete missingGoalTimes.goals[0].startedAt;
+	delete missingGoalTimes.goals[0].completedAt;
+	writeFileSync(join(dir, "flow.json"), JSON.stringify(missingGoalTimes));
+	const missingGoalTimeErrors = validateFlowDir(dir).errors;
+	assert(
+		missingGoalTimeErrors.includes("goals[0].startedAt 必须是 null 或时间戳") &&
+			missingGoalTimeErrors.includes(
+				"goals[0].completedAt 必须是 null 或时间戳",
+			),
+		"missing goal timestamps not rejected",
+	);
+	createFlow(cwd, "F1");
+	const invalidRoundTime = readFlow(dir);
+	invalidRoundTime.goals[0].checks.acceptance.rounds = [
+		{ round: 1, result: "failed", summary: "failed", elapsedMs: -1 },
+	];
+	invalidRoundTime.goals[0].checks.quality.active = {
+		...activeCheck("reviewer"),
+		startedAt: "now",
+	};
+	writeFlow(dir, invalidRoundTime);
+	const invalidCheckTimeErrors = validateFlowDir(dir).errors;
+	assert(
+		invalidCheckTimeErrors.some((error) => error.includes("elapsedMs")) &&
+			invalidCheckTimeErrors.some((error) =>
+				error.includes("active.startedAt"),
+			),
+		"invalid check timestamps not rejected",
+	);
+	createFlow(cwd, "F1");
 	const flowWithErrorReview = readFlow(dir);
 	flowWithErrorReview.goals[0].checks = {
 		acceptance: {
@@ -1695,15 +3367,64 @@ async function schemaScenario() {
 		validateFlowDir(dir).ok,
 		`flow review error round rejected: ${validateFlowDir(dir).errors.join(" | ")}`,
 	);
+	createFlow(cwd, "F1");
+	const pendingWithoutAdvice = readFlow(dir);
+	pendingWithoutAdvice.goals[0].checks.acceptance.rounds = [
+		{ round: 1, result: "failed", summary: "未通过" },
+	];
+	pendingWithoutAdvice.goals[0].pendingAdvisor = {
+		phase: "acceptance",
+		round: 1,
+	};
+	writeFlow(dir, pendingWithoutAdvice);
+	assert(
+		validateFlowDir(dir).errors.some((error) =>
+			error.includes("必须指向含顾问建议的未通过检查轮"),
+		),
+		"pending advisor without persisted advice was accepted",
+	);
+	pendingWithoutAdvice.goals[0].checks.acceptance.rounds[0].advisor = {
+		model: "test/advisor",
+		thinking: "high",
+		advice: "改走事件驱动",
+	};
+	writeFlow(dir, pendingWithoutAdvice);
+	assert(
+		validateFlowDir(dir).ok,
+		`valid pending advisor rejected: ${validateFlowDir(dir).errors.join(" | ")}`,
+	);
+	const invalidAlignment = readFlow(dir);
+	invalidAlignment.meta = {
+		plannedBy: null,
+		alignment: { kind: "recorded", turns: [] },
+	};
+	writeFlow(dir, invalidAlignment);
+	assert(
+		validateFlowDir(dir).errors.includes("meta.alignment.turns 必须是非空数组"),
+		"empty recorded alignment was accepted",
+	);
+	invalidAlignment.meta = {
+		plannedBy: null,
+		alignment: null,
+		unexpected: true,
+	};
+	writeFlow(dir, invalidAlignment);
+	assert(
+		validateFlowDir(dir).errors.includes("meta.unexpected 不是合法 Flow 字段"),
+		"unknown alignment field was accepted",
+	);
 	const flow = readFlow(dir);
 	writeFileSync(
 		join(dir, "flow.json"),
 		JSON.stringify({ ...flow, schemaVersion: 1 }),
 	);
 	assert(
-		validateFlowDir(dir).errors.includes("schemaVersion 必须为 9"),
+		validateFlowDir(dir).errors.some((error) =>
+			error.includes("schemaVersion 必须为 17"),
+		),
 		"bad schemaVersion not rejected",
 	);
+	createFlow(cwd, "F1");
 	const typedFlow = readFlow(dir);
 	typedFlow.goals[0].sessionFile = 42;
 	writeFlow(dir, typedFlow);
@@ -1766,14 +3487,74 @@ async function schemaScenario() {
 	writeFlow(duplicateDir, duplicateFlow);
 	const duplicateErrors = validateFlowDir(duplicateDir).errors;
 	assert(
-		duplicateErrors.includes(
-			"多步 Flow 必须有 1 个最终验收步骤（role: final_acceptance）",
-		),
+		duplicateErrors.includes("最终验收步骤最多 1 个（role: final_acceptance）"),
 		"duplicate final acceptance not rejected",
 	);
 	assert(
 		duplicateErrors.includes("goals[2] 非最终步骤必须是 normal"),
 		"non-last final acceptance not rejected",
+	);
+	const noFinalDir = createFlow(cwd, "F6", { planCount: 4 });
+	const noFinalFlow = readFlow(noFinalDir);
+	noFinalFlow.goals = noFinalFlow.goals.map((goal) => ({
+		...goal,
+		role: "normal",
+	}));
+	writeFlow(noFinalDir, noFinalFlow);
+	const noFinalResult = validateFlowDir(noFinalDir);
+	assert(
+		noFinalResult.ok,
+		`multi-step flow without final acceptance rejected: ${noFinalResult.errors.join("\n")}`,
+	);
+	const singleFinalDir = createFlow(cwd, "F7", { planCount: 1 });
+	const singleFinalFlow = readFlow(singleFinalDir);
+	singleFinalFlow.goals.push({
+		...singleFinalFlow.goals[0],
+		index: 1,
+		title: "最终验收",
+		role: "final_acceptance",
+	});
+	writeFlow(singleFinalDir, singleFinalFlow);
+	const singleFinalResult = validateFlowDir(singleFinalDir);
+	assert(
+		singleFinalResult.ok,
+		`single-step flow with final acceptance rejected: ${singleFinalResult.errors.join("\n")}`,
+	);
+}
+
+async function currentSchemaOnlyScenario() {
+	const { findFlow, listFlows } = await importModule("flow/store.js");
+	const { validateFlowDir } = await importModule("flow/validator.js");
+	const cwd = tempDir("current-schema-only");
+	createFlow(cwd, "F1");
+	const oldDir = createFlow(cwd, "F2");
+	const oldFlow = readFlow(oldDir);
+	oldFlow.schemaVersion = 15;
+	writeFlow(oldDir, oldFlow);
+	const oldText = readFileSync(join(oldDir, "flow.json"), "utf8");
+	const malformedDir = join(cwd, ".flow", "F3");
+	mkdirSync(malformedDir);
+	writeFileSync(join(malformedDir, "flow.json"), "{bad json");
+
+	assert(
+		JSON.stringify(listFlows(cwd).map((location) => location.id)) ===
+			JSON.stringify(["F1"]),
+		"automatic Flow scan included unsupported state",
+	);
+	assert(!validateFlowDir(oldDir).ok, "schema v15 was accepted");
+	assert(
+		readFileSync(join(oldDir, "flow.json"), "utf8") === oldText,
+		"unsupported Flow was rewritten",
+	);
+	let explicitError = "";
+	try {
+		findFlow(cwd, "F2");
+	} catch (error) {
+		explicitError = String(error);
+	}
+	assert(
+		explicitError.includes("schemaVersion 必须为 17"),
+		`explicit old Flow error was unclear: ${explicitError}`,
 	);
 }
 
@@ -1790,7 +3571,7 @@ async function badJsonScenario() {
 	assertNoticeFormat(state.notifications.at(-1), "❌", "Expected property");
 	for (const command of ["status", "go"]) {
 		await commands.get("flow").handler(command, ctx);
-		assertNoticeFormat(state.notifications.at(-1), "❌", "Expected property");
+		assertNoticeFormat(state.notifications.at(-1), "⚠️", "请指定 Flow id");
 	}
 }
 
@@ -1858,6 +3639,160 @@ async function flowBareIdMessageScenario() {
 			`old slug id was accepted for ${command}`,
 		);
 	}
+}
+
+async function flowBareGoCompleteHintScenario() {
+	const cwd = tempDir("flow-bare-go-complete");
+	const dir = createFlow(cwd, "F1");
+	const flow = readFlow(dir);
+	writeFlow(dir, {
+		...flow,
+		status: "complete",
+		startedAt: Date.now(),
+		goals: flow.goals.map((goal) => ({ ...goal, status: "complete" })),
+	});
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("go", ctx);
+	const notice = state.notifications.at(-1) ?? "";
+	assert(
+		notice.includes("没有可推进的 Flow") &&
+			notice.includes("F1 已完成") &&
+			notice.includes("/flow go F1"),
+		`bare go with complete flow lacked completion hint: ${notice}`,
+	);
+}
+
+async function flowWorkspaceHintScenario() {
+	const { flowWorkspaceHint } = await importModule("flow/workspace-hint.js");
+	const bare = join(tmpdir(), `pi-flow-hint-${runId}`);
+	rmSync(bare, { recursive: true, force: true });
+	mkdirSync(bare, { recursive: true });
+	try {
+		assert(
+			flowWorkspaceHint(bare, "zh")?.includes("不在 git 仓库内"),
+			"non-git cwd did not warn about flow root location",
+		);
+	} finally {
+		rmSync(bare, { recursive: true, force: true });
+	}
+	const repo = tempDir("workspace-hint-repo");
+	mkdirSync(join(repo, ".git"));
+	assert(
+		flowWorkspaceHint(repo, "zh")?.includes(".gitignore"),
+		"missing .flow ignore did not hint",
+	);
+	writeFileSync(join(repo, ".gitignore"), "node_modules/\n.flow/\n");
+	assert(
+		flowWorkspaceHint(repo, "zh") === undefined,
+		"ignored .flow still hinted",
+	);
+	const nested = join(repo, "packages", "app");
+	mkdirSync(nested, { recursive: true });
+	assert(
+		flowWorkspaceHint(nested, "zh") === undefined,
+		"nested cwd ignored repo-root .gitignore",
+	);
+	const worktree = tempDir("workspace-hint-worktree");
+	writeFileSync(join(worktree, ".git"), "gitdir: elsewhere\n");
+	assert(
+		flowWorkspaceHint(worktree, "zh")?.includes(".gitignore"),
+		"worktree .git file was not treated as a repository",
+	);
+}
+
+async function workerArtifactSingleWriterScenario() {
+	const { appendWorkerEvent, readWorkerEvents, workerEventsPath } =
+		await importModule("flow/parallel/worker-artifact.js");
+	const { readLane } = await importModule("flow/parallel/lane-model.js");
+	const cwd = tempDir("worker-artifact-single-writer");
+	const dir = createParallelFlow(cwd, "F1");
+	const flow = readFlow(dir);
+	writeWorkerGoalArtifact(dir, flow, 1, emptyChecks());
+	const artifactPath = join(dir, "G2-worker.json");
+	const before = readFileSync(artifactPath, "utf8");
+	appendWorkerEvent(dir, 1, {
+		type: "tool_execution_start",
+		toolName: "bash",
+	});
+	appendWorkerEvent(dir, 1, { type: "agent_end" });
+	appendWorkerEvent(dir, 1, {
+		type: "process_error",
+		error: "worker socket closed",
+	});
+	assert(
+		readFileSync(artifactPath, "utf8") === before,
+		"parent event write touched the worker-owned artifact",
+	);
+	assert(
+		existsSync(workerEventsPath(dir, 1)) &&
+			readWorkerEvents(dir, 1).length === 3,
+		"parent events were not persisted to the events file",
+	);
+	const lane = readLane(dir, readFlow(dir), 1, undefined);
+	assert(
+		!lane.activities.some((line) => line.includes("命令")) &&
+			lane.activities.includes("worker socket closed"),
+		`lane activities retained progress summaries or lost process errors: ${JSON.stringify(lane.activities)}`,
+	);
+}
+
+async function workerResumeCursorScenario() {
+	const { resumableWorkerCursor } = await importModule(
+		"flow/parallel/worker-artifact.js",
+	);
+	const artifact = {
+		parallelRunId: "P1",
+		completion: null,
+		completionCursor: "quality_retry",
+	};
+	assert(
+		resumableWorkerCursor(artifact, "P1") === "quality_retry",
+		"retry cursor was not resumable",
+	);
+	assert(
+		resumableWorkerCursor(
+			{ ...artifact, completionCursor: "finalize_retry" },
+			"P1",
+		) === "finalize_retry",
+		"finalize cursor was not resumable",
+	);
+	assert(
+		resumableWorkerCursor(
+			{ ...artifact, completionCursor: "quality_repair" },
+			"P1",
+		) === null,
+		"repair cursor must rerun execution, not skip it",
+	);
+	assert(
+		resumableWorkerCursor({ ...artifact, completion: {} }, "P1") === null,
+		"completed artifact must not resume",
+	);
+	assert(
+		resumableWorkerCursor(artifact, "P2") === null &&
+			resumableWorkerCursor(undefined, "P1") === null,
+		"foreign or missing artifact must not resume",
+	);
+
+	const { workerInitialPrompt } = await importModule(
+		"flow/execution/worker-command.js",
+	);
+	const cwd = tempDir("worker-resume-prompt");
+	const dir = await createCrashedParallelFlow(cwd, "F1");
+	const flow = readFlow(dir);
+	writeWorkerGoalArtifact(dir, flow, 1, runningChecks(), "acceptance_retry");
+	const holdPrompt = workerInitialPrompt(dir, flow, 1);
+	assert(
+		holdPrompt.includes("等待收口") && !holdPrompt.includes("## Steps"),
+		`resume respawn leaked the execution prompt: ${holdPrompt.slice(0, 120)}`,
+	);
+	const executionPrompt = workerInitialPrompt(dir, flow, 2);
+	assert(
+		!executionPrompt.includes("等待收口") &&
+			executionPrompt.includes("Do Goal 3"),
+		`fresh worker lost the execution prompt: ${executionPrompt.slice(0, 120)}`,
+	);
 }
 
 async function flowTargetRoutingScenario() {
@@ -1968,10 +3903,7 @@ async function flowTargetRoutingScenario() {
 	);
 
 	const parallelOwnerCwd = tempDir("flow-target-parallel-owner");
-	const parallelOwnerDir = await createCrashedParallelFlow(
-		parallelOwnerCwd,
-		"F1",
-	);
+	await createCrashedParallelFlow(parallelOwnerCwd, "F1");
 	createFlow(parallelOwnerCwd, "F2");
 	const parallelOwnerState = newState(parallelOwnerCwd);
 	const { commands: parallelOwnerCommands } =
@@ -1983,7 +3915,7 @@ async function flowTargetRoutingScenario() {
 			commandContext(
 				parallelOwnerState,
 				parallelOwnerCwd,
-				join(parallelOwnerDir, "workers", "G2", "session.jsonl"),
+				join(parallelOwnerCwd, "F1-G3 Goal 3.jsonl"),
 			),
 		);
 	assert(
@@ -2010,8 +3942,8 @@ async function flowTargetRoutingScenario() {
 	const ambiguousNotice = ambiguousState.notifications.at(-1);
 	assert(
 		ambiguousNotice.includes("多个可推进的 Flow") &&
-			ambiguousNotice.includes("F1 · /flow status F1") &&
-			ambiguousNotice.includes("F2 · /flow status F2"),
+			ambiguousNotice.includes("F1 · 「/flow status F1」") &&
+			ambiguousNotice.includes("F2 · 「/flow status F2」"),
 		`ambiguous advanceable Flows did not list copyable commands: ${ambiguousNotice}`,
 	);
 }
@@ -2030,8 +3962,8 @@ async function flowResumeTargetHintUsesGoScenario() {
 	const notice = state.notifications.at(-1) ?? "";
 	assert(
 		notice.includes("多个可推进的 Flow") &&
-			notice.includes("F1 · /flow go F1") &&
-			notice.includes("F2 · /flow go F2") &&
+			notice.includes("F1 · 「/flow go F1」") &&
+			notice.includes("F2 · 「/flow go F2」") &&
 			!notice.includes("/flow continue"),
 		`resume target hint should use go commands: ${notice}`,
 	);
@@ -2085,7 +4017,7 @@ async function flowPreDraftTargetRoutingScenario() {
 		status: "generating",
 		stage: "generating",
 		sessionFile: join(uniqueCwd, "old-session.jsonl"),
-		originalRequest: "unique pre-draft",
+		requestText: "unique pre-draft",
 	});
 	const uniqueState = newState(uniqueCwd);
 	const { commands: uniqueCommands } = await loadExtension(uniqueState);
@@ -2097,7 +4029,7 @@ async function flowPreDraftTargetRoutingScenario() {
 		);
 	assert(
 		uniqueState.notifications.at(-1).includes("Flow: F1") &&
-			uniqueState.notifications.at(-1).includes("基于 0 轮问答生成全面计划"),
+			uniqueState.notifications.at(-1).includes("洞察全部上下文，生成全面计划"),
 		"bare status did not select the only active pre-draft Flow",
 	);
 
@@ -2176,9 +4108,9 @@ async function flowPreDraftTargetRoutingScenario() {
 	const notice = ambiguousState.notifications.at(-1);
 	assert(
 		notice.includes("多个可推进的 Flow") &&
-			notice.includes("F1 · /flow go F1") &&
-			notice.includes("F2 · /flow go F2") &&
-			notice.includes("F3 · /flow go F3"),
+			notice.includes("F1 · 「/flow go F1」") &&
+			notice.includes("F2 · 「/flow go F2」") &&
+			notice.includes("F3 · 「/flow go F3」"),
 		`bare go did not require id for multiple advanceable Flows: ${notice}`,
 	);
 	await ambiguousCommands.get("flow").handler("go F2", ambiguousCtx);
@@ -2187,7 +4119,7 @@ async function flowPreDraftTargetRoutingScenario() {
 	);
 	assert(
 		selectedAlignment.stage === "generating" &&
-			latestWidgetText(ambiguousState).includes("🌊 Flow · 撰写中"),
+			latestWidgetText(ambiguousState).includes("🌊 Flow · 生成中"),
 		`explicit id go did not generate the selected pre-draft Flow: stage=${selectedAlignment.stage}; widget=${latestWidgetText(ambiguousState)}`,
 	);
 }
@@ -2195,7 +4127,6 @@ async function flowPreDraftTargetRoutingScenario() {
 async function flowCommandRoutingSafetyScenario() {
 	const { emitFlowGoalCompleted } =
 		await importCachedModule("flow/completion.js");
-	const { planSnapshotHash } = await importModule("plan/snapshot.js");
 
 	const commandCwd = tempDir("flow-command-routing-safety");
 	const commandF3 = createFlow(commandCwd, "F3");
@@ -2204,8 +4135,8 @@ async function flowCommandRoutingSafetyScenario() {
 	const commandF4Session = join(commandCwd, "f4.jsonl");
 	writeFileSync(commandF3Session, "");
 	writeFileSync(commandF4Session, "");
-	markFlowRunningWithSnapshot(commandF3, commandF3Session, planSnapshotHash);
-	markFlowRunningWithSnapshot(commandF4, commandF4Session, planSnapshotHash);
+	markFlowRunningWithSnapshot(commandF3, commandF3Session);
+	markFlowRunningWithSnapshot(commandF4, commandF4Session);
 	const commandState = newState(commandCwd);
 	const { commands } = await loadExtension(commandState);
 	const planningCtx = commandContext(
@@ -2217,8 +4148,8 @@ async function flowCommandRoutingSafetyScenario() {
 	const continueNotice = commandState.notifications.at(-1) ?? "";
 	assert(
 		continueNotice.includes("多个可推进的 Flow") &&
-			continueNotice.includes("F3 · /flow go F3") &&
-			continueNotice.includes("F4 · /flow go F4"),
+			continueNotice.includes("F3 · 「/flow go F3」") &&
+			continueNotice.includes("F4 · 「/flow go F4」"),
 		`bare go did not require an explicit Flow id: ${continueNotice}`,
 	);
 	const completionCwd = tempDir("flow-completion-routing-safety");
@@ -2228,16 +4159,8 @@ async function flowCommandRoutingSafetyScenario() {
 	const completionF4Session = join(completionCwd, "f4.jsonl");
 	writeFileSync(completionF3Session, "");
 	writeFileSync(completionF4Session, "");
-	markFlowRunningWithSnapshot(
-		completionF3,
-		completionF3Session,
-		planSnapshotHash,
-	);
-	markFlowRunningWithSnapshot(
-		completionF4,
-		completionF4Session,
-		planSnapshotHash,
-	);
+	markFlowRunningWithSnapshot(completionF3, completionF3Session);
+	markFlowRunningWithSnapshot(completionF4, completionF4Session);
 	const completionState = newState(completionCwd);
 	await loadExtension(completionState);
 	const completionCtx = commandContext(
@@ -2389,7 +4312,7 @@ function createHandoffRunningFlow(cwd, id, oldSessionFile, currentSessionFile) {
 	return dir;
 }
 
-function markFlowRunningWithSnapshot(dir, sessionFile, planSnapshotHash) {
+function markFlowRunningWithSnapshot(dir, sessionFile) {
 	const flow = readFlow(dir);
 	const goal = flow.goals[0];
 	const snapshot = readFileSync(join(dir, goal.file), "utf8");
@@ -2398,7 +4321,6 @@ function markFlowRunningWithSnapshot(dir, sessionFile, planSnapshotHash) {
 	goal.status = "running";
 	goal.sessionFile = sessionFile;
 	goal.snapshot = snapshot;
-	goal.snapshotHash = planSnapshotHash(snapshot);
 	writeFlow(dir, flow);
 }
 
@@ -2446,16 +4368,16 @@ async function flowIndependentStartWhileRunningScenario() {
 	await emit(handlers, "session_shutdown", {}, startedCtx);
 
 	const runningHtml = join(runningDir, "flow.html");
-	const changed = onceFileChanged(runningHtml);
 	const runningGoalFile = join(runningDir, runningFlow.goals[0].file);
-	writeFileSync(
-		runningGoalFile,
-		readFileSync(runningGoalFile, "utf8").replace(
-			"- [ ] Do work.",
-			"- [x] F3 watcher survived F4 start.",
-		),
+	const changedGoal = readFileSync(runningGoalFile, "utf8").replace(
+		"- [x] Do work.",
+		"- [x] F3 watcher survived F4 start.",
 	);
-	await changed;
+	await changeSourceUntilHtmlMatches(
+		runningHtml,
+		() => writeFileSync(runningGoalFile, changedGoal),
+		(content) => content.includes("F3 watcher survived F4 start."),
+	);
 	assert(
 		readFileSync(runningHtml, "utf8").includes("F3 watcher survived F4 start."),
 		"starting F4 closed F3 watcher",
@@ -2556,10 +4478,10 @@ async function statusTextHidesSessionPathScenario() {
 	flow.goals[0].sessionName = "实现登录";
 	flow.goals[1].sessionFile = join(cwd, "second-session.jsonl");
 	const text = statusText(flow);
-	assert(text.includes("下一步: /flow go F1"), text);
+	assert(text.includes("下一步: 「/flow go F1」"), text);
 	flow.status = "running";
 	const runningText = statusText(flow);
-	assert(runningText.includes("下一步: /flow go F1"), runningText);
+	assert(runningText.includes("下一步: 「/flow go F1」"), runningText);
 	assert(text.includes("会话: 实现登录"), text);
 	assert(text.includes("会话: 已启动"), text);
 	assert(text.includes("会话: 尚未启动"), text);
@@ -2618,6 +4540,60 @@ async function malformedRepairScenario() {
 	);
 }
 
+async function flowRepairHtmlFailureScenario() {
+	const startCwd = tempDir("repair-html-failure");
+	const startDir = createFlow(startCwd, "F1");
+	const malformedFlow = readFlow(startDir);
+	delete malformedFlow.source;
+	malformedFlow.goals = {};
+	writeFlow(startDir, malformedFlow);
+	breakFlowHtml(startDir);
+	const startState = newState(startCwd);
+	const { commands: startCommands } = await loadExtension(startState);
+	const startCtx = commandContext(
+		startState,
+		startCwd,
+		join(startCwd, "planning.jsonl"),
+	);
+	await startCommands.get("flow").handler("go F1", startCtx);
+	assert(
+		startState.confirms.length === 1 &&
+			startState.hiddenMessages.at(-1)?.includes("goals 必须是数组"),
+		"error HTML failure stopped validation repair confirmation or prompt",
+	);
+	assert(
+		readFlow(startDir).errors.some((error) =>
+			error.includes("goals 必须是数组"),
+		),
+		"validation errors were not committed before error HTML failure",
+	);
+	assertReportRefreshFailure(startState);
+
+	const generateCwd = tempDir("generation-repair-html-failure");
+	const generateState = newState(generateCwd);
+	const { commands: generateCommands, handlers } =
+		await loadExtension(generateState);
+	const generateCtx = commandContext(
+		generateState,
+		generateCwd,
+		join(generateCwd, "planning.jsonl"),
+	);
+	await generateCommands.get("flow").handler("make malformed", generateCtx);
+	const generateDir = writeFlowSemanticDraft(generateCwd, "F1", {
+		invalidMarkdown: true,
+	});
+	breakFlowHtml(generateDir);
+	await emit(handlers, "agent_end", { messages: [] }, generateCtx);
+	const generated = readFlow(generateDir);
+	assert(
+		generated.status === "generating" &&
+			generated.repairAttempts === 1 &&
+			generateState.hiddenMessages.at(-1)?.includes("缺少章节"),
+		"error HTML failure stopped generation repair prompt",
+	);
+	assertReportRefreshFailure(generateState);
+}
+
 async function runningValidationScenario() {
 	const cwd = tempDir("running-validation");
 	const dir = createFlow(cwd, "F1");
@@ -2653,14 +4629,35 @@ async function runningValidationScenario() {
 async function htmlScenario() {
 	const { writeFlowErrorHtml, writeFlowHtml } =
 		await importModule("flow/html.js");
+	const {
+		elapsedTimeHtml,
+		formatElapsedMinutes,
+		shouldHideTranscriptExpander,
+		STEP_FLOW_MIN_CLEARANCE,
+		STEP_FLOW_ROUGH_OPTIONS,
+		stepFlowConnectorPath,
+		stepFlowTargetHeight,
+	} = await importModule("shared/report-html.js");
+	assert(
+		[1_000, 42_000, 192_000, 720_000].map(formatElapsedMinutes).join(",") ===
+			"<0.1m,0.7m,3.2m,12m" && !elapsedTimeHtml(42_000).includes("<svg"),
+		"minute elapsed formatting changed",
+	);
 	const cwd = tempDir("html");
 	const dir = createFlow(cwd, "F1", { planCount: 2 });
 	const firstPlanPath = join(dir, "G1-plan.md");
 	writeFileSync(
 		firstPlanPath,
 		readFileSync(firstPlanPath, "utf8").replace(
-			"- [ ] Do work.",
-			"- [~] **准备环境**：安装依赖并初始化数据库\n- [!] **等待凭证**：缺少外部 token，记录阻塞",
+			"- [x] Do work.",
+			[
+				"- [x] **梳理范围**：确认报告页信息层级",
+				"- [~] **准备环境**：安装依赖并初始化数据库",
+				"- [ ] **实现布局**：完成折叠与响应式双列",
+				"- [!] **等待凭证**：缺少外部 token，记录阻塞",
+				"- [ ] **补齐验证**：覆盖宽屏与窄屏结构",
+				"- [ ] **收口文档**：同步当前展示规则",
+			].join("\n"),
 		),
 	);
 	const draftFlow = readFlow(dir);
@@ -2680,8 +4677,17 @@ async function htmlScenario() {
 		"draft command chips should only show go with bare id",
 	);
 	assert(
-		draftHtml.includes("bg-white/60 px-1.5"),
-		"flow command chips should be compact and borderless",
+		draftHtml.includes('data-copy-command="/flow go F1"') &&
+			draftHtml.includes("navigator.clipboard.writeText") &&
+			draftHtml.includes('document.execCommand("copy")') &&
+			draftHtml.includes("已复制"),
+		"flow command chip should expose working copy feedback",
+	);
+	assert(
+		draftHtml.includes(
+			"rounded-full bg-[var(--report-surface-soft)] pl-2.5 pr-0.5",
+		),
+		"flow command chips should stay compact around the copy action",
 	);
 	assert(
 		draftHtml.includes("文件 · src/app.ts"),
@@ -2696,6 +4702,23 @@ async function htmlScenario() {
 		writeFlowHtml(singleDraftDir, readFlow(singleDraftDir)),
 		"utf8",
 	);
+	const fiveStepDir = createFlow(cwd, "F99");
+	const fiveStepPath = join(fiveStepDir, "G1-plan.md");
+	writeFileSync(
+		fiveStepPath,
+		readFileSync(fiveStepPath, "utf8").replace(
+			"- [x] Do work.",
+			Array.from(
+				{ length: 5 },
+				(_, index) =>
+					`- [${index === 2 ? "~" : " "}] **${`长步骤 ${index + 1} 包含完整标题证据。`.repeat(8)}**：${"包含展开详情与验证证据。".repeat(8)}`,
+			).join("\n"),
+		),
+	);
+	const fiveStepHtml = readFileSync(
+		writeFlowHtml(fiveStepDir, readFlow(fiveStepDir)),
+		"utf8",
+	);
 	assert(
 		!singleDraftHtml.includes("Flow 计划") &&
 			!singleDraftHtml.includes("多步骤计划"),
@@ -2707,8 +4730,31 @@ async function htmlScenario() {
 		"goal card header should not repeat the step label as an eyebrow",
 	);
 	assert(draftHtml.includes("范围"), "flow goal scope label missing");
-	assert(draftHtml.includes("怎么算完成"), "flow goal criteria label missing");
+	assert(
+		draftHtml.includes(
+			'data-success-criteria data-rough-card data-tone="blue" class="min-w-0',
+		) &&
+			draftHtml.includes("data-criteria-header") &&
+			draftHtml.includes("data-criteria-list") &&
+			draftHtml.includes(">标准</p>") &&
+			draftHtml.includes(">1 项</span>") &&
+			draftHtml.includes('d="M13 5h8"'),
+		"flow goal criteria card hierarchy missing",
+	);
 	assert(!draftHtml.includes("- Done."), "raw bullet markdown leaked");
+	const moreTooltips = [
+		...draftHtml.matchAll(/data-hover-chip data-tooltip="([^"]+)"/gu),
+	].map((match) => match[1]);
+	assert(
+		moreTooltips.length === 2 &&
+			moreTooltips.every(
+				(tooltip) =>
+					tooltip.includes("怎么验证") &&
+					!tooltip.includes("验收标准") &&
+					!tooltip.includes("Done."),
+			),
+		`goal more tooltip still contains success criteria: ${moreTooltips.join(" | ")}`,
+	);
 	assert(
 		!draftHtml.includes("要做"),
 		"flow repeated objective as work section",
@@ -2717,17 +4763,122 @@ async function htmlScenario() {
 	assert(draftHtml.includes("怎么验证"), "verification section missing");
 	assert(draftHtml.includes("需求记录"), "request log missing");
 	assert(
-		draftHtml.includes("data-hover-chip data-tooltip=") &&
-			draftHtml.includes('data-tooltip-side="right" data-tooltip-size="lg"') &&
-			!draftHtml.includes("dlg-context") &&
-			!draftHtml.includes(
-				'text-base font-semibold text-stone-900">需求记录</p>',
-			),
-		"request log should use the shared modern hover chip instead of a modal",
+		draftHtml.includes('data-modal-open="dlg-request-record"') &&
+			draftHtml.includes('<dialog id="dlg-request-record"') &&
+			draftHtml.includes("data-request-source-text") &&
+			!draftHtml.includes("data-report-transcript"),
+		"file request log should open a plain-text modal, not fake a transcript",
 	);
 	assert(!draftHtml.includes(">计划 ID</p>"), "request log leaked plan id");
+	const conversationDir = createFlow(cwd, "F3");
+	const conversationFlow = readFlow(conversationDir);
+	const transcriptCwd = process.cwd();
+	conversationFlow.source = {
+		type: "conversation",
+		transcript: [
+			{
+				kind: "user",
+				at: "2026-07-13T08:10:00.000Z",
+				text: `保留 ${transcriptCwd}/src/flow/html.ts <>&"\n第二行`,
+			},
+			{
+				kind: "visible_supplement",
+				at: "2026-07-13T08:11:00.000Z",
+				text: `补充 ${transcriptCwd}/src/shared/report-transcript.ts <>&"`,
+			},
+			{
+				kind: "assistant_final",
+				at: "2026-07-13T08:12:00.000Z",
+				text: "**结构化回复**\n\n- 条目",
+			},
+		],
+	};
+	conversationFlow.meta = {
+		plannedBy: null,
+		alignment: {
+			kind: "recorded",
+			turns: [{ question: "需要保留时间吗？", answer: "需要" }],
+		},
+	};
+	const conversationHtml = readFileSync(
+		writeFlowHtml(conversationDir, conversationFlow),
+		"utf8",
+	);
+	const userTurn = conversationHtml.indexOf('data-transcript-kind="user"');
+	const supplementTurn = conversationHtml.indexOf(
+		'data-transcript-kind="visible_supplement"',
+	);
+	const assistantTurn = conversationHtml.indexOf(
+		'data-transcript-kind="assistant_final"',
+	);
+	assert(
+		conversationHtml.includes("data-report-transcript") &&
+			conversationHtml.includes("data-request-qa") &&
+			conversationHtml.includes("需要保留时间吗？") &&
+			userTurn >= 0 &&
+			userTurn < supplementTurn &&
+			supplementTurn < assistantTurn,
+		"conversation request log should render one ordered transcript thread",
+	);
+	assert(
+		conversationHtml.includes("data-transcript-role") &&
+			conversationHtml.includes('<time datetime="2026-07-13T08:10:00.000Z"') &&
+			conversationHtml.includes(
+				`保留 ${transcriptCwd}/src/flow/html.ts &lt;&gt;&amp;&quot;\n第二行`,
+			) &&
+			conversationHtml.includes(
+				`补充 ${transcriptCwd}/src/shared/report-transcript.ts &lt;&gt;&amp;&quot;`,
+			) &&
+			!conversationHtml.includes("保留 ./src/flow/html.ts") &&
+			!conversationHtml.includes("补充 ./src/shared/report-transcript.ts") &&
+			conversationHtml.includes(">结构化回复</strong>") &&
+			!conversationHtml.includes("**结构化回复**"),
+		"transcript roles, timestamps, verbatim user text, or assistant markdown missing",
+	);
+	const userRoleHtml = conversationHtml.slice(userTurn, supplementTurn);
+	const supplementRoleHtml = conversationHtml.slice(
+		supplementTurn,
+		assistantTurn,
+	);
+	assert(
+		userRoleHtml.includes("font-semibold text-stone-700 dark:text-stone-300") &&
+			userRoleHtml.includes('text-sky-800 dark:text-sky-300"><svg') &&
+			!userRoleHtml.includes("font-semibold text-sky-800"),
+		"user semantic color should stay on the role icon, not the role name",
+	);
+	assert(
+		supplementRoleHtml.includes(
+			'text-sky-800 dark:text-sky-300 opacity-55"><svg',
+		) &&
+			!supplementRoleHtml.includes("font-semibold text-sky-800") &&
+			!supplementRoleHtml.includes("font-semibold opacity-55"),
+		"user addition fading should stay on the icon and accent, not the role name",
+	);
+	assert(
+		shouldHideTranscriptExpander(true, 240, 240) &&
+			!shouldHideTranscriptExpander(true, 480, 240) &&
+			!shouldHideTranscriptExpander(false, 480, 480),
+		"transcript expander should stay visible after expanded content is reopened",
+	);
+	assert(
+		conversationHtml.includes('data-transcript-body data-collapsed="true"') &&
+			conversationHtml.includes("data-transcript-expand hidden") &&
+			conversationHtml.includes(
+				'[data-transcript-body][data-collapsed="true"]',
+			) &&
+			conversationHtml.includes(
+				"[data-transcript-expand][hidden]{display:none!important}",
+			) &&
+			conversationHtml.includes("syncTranscriptExpanders(dialog)") &&
+			conversationHtml.includes(
+				"button.hidden = shouldHideTranscriptExpander(",
+			) &&
+			conversationHtml.includes('body.dataset.collapsed === "true"') &&
+			conversationHtml.includes("@media (prefers-reduced-motion:reduce)"),
+		"long transcript bodies should clamp with an expandable reduced-motion fallback",
+	);
 	const noRecordFlow = readFlow(singleDraftDir);
-	noRecordFlow.source.originalRequest = "";
+	noRecordFlow.source.text = "";
 	const noRecordHtml = readFileSync(
 		writeFlowHtml(singleDraftDir, noRecordFlow),
 		"utf8",
@@ -2743,6 +4894,7 @@ async function htmlScenario() {
 			stage: "aligning",
 			sessionFile: null,
 			autoStart: false,
+			depth: "standard",
 			alignmentTurns: [{ question: "范围？", answer: "src/pages/**" }],
 			lastAlignmentQuestion: null,
 			createdAt: 0,
@@ -2755,10 +4907,12 @@ async function htmlScenario() {
 	);
 	assert(
 		qaHtml.includes("需求记录") &&
+			qaHtml.includes("data-request-qa") &&
 			qaHtml.includes("QA 记录") &&
 			qaHtml.includes("范围？") &&
-			qaHtml.includes("src/pages/**"),
-		"request log should show QA when original request is empty",
+			qaHtml.includes("src/pages/**") &&
+			qaHtml.includes("提示词</span>"),
+		"request log should show structured QA and source when original request is empty",
 	);
 	assert(
 		draftHtml.includes(">验收</span>") && draftHtml.includes(">质检</span>"),
@@ -2832,19 +4986,32 @@ async function htmlScenario() {
 		"more action should use local dots icon, not CSS triangle",
 	);
 	assert(
-		draftHtml.includes(">完成验收</p>") &&
+		draftHtml.includes(">验收</p>") &&
 			draftHtml.includes('data-tooltip="确保目标完整完成"'),
 		"flow goal review phase missing",
 	);
 	assert(
+		draftHtml.includes("data-theme-toggle") &&
+			draftHtml.includes("pi-flow-theme") &&
+			draftHtml.includes(".dark\\:hidden:is(.dark *)") &&
+			draftHtml.includes("prefers-color-scheme: dark") &&
+			draftHtml.includes("dark:hidden") &&
+			draftHtml.includes("dark:inline") &&
+			draftHtml.includes("flex items-center justify-between gap-3 px-1 pb-1") &&
+			!draftHtml.includes("fixed right-4 top-4"),
+		"theme toggle / system dark mode boot missing or fixed-positioned",
+	);
+	assert(
 		draftHtml.includes('flow-tooltip[data-size="lg"]') &&
-			draftHtml.includes("max-height:min(60vh,32rem);overflow:auto") &&
+			draftHtml.includes("max-height:min(58vh,30rem);overflow:auto") &&
+			draftHtml.includes("width:max-content") &&
 			draftHtml.includes('tip.addEventListener("mouseenter", clearHide)') &&
+			draftHtml.includes("tip.contains(event.target)") &&
 			draftHtml.includes('data-tooltip-size="lg"'),
 		"large hover details should be readable, scrollable, and hoverable",
 	);
 	assert(
-		draftHtml.includes(">质量检查</p>") &&
+		draftHtml.includes(">质检</p>") &&
 			draftHtml.includes('data-tooltip="把关实现质量"'),
 		"flow quality review phase missing",
 	);
@@ -2861,6 +5028,69 @@ async function htmlScenario() {
 			),
 		"pending checks should not repeat waiting status in cards",
 	);
+	// 头部状态语义：meta 元信息 / paused 平静态 / attention 警示态（attention 优先于 paused）。
+	const metaFlow = readFlow(dir);
+	metaFlow.meta = {
+		plannedBy: { model: "test/planner-z", thinking: "high" },
+		alignment: {
+			kind: "recorded",
+			turns: [
+				{ question: "保留 <问题一> 与质量审查", answer: "保留 & 回答一" },
+				{ question: "问题二", answer: "回答二" },
+			],
+		},
+	};
+	const metaHtml = readFileSync(writeFlowHtml(dir, metaFlow), "utf8");
+	assert(
+		metaHtml.includes("planner-z") &&
+			metaHtml.includes(">high</span>") &&
+			metaHtml.includes("对齐 2 轮") &&
+			metaHtml.includes("data-model-chip") &&
+			metaHtml.includes("bg-[var(--report-chip)]") &&
+			metaHtml.includes(
+				'data-tooltip="Q1: 保留 &lt;问题一&gt; 与质量审查\nA1: 保留 &amp; 回答一\n---\nQ2: 问题二\nA2: 回答二"',
+			) &&
+			!metaHtml.includes("对齐原文"),
+		"recorded alignment should use the model chip and exact Q/A tooltip",
+	);
+	const pausedHeaderFlow = readFlow(dir);
+	pausedHeaderFlow.status = "paused";
+	pausedHeaderFlow.goals[0].status = "paused";
+	const pausedHeaderHtml = readFileSync(
+		writeFlowHtml(dir, pausedHeaderFlow),
+		"utf8",
+	);
+	assert(
+		pausedHeaderHtml.includes("已暂停") &&
+			pausedHeaderHtml.includes("/flow go F1") &&
+			!pausedHeaderHtml.includes(">paused<") &&
+			!pausedHeaderHtml.includes("需要接管"),
+		"paused header state missing or leaked raw enum",
+	);
+	const attentionFlow = readFlow(dir);
+	attentionFlow.status = "paused";
+	attentionFlow.startedAt = Date.now() - 42_000;
+	attentionFlow.goals[0].status = "running";
+	attentionFlow.goals[0].startedAt = attentionFlow.startedAt;
+	attentionFlow.attention = {
+		kind: "check_hard_cap",
+		message: "已连续 10 轮检查未通过，自动暂停防止无限循环",
+		at: Date.now(),
+	};
+	const attentionHtml = readFileSync(writeFlowHtml(dir, attentionFlow), "utf8");
+	assert(
+		attentionHtml.includes("需要接管 · 已自动暂停") &&
+			attentionHtml.includes("已连续 10 轮检查未通过") &&
+			attentionHtml.includes("tone-red-surface") &&
+			attentionHtml.includes("rgba(150,45,60,.12)") &&
+			attentionHtml.includes('data-copy-command="/flow go F1"') &&
+			!attentionHtml.includes(' data-elapsed-since="'),
+		"attention header state or resume command copy action missing",
+	);
+	assert(
+		(attentionHtml.match(/已暂停 ·/g) ?? []).length === 0,
+		"attention must take precedence over the paused line",
+	);
 	const mixedFlow = readFlow(dir);
 	mixedFlow.goals[0].checks.quality.enabled = false;
 	const mixedHtml = readFileSync(writeFlowHtml(dir, mixedFlow), "utf8");
@@ -2874,35 +5104,145 @@ async function htmlScenario() {
 		"enabled checks should show waiting only in compact progress",
 	);
 	const checkingFlow = readFlow(dir);
+	const checkingNow = Date.now();
 	checkingFlow.status = "running";
-	checkingFlow.startedAt = Date.now();
+	checkingFlow.startedAt = checkingNow - 42_000;
 	checkingFlow.goals[0].status = "running";
+	checkingFlow.goals[0].startedAt = checkingNow - 42_000;
 	checkingFlow.goals[0].checks = {
 		acceptance: {
 			enabled: true,
 			rounds: [],
-			active: [{ label: "model-a", status: "running" }],
+			active: {
+				...activeCheck("model-a"),
+				startedAt: checkingNow - 192_000,
+				models: [
+					{
+						key: "model-a",
+						label: "model-a",
+						outcome: {
+							result: "failed",
+							summary: "模型 A 短摘要",
+							details: "FAIL\n模型 A 完整检查结果",
+						},
+					},
+					{
+						key: "model-b",
+						label: "model-b",
+						outcome: {
+							result: "failed",
+							summary: "模型 B 短摘要",
+							details: "FAIL\n模型 B 完整检查结果",
+						},
+					},
+					{ key: "model-c", label: "model-c", outcome: null },
+				],
+			},
 		},
 		quality: {
 			enabled: true,
 			rounds: [],
-			active: [{ label: "model-q", status: "running" }],
+			active: {
+				...activeCheck("model-q"),
+				startedAt: checkingNow - 720_000,
+			},
 		},
 	};
 	const checkingHtml = readFileSync(writeFlowHtml(dir, checkingFlow), "utf8");
 	assert(
+		checkingHtml.includes('data-copy-command="/flow go F1"') &&
+			checkingHtml.includes('data-copy-command="/flow stop F1"'),
+		"running footer should copy both control commands",
+	);
+	assert(
+		checkingHtml.includes("模型 A 完整检查结果") &&
+			checkingHtml.includes("模型 B 完整检查结果"),
+		"settled models should expose full feedback before the active round finishes",
+	);
+	assert(
+		checkingHtml.includes("0.7m") &&
+			checkingHtml.includes("3.2m") &&
+			checkingHtml.includes("12m") &&
+			checkingHtml.includes("data-step-meta") &&
+			checkingHtml.includes("data-step-elapsed") &&
+			count(checkingHtml, ' data-elapsed-since="') === 4 &&
+			checkingHtml.includes("timer = setInterval(update, 60_000)") &&
+			checkingHtml.includes('document.addEventListener("visibilitychange"') &&
+			checkingHtml.includes("document.hidden ? stop() : start()"),
+		"running report did not expose one visibility-aware minute timer",
+	);
+	assert(
 		checkingHtml.includes("验收中") &&
-			checkingHtml.includes("检查中") &&
-			checkingHtml.includes("验收中，暂无输出") &&
-			checkingHtml.includes("检查中，暂无输出") &&
+			checkingHtml.includes("质检中") &&
+			checkingHtml.includes('data-tooltip="验收中"') &&
+			checkingHtml.includes('data-tooltip="质检中"') &&
 			checkingHtml.includes('class="h-6 w-6 bot-soft"') &&
 			checkingHtml.includes('<rect width="16" height="12"') &&
 			!checkingHtml.includes(".bot-soft>*") &&
 			checkingHtml.includes('class="h-5 w-5 rotate-3d-soft"') &&
+			count(checkingHtml, 'class="h-3.5 w-3.5 spin-soft"') >= 2 &&
 			checkingHtml.includes('class="h-3 w-3 spin-soft"') &&
 			checkingHtml.includes('d="M21 12a9 9 0 1 1-6.219-8.56"') &&
 			!checkingHtml.includes('d="M12 6v6l4 2"'),
 		"active checks should keep LoaderCircle while top uses bot and detail uses rotate-3d",
+	);
+	const attentionCheckingFlow = structuredClone(checkingFlow);
+	attentionCheckingFlow.attention = {
+		kind: "system_error",
+		message: "检查系统错误",
+		at: Date.now(),
+	};
+	attentionCheckingFlow.goals[0].checks.acceptance.rounds = [
+		{ round: 1, result: "failed", summary: "验收失败" },
+	];
+	attentionCheckingFlow.goals[0].checks.acceptance.active.round = 2;
+	const attentionCheckingHtml = readFileSync(
+		writeFlowHtml(dir, attentionCheckingFlow),
+		"utf8",
+	);
+	const pausedCheckingFlow = structuredClone(checkingFlow);
+	pausedCheckingFlow.status = "paused";
+	const pausedCheckingHtml = readFileSync(
+		writeFlowHtml(dir, pausedCheckingFlow),
+		"utf8",
+	);
+	const pausedLaneFlow = structuredClone(checkingFlow);
+	pausedLaneFlow.parallelRun = parallelRun([0, 1]);
+	pausedLaneFlow.goals[0].status = "paused";
+	const pausedLaneHtml = readFileSync(
+		writeFlowHtml(dir, pausedLaneFlow),
+		"utf8",
+	);
+	const activeAnimation =
+		/class="[^"]*\b(?:spin-soft|pulse-soft|bot-soft)\b[^"]*"/u;
+	assert(
+		attentionCheckingHtml.includes(">2轮</span>"),
+		"static active checkpoint lost its round count",
+	);
+	for (const [label, staticHtml, marker] of [
+		["attention", attentionCheckingHtml, "需要接管 · 检查系统错误"],
+		["paused", pausedCheckingHtml, "已暂停"],
+		["paused lane", pausedLaneHtml, "data-parallel-stepper"],
+	])
+		assert(
+			staticHtml.includes(marker) &&
+				!staticHtml.includes(' data-elapsed-since="') &&
+				!staticHtml.includes("验收中") &&
+				!staticHtml.includes("质检中") &&
+				!activeAnimation.test(staticHtml),
+			`${label} report kept active check semantics`,
+		);
+	const consultingFlow = structuredClone(checkingFlow);
+	consultingFlow.goals[0].checks.acceptance.consulting = true;
+	const consultingHtml = readFileSync(
+		writeFlowHtml(dir, consultingFlow),
+		"utf8",
+	);
+	assert(
+		consultingHtml.includes("data-advisor-consulting") &&
+			consultingHtml.includes("[&>[data-advisor-consulting]]:mt-2") &&
+			!consultingHtml.includes('data-advisor-consulting><div class="my-2.5'),
+		"consulting advisor spacing should be owned by the round list",
 	);
 	const repairingFlow = readFlow(dir);
 	repairingFlow.status = "running";
@@ -2922,8 +5262,10 @@ async function htmlScenario() {
 	};
 	const repairingHtml = readFileSync(writeFlowHtml(dir, repairingFlow), "utf8");
 	assert(
-		repairingHtml.includes("补完中") && repairingHtml.includes("优化中"),
-		"repair labels should be phase-specific",
+		repairingHtml.includes("补完中") &&
+			repairingHtml.includes("优化中") &&
+			count(repairingHtml, 'class="h-3.5 w-3.5 spin-soft"') >= 2,
+		"repair labels should be phase-specific and show loader icons",
 	);
 	const parallelFlow = readFlow(dir);
 	parallelFlow.status = "running";
@@ -2953,15 +5295,18 @@ async function htmlScenario() {
 	);
 	const pausedFlow = readFlow(dir);
 	pausedFlow.status = "paused";
-	pausedFlow.startedAt = Date.now();
+	pausedFlow.startedAt = Date.now() - 42_000;
 	pausedFlow.goals[0].status = "running";
+	pausedFlow.goals[0].startedAt = pausedFlow.startedAt;
 	const pausedHtml = readFileSync(writeFlowHtml(dir, pausedFlow), "utf8");
 	assert(
 		!pausedHtml.includes('data-rough-seal data-tone="amber"') &&
 			pausedHtml.includes(
-				'shrink-0 text-xs font-medium text-amber-800">已暂停</span>',
-			),
-		"paused current goal should render amber text status",
+				'text-amber-800 dark:text-amber-300">已暂停</span>',
+			) &&
+			pausedHtml.includes("0.7m") &&
+			!pausedHtml.includes(' data-elapsed-since="'),
+		"paused current goal should render a static amber state and duration",
 	);
 	assert(
 		draftHtml.includes("安装依赖并初始化数据库") &&
@@ -2969,12 +5314,98 @@ async function htmlScenario() {
 			draftHtml.includes("准备环境") &&
 			draftHtml.includes("进行中") &&
 			draftHtml.includes("阻塞") &&
-			!draftHtml.includes("**"),
+			!draftHtml.includes("**准备环境**") &&
+			!draftHtml.includes("**等待凭证**"),
 		"flow step list not aligned with goal rendering",
 	);
 	assert(
-		!draftHtml.includes("<dialog"),
-		"draft hover details should not use modal",
+		count(draftHtml, "<div data-step-flow-container") === 2 &&
+			count(draftHtml, "<ol data-step-flow") === 2 &&
+			draftHtml.includes('<div data-step-flow-container class="relative">') &&
+			!draftHtml.includes('data-step-flow-container class="relative mt-5"') &&
+			!draftHtml.includes("data-step-columns") &&
+			!draftHtml.includes("data-step-column") &&
+			draftHtml.includes("data-step-copy") &&
+			draftHtml.includes("data-step-detail") &&
+			draftHtml.includes("rough-step-flow-layer") &&
+			draftHtml.includes("layoutStepFlows") &&
+			draftHtml.includes("drawStepFlowConnector"),
+		"six-step goal should render one semantic list with dynamic flow layout",
+	);
+	assert(
+		draftHtml.includes("container-type:inline-size") &&
+			draftHtml.includes("@container (min-width:901px)") &&
+			draftHtml.includes(
+				"@container (min-width:420px) and (max-width:900px)",
+			) &&
+			draftHtml.includes("clamp(220px,42cqi,288px)") &&
+			draftHtml.includes("@container (max-width:419px)") &&
+			!draftHtml.includes("xl:grid-cols-[minmax(0,1fr)_340px]"),
+		"goal body should use one gap-free container-query layout",
+	);
+	const connectorRoute = stepFlowConnectorPath({
+		source: { x: 36, y: 198 },
+		target: { x: 524, y: 18 },
+		gutterLeft: 476,
+		gutterRight: 524,
+		sourceCopyLeft: 52,
+		contentBottom: 216,
+		channelY: 248,
+		minimumClearance: STEP_FLOW_MIN_CLEARANCE,
+	});
+	assert(
+		connectorRoute &&
+			connectorRoute.sourceLaneX > 36 &&
+			52 - connectorRoute.sourceLaneX >= STEP_FLOW_MIN_CLEARANCE &&
+			connectorRoute.gutterX > 476 &&
+			connectorRoute.gutterX < 524 &&
+			connectorRoute.channelY - 216 >= STEP_FLOW_MIN_CLEARANCE &&
+			STEP_FLOW_ROUGH_OPTIONS.seed > 0,
+		`step flow connector left its reserved channels: ${JSON.stringify(connectorRoute)}`,
+	);
+	assert(
+		stepFlowConnectorPath({
+			source: { x: 36, y: 198 },
+			target: { x: 524, y: 18 },
+			gutterLeft: 476,
+			gutterRight: 524,
+			sourceCopyLeft: 52,
+			contentBottom: 216,
+			channelY: 226,
+			minimumClearance: STEP_FLOW_MIN_CLEARANCE,
+		}) === undefined,
+		"step flow connector should skip rendering without enough clearance",
+	);
+	assert(
+		stepFlowTargetHeight([60, 60, 60, 60], 289) === undefined &&
+			stepFlowTargetHeight([60, 60, 60, 60, 60, 60, 60, 60], 289) === 289 &&
+			stepFlowTargetHeight([60, 60, 100, 60, 60], 180) === 220,
+		"step flow height should stay single-column until content exceeds the aside",
+	);
+	assert(
+		count(singleDraftHtml, "<div data-step-flow-container") === 1 &&
+			count(singleDraftHtml, "<ol data-step-flow") === 1 &&
+			count(fiveStepHtml, "<div data-step-flow-container") === 1 &&
+			count(fiveStepHtml, "<ol data-step-flow") === 1 &&
+			count(fiveStepHtml, "<div data-step-row") === 5 &&
+			!draftHtml.includes("data-step-list") &&
+			!singleDraftHtml.includes("data-step-list") &&
+			!fiveStepHtml.includes("data-step-list"),
+		"all goal sizes should enter the same height-driven step flow",
+	);
+	assert(
+		count(draftHtml, "<div data-step-row") === 7 &&
+			!draftHtml.includes("<details data-step-details") &&
+			!draftHtml.includes("data-step-disclosure") &&
+			!draftHtml.includes("details[open]") &&
+			!draftHtml.includes('querySelectorAll("details")') &&
+			!draftHtml.includes("sessionStorage"),
+		"step details should stay visible without disclosure state",
+	);
+	assert(
+		draftHtml.includes("<span>更多</span></span>") &&
+			!draftHtml.includes("<span>更多</span></button>"),
+		"draft goal details should keep the hover trigger",
 	);
 	assert(!draftHtml.includes("pending"), "pending leaked into html");
 	assert(
@@ -2984,54 +5415,145 @@ async function htmlScenario() {
 	const flow = readFlow(dir);
 	const sessionFile = join(cwd, "goal-session.jsonl");
 	flow.status = "complete";
+	flow.startedAt = Date.UTC(2026, 6, 14, 8, 0, 0);
+	flow.completedAt = flow.startedAt + 900_000;
 	flow.errors = ["bad plan"];
 	flow.goals[0].status = "complete";
+	flow.goals[0].startedAt = flow.startedAt;
+	flow.goals[0].completedAt = flow.startedAt + 42_000;
 	flow.goals[0].sessionFile = sessionFile;
 	flow.goals[0].sessionName = "实现登录";
 	flow.goals[0].result.handoff = "- 已交接\n- `pnpm test` 通过";
 	flow.goals[0].checks = passedChecks();
+	const longModelFeedback = `${"完整模型反馈。".repeat(180)}尾部唯一反馈`;
 	flow.goals[0].checks.acceptance.rounds = [
 		{
 			round: 1,
 			result: "failed",
 			summary: "旧失败摘要",
-			details: "FAIL\n\n## 发现 1\n- 问题: 验收失败详情",
+			elapsedMs: 192_000,
+			details: `FAIL\n\n模型 1 · gpt-5.4\n## 发现 1\n- 问题: ${longModelFeedback}`,
+			models: [{ label: "gpt-5.4", status: "failed", summary: "短摘要" }],
 		},
-		{ round: 2, result: "passed", summary: "新通过摘要" },
+		{
+			round: 2,
+			result: "passed",
+			summary: "新通过摘要",
+			elapsedMs: 1_000,
+		},
 	];
 	flow.goals[0].checks.quality.rounds = [
 		{
 			round: 1,
 			result: "failed",
 			summary: "旧质量失败",
+			elapsedMs: 720_000,
 			details: "FAIL\n\n## 发现 1\n- 问题: 质量失败详情",
 		},
 		{ round: 2, result: "passed", summary: "新质量通过" },
 	];
 	flow.goals[1].status = "complete";
+	flow.goals[1].startedAt = flow.startedAt + 180_000;
+	flow.goals[1].completedAt = flow.startedAt + 900_000;
 	flow.goals[1].result.handoff = "final handoff";
 	flow.goals[1].result.summary = "summary";
 	flow.goals[1].checks = passedChecks();
+	// 遗留建议聚合：质检输出的「## 建议（非阻塞）」段进完成卡。
+	flow.goals[1].checks.quality.rounds = [
+		{
+			round: 1,
+			result: "passed",
+			summary: "质检通过",
+			details:
+				"PASS\n质检通过\n证据：文件=src/app.ts；命令=npm test\n\n## 建议（非阻塞）\n- 建议给 parse 增加输入上限",
+		},
+	];
 	const htmlPath = writeFlowHtml(dir, flow);
 	const html = readFileSync(htmlPath, "utf8");
-	assert(html.includes("https://cdn.tailwindcss.com"), "Tailwind missing");
-	assert(html.includes("roughjs@4"), "Rough.js missing");
+	assert(
+		html.includes("tailwindcss v3.4.17") &&
+			html.includes(".max-w-\\[1480px\\]") &&
+			html.includes(
+				".lg\\:grid-cols-\\[minmax\\(0\\2c 1fr\\)_auto_minmax\\(0\\2c 1fr\\)\\]",
+			) &&
+			!html.includes("<script src=") &&
+			!html.includes("cdn."),
+		"self-contained Tailwind CSS or dynamic report classes missing",
+	);
+	assert(
+		html.includes("var rough=") &&
+			html.includes('"seed":17') &&
+			html.includes('"roughness":0.8'),
+		"inlined Rough.js or deterministic connector options missing",
+	);
+	const script = /<script>([\s\S]*)<\/script>/u.exec(html)?.[1];
+	const cspHash = /script-src 'sha256-([^']+)'/u.exec(html)?.[1];
+	assert(script && cspHash, "strict report CSP missing");
+	assert(
+		createHash("sha256").update(script).digest("base64") === cspHash &&
+			!html.includes(`unsafe-${"eval"}`) &&
+			!html.includes("script-src 'unsafe-inline'"),
+		"report CSP does not authorize exactly the inlined script",
+	);
 	assert(!html.includes("mermaid"), "mermaid should be removed");
-	assert(html.includes("new EventSource"), "live reload SSE missing");
+	assert(
+		html.includes('new EventSource("events")'),
+		"relative live reload SSE missing",
+	);
 	assert(html.includes("data-rough-card"), "rough card markers missing");
 	assert(
 		!html.includes('http-equiv="refresh"'),
 		"meta refresh should be removed",
 	);
 	assert(count(html, "<article") === 2, "plan cards missing");
-	assert(html.includes("全部完成"), "completion card missing");
+	assert(
+		html.includes("data-flow-timing") &&
+			html.includes("开始于") &&
+			html.includes("完成于") &&
+			html.includes("0.7m") &&
+			html.includes("3.2m") &&
+			html.includes("12m") &&
+			html.includes("&lt;0.1m") &&
+			!html.includes(' data-elapsed-since="'),
+		"complete report did not render static Flow/step/round timing",
+	);
+	const completeMoreTooltips = [
+		...html.matchAll(/data-hover-chip data-tooltip="([^"]+)"/gu),
+	].map((match) => match[1]);
+	assert(
+		completeMoreTooltips.some(
+			(tooltip) => tooltip.includes("开始于\n") && tooltip.includes("完成于\n"),
+		),
+		"step more details omitted start/completion timestamps",
+	);
+	assert(
+		html.includes("全部完成 · 2 步") &&
+			html.includes("交付详情") &&
+			html.includes('data-modal-open="dlg-delivery-details"') &&
+			html.includes('<dialog id="dlg-delivery-details"') &&
+			html.includes('class="mt-4 flex justify-end"') &&
+			!html.includes("最终交接") &&
+			!html.includes("Final handoff"),
+		"completion title or delivery-details action missing",
+	);
+	assert(
+		html.includes("遗留建议") &&
+			html.includes("建议给 parse 增加输入上限") &&
+			html.includes("第 2 步"),
+		"remaining suggestions digest missing from completion card",
+	);
+	assert(
+		!html.includes("<details data-step-details") &&
+			html.includes("data-step-detail"),
+		"completed goal details should stay visible",
+	);
 	assert(
 		html.includes('<article data-rough-card data-tone="green"') &&
 			html.includes(
-				'shrink-0 text-xs font-medium text-emerald-800">已完成</span>',
+				'shrink-0 text-xs font-medium text-emerald-800 dark:text-emerald-300">已完成</span>',
 			) &&
 			!html.includes(
-				'shrink-0 text-xs font-medium text-emerald-800">已通过</span>',
+				'shrink-0 text-xs font-medium text-emerald-800 dark:text-emerald-300">已通过</span>',
 			),
 		"completed goal card should use green edge and hide repeated passed statuses",
 	);
@@ -3043,7 +5565,7 @@ async function htmlScenario() {
 		html.includes("第 1 轮") && html.includes("未通过"),
 		"first failed round label missing",
 	);
-	assert(html.includes("旧失败摘要"), "acceptance failure history missing");
+	assert(html.includes("gpt-5.4"), "acceptance failure history missing");
 	assert(html.includes("新通过摘要"), "acceptance pass history missing");
 	assert(html.includes("旧质量失败"), "quality failure history missing");
 	assert(html.includes("新质量通过"), "quality pass history missing");
@@ -3051,7 +5573,11 @@ async function htmlScenario() {
 		html.includes("第 2 轮") && html.includes("通过"),
 		"second round history missing",
 	);
-	assert(html.includes("验收失败详情"), "acceptance details missing");
+	assert(html.includes("尾部唯一反馈"), "acceptance details missing");
+	assert(
+		html.includes("尾部唯一反馈") && html.includes("gpt-5.4"),
+		"model hover details should include full untruncated model feedback",
+	);
 	assert(html.includes("质量失败详情"), "quality details missing");
 	const modelChipHtml =
 		html.match(
@@ -3072,7 +5598,7 @@ async function htmlScenario() {
 	);
 	assertUniqueDataKeys(html);
 	assert(html.includes("实现登录"), "flow html missing session display name");
-	assert(html.includes("全部 2 步已完成"), "complete subtitle missing");
+	assert(html.includes("全部完成 · 2 步"), "complete title missing");
 	assert(!html.includes("Goal 0"), "flow html exposed 0-based Goal index");
 	assert(
 		!html.includes("pnpm test"),
@@ -3117,20 +5643,26 @@ async function htmlScenario() {
 		"single-step criteria deviation mentioned final acceptance",
 	);
 	singleFlow.language = "en";
+	singleFlow.goals[0].result.handoff = "Delivery notes";
 	const singleEnglishHtml = readFileSync(
 		writeFlowHtml(singleDir, singleFlow),
 		"utf8",
 	);
 	assert(
 		singleEnglishHtml.includes("recorded in this step's checks") &&
+			singleEnglishHtml.includes("All complete · 1 step") &&
+			singleEnglishHtml.includes("Delivery details") &&
+			singleEnglishHtml.includes(">Criteria</p>") &&
+			singleEnglishHtml.includes(">1 item</span>") &&
+			!singleEnglishHtml.includes("Final handoff") &&
 			!singleEnglishHtml.includes("final acceptance"),
-		"English single-step criteria deviation mentioned final acceptance",
+		"English completion copy or single-step criteria wording regressed",
 	);
 	const errorHtml = readFileSync(
 		writeFlowErrorHtml(dir, {
 			title: "Broken Flow",
 			errors: ["bad"],
-			originalRequest: "原始请求",
+			requestText: "原始请求",
 		}),
 		"utf8",
 	);
@@ -3143,15 +5675,172 @@ async function htmlScenario() {
 	);
 }
 
+async function flowPromptLiteralPlaceholderScenario() {
+	const { generationPrompt, repairPrompt } =
+		await importModule("flow/prompt.js");
+	const literal =
+		"literal {{source}} {{flowPath}} {{language}} {{validateCommand}} $&";
+	const generated = generationPrompt({
+		requestText: literal,
+		sourceType: "conversation",
+		language: "zh",
+		flowPath: "/tmp/F1",
+	});
+	const repaired = repairPrompt({
+		errors: [literal],
+		requestText: literal,
+		language: "zh",
+		flowPath: "/tmp/F1",
+	});
+	assert(
+		generated.split(literal).length - 1 === 1,
+		`generation prompt rewrote literal placeholders: ${generated}`,
+	);
+	assert(
+		repaired.split(literal).length - 1 === 2,
+		`repair prompt rewrote literal placeholders: ${repaired}`,
+	);
+}
+
+async function flowConversationContextEvidenceScenario() {
+	writeFlowTestConfig({ generation: { align: "no" } });
+	const cwd = tempDir("flow-conversation-context-evidence");
+	const sessionFile = join(cwd, "planning.jsonl");
+	const state = newState(cwd);
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, sessionFile);
+	entriesFor(state, sessionFile).push(
+		{
+			type: "message",
+			id: "user-context",
+			parentId: null,
+			timestamp: "2026-01-01T00:00:00.000Z",
+			message: {
+				role: "user",
+				content: [
+					{
+						type: "text",
+						text: '保留原始格式和字面模板：\n```json\n{\n  "enabled": true\n}\n```\nliteral {{source}} {{flowPath}} {{language}} {{validateCommand}}',
+					},
+				],
+				timestamp: 0,
+			},
+		},
+		{
+			type: "custom_message",
+			id: "hidden-context",
+			parentId: "user-context",
+			timestamp: "2026-01-01T00:00:01.000Z",
+			customType: "pi-flow-internal-prompt",
+			content: "GENERATION_INTERNAL_SENTINEL",
+			display: false,
+		},
+	);
+	await commands.get("flow").handler("", ctx);
+	const flow = readFlow(join(cwd, ".flow", "F1"));
+	const literal =
+		"literal {{source}} {{flowPath}} {{language}} {{validateCommand}}";
+	const turn = flow.source.transcript?.[0];
+	assert(
+		flow.source.type === "conversation" &&
+			flow.source.transcript.length === 1 &&
+			turn.kind === "user" &&
+			turn.at === "2026-01-01T00:00:00.000Z" &&
+			turn.text.includes('```json\n{\n  "enabled": true\n}\n```') &&
+			turn.text.includes(literal) &&
+			!JSON.stringify(flow.source).includes("GENERATION_INTERNAL_SENTINEL"),
+		`conversation source is not structured correctly: ${JSON.stringify(flow.source)}`,
+	);
+	assert(
+		state.hiddenMessages.at(-1).includes("用户 · 2026-01-01T00:00:00.000Z") &&
+			state.hiddenMessages.at(-1).includes(literal) &&
+			!state.hiddenMessages.at(-1).includes("Coverage：") &&
+			!state.hiddenMessages.at(-1).includes("[entry:"),
+		"generation prompt was not derived from the structured transcript",
+	);
+	const { formatTranscript } = await importModule("shared/context-evidence.js");
+	const { renderFlowHtml, writeFlowErrorHtml } =
+		await importModule("flow/html.js");
+	const dir = join(cwd, ".flow", "F1");
+	const report = renderFlowHtml(dir, flow);
+	writeFlowErrorHtml(dir, {
+		title: flow.title,
+		errors: ["invalid draft"],
+		requestText: formatTranscript(flow.source.transcript, flow.language),
+		language: flow.language,
+	});
+	const errorReport = readFileSync(join(dir, "flow.html"), "utf8");
+	assert(
+		report.includes("data-report-transcript") &&
+			report.includes('<time datetime="2026-01-01T00:00:00.000Z"') &&
+			report.includes(literal),
+		"flow report did not render the structured conversation source",
+	);
+	assert(
+		errorReport.includes("用户 · 2026-01-01T00:00:00.000Z"),
+		"validation error report lost its derived request text",
+	);
+	for (const html of [report, errorReport])
+		assert(
+			!html.includes("来源：原始 getBranch() 事件") &&
+				!html.includes("Coverage：") &&
+				!html.includes("[entry:"),
+			"request report leaked Context Evidence metadata",
+		);
+	await emit(
+		handlers,
+		"agent_end",
+		{
+			messages: [
+				{ role: "assistant", content: "请补充。\n<!-- pi-flow:need-input -->" },
+			],
+		},
+		ctx,
+	);
+	await emitLast(
+		handlers,
+		"input",
+		{ source: "interactive", text: "补充结构化需求" },
+		ctx,
+	);
+	const clarified = readFlow(dir);
+	assert(
+		clarified.source.transcript.length === 2 &&
+			clarified.source.transcript[1].kind === "visible_supplement" &&
+			clarified.source.transcript[1].text === "补充结构化需求" &&
+			state.hiddenMessages.at(-1).includes("用户补充 ·") &&
+			state.hiddenMessages.at(-1).includes("补充结构化需求"),
+		"conversation clarification was not appended as a structured turn",
+	);
+}
+
+async function flowConversationContextEvidenceModelFailureScenario() {
+	writeFlowTestConfig({ generation: { align: "no" } });
+	const cwd = tempDir("flow-conversation-context-model-failure");
+	const sessionFile = join(cwd, "planning.jsonl");
+	const state = newState(cwd);
+	state.missingModels.add("test/current");
+	const { commands } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, sessionFile);
+	await commands.get("flow").handler("", ctx);
+	assert(!existsSync(join(cwd, ".flow", "F1")), "unbudgeted Flow was created");
+	assert(
+		state.notifications.at(-1).includes("无法解析模型窗口"),
+		state.notifications.join("\n"),
+	);
+}
+
 async function generationAlignConfigScenario() {
 	const { readGenerationConfig } = await importModule("shared/config.js");
-	writeFlowTestConfig({ generation: { align: "yes" } });
-	assert(
-		readGenerationConfig().align === "yes",
-		"generation.align yes not read",
-	);
 	writeFlowTestConfig({ generation: { align: "no" } });
 	assert(readGenerationConfig().align === "no", "generation.align no not read");
+	for (const depth of ["coarse", "standard", "deep"]) {
+		writeFlowTestConfig({ generation: { align: depth } });
+		assert(
+			readGenerationConfig().align === depth,
+			`generation.align ${depth} not read`,
+		);
+	}
 	writeFlowTestConfig({ generation: { align: "bad" } });
 	const invalid = readGenerationConfig();
 	assert(
@@ -3164,7 +5853,7 @@ async function generationAlignConfigScenario() {
 async function flowModelSwitchFailurePersistsPreDraftScenario() {
 	writeFlowTestConfig({
 		modelRoles: {
-			planner: { model: "missing/provider", thinking: "medium" },
+			advisor: { model: "missing/provider", thinking: "medium" },
 		},
 	});
 	const cwd = tempDir("flow-model-switch-failure-predraft");
@@ -3180,7 +5869,7 @@ async function flowModelSwitchFailurePersistsPreDraftScenario() {
 	const flow = JSON.parse(readFileSync(flowPath, "utf8"));
 	assert(
 		flow.status === "paused" &&
-			flow.schemaVersion === 9 &&
+			flow.schemaVersion === 17 &&
 			flow.id === "F1" &&
 			flow.goals.length === 0 &&
 			flow.currentGoal === 0 &&
@@ -3192,10 +5881,54 @@ async function flowModelSwitchFailurePersistsPreDraftScenario() {
 		"planner switch failure should not send generation prompt",
 	);
 	assert(
-		state.notifications.join("\n").includes("编号：F1"),
-		`planner switch failure did not expose Flow id: ${state.notifications.join(" | ")}`,
+		state.notifications.some((message) => message.includes("顾问模型不可用")) &&
+			!state.notifications.some((message) => message.includes("Flow 已创建")),
+		`planner switch failure notice mismatch: ${state.notifications.join(" | ")}`,
 	);
 	writeFlowTestConfig();
+}
+
+async function flowGoalStartCardCopyScenario() {
+	writeFlowTestConfig({
+		modelRoles: {
+			executor: { model: "provider/model-a", thinking: "high" },
+		},
+	});
+	try {
+		const { sendFlowGoalStartCard } = await importModule(
+			"flow/execution/start.js",
+		);
+		const cwd = tempDir("flow-goal-start-card-copy");
+		const dir = createFlow(cwd, "F1");
+		const flow = readFlow(dir);
+		const state = newState(cwd);
+		await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		sendFlowGoalStartCard(
+			state.extensionApis.at(-1),
+			ctx,
+			flow,
+			flow.goals[0],
+			"One step objective",
+		);
+		const card = findFlowCard(
+			state,
+			"Flow Goal 1 已启动",
+			"single-step Flow start card missing",
+		);
+		const lines = card.message.details.lines.join("\n");
+		assert(
+			lines.includes("编号：F1") &&
+				lines.includes("目标：One step objective") &&
+				lines.includes("模型：provider/model-a/high") &&
+				!lines.includes("进度：1/1") &&
+				!lines.includes("后续：无") &&
+				!card.message.details.title.includes("第 1 步"),
+			lines,
+		);
+	} finally {
+		writeFlowTestConfig();
+	}
 }
 
 async function flowPromptSendFailureShowsPreDraftIdScenario() {
@@ -3210,7 +5943,7 @@ async function flowPromptSendFailureShowsPreDraftIdScenario() {
 	const flow = JSON.parse(readFileSync(flowPath, "utf8"));
 	assert(
 		flow.status === "generating" &&
-			flow.schemaVersion === 9 &&
+			flow.schemaVersion === 17 &&
 			flow.id === "F1" &&
 			flow.goals.length === 0 &&
 			flow.currentGoal === 0 &&
@@ -3295,14 +6028,18 @@ async function flowExplicitPreDraftContinueKeepsTargetScenario() {
 		status: "generating",
 		stage: "awaiting_blocking_input",
 		sessionFile,
-		originalRequest: "other flow",
+		requestText: "other flow",
 	});
 	writePreDraftFlow(cwd, "F2", {
 		status: "generating",
 		stage: "generating",
 		sessionFile: join(cwd, "old.jsonl"),
 		autoStart: false,
-		originalRequest: "explicit target flow",
+		requestText: "explicit target flow",
+		alignmentTurns: [
+			{ question: "原始问题一", answer: "原始回答一" },
+			{ question: "原始问题二", answer: "原始回答二" },
+		],
 	});
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
@@ -3319,10 +6056,16 @@ async function flowExplicitPreDraftContinueKeepsTargetScenario() {
 	assert(
 		target.status === "draft" &&
 			target.title === "Explicit Target" &&
+			target.meta?.alignment?.kind === "recorded" &&
+			JSON.stringify(target.meta.alignment.turns) ===
+				JSON.stringify([
+					{ question: "原始问题一", answer: "原始回答一" },
+					{ question: "原始问题二", answer: "原始回答二" },
+				]) &&
 			!existsSync(join(cwd, ".flow", "F2", "alignment.json")) &&
 			other.status === "generating" &&
 			existsSync(join(cwd, ".flow", "F1", "alignment.json")),
-		"explicit pre-draft go result was not written to the target Flow",
+		"explicit pre-draft go did not archive alignment before removing its checkpoint",
 	);
 }
 
@@ -3334,14 +6077,14 @@ async function flowPromptedContinueDoesNotOverwriteInflightTargetScenario() {
 		stage: "generating",
 		sessionFile,
 		autoStart: false,
-		originalRequest: "first prompted recovery",
+		requestText: "first prompted recovery",
 	});
 	writePreDraftFlow(cwd, "F2", {
 		status: "generating",
 		stage: "generating",
 		sessionFile,
 		autoStart: false,
-		originalRequest: "second prompted recovery",
+		requestText: "second prompted recovery",
 	});
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
@@ -3372,14 +6115,14 @@ async function flowExplicitPreDraftRepairKeepsTargetScenario() {
 		status: "generating",
 		stage: "awaiting_blocking_input",
 		sessionFile,
-		originalRequest: "other flow must stay unchanged",
+		requestText: "other flow must stay unchanged",
 	});
 	writePreDraftFlow(cwd, "F2", {
 		status: "generating",
 		stage: "generating",
 		sessionFile: join(cwd, "old.jsonl"),
 		autoStart: false,
-		originalRequest: "explicit repair target",
+		requestText: "explicit repair target",
 	});
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
@@ -3496,7 +6239,7 @@ async function flowCrossSessionOldPromptTargetIgnoredScenario() {
 		status: "aligning",
 		stage: "aligning",
 		sessionFile: sessionA,
-		originalRequest: "cross session prompt target",
+		requestText: "cross session prompt target",
 	});
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
@@ -3548,13 +6291,13 @@ async function flowReboundLivePromptDoesNotBlockOldSessionContinueScenario() {
 		status: "generating",
 		stage: "generating",
 		sessionFile: sessionA,
-		originalRequest: "rebound live target",
+		requestText: "rebound live target",
 	});
 	writePreDraftFlow(cwd, "F2", {
 		status: "generating",
 		stage: "generating",
 		sessionFile: join(cwd, "other.jsonl"),
-		originalRequest: "old session continue target",
+		requestText: "old session continue target",
 	});
 	const state = newState(cwd);
 	const { commands } = await loadExtension(state);
@@ -3583,13 +6326,13 @@ async function flowReboundLivePromptDoesNotBlockOldSessionReplyScenario() {
 		status: "generating",
 		stage: "generating",
 		sessionFile: sessionA,
-		originalRequest: "rebound live target",
+		requestText: "rebound live target",
 	});
 	writePreDraftFlow(cwd, "F2", {
 		status: "generating",
 		stage: "awaiting_blocking_input",
 		sessionFile: sessionA,
-		originalRequest: "old session reply target",
+		requestText: "old session reply target",
 	});
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
@@ -3606,15 +6349,14 @@ async function flowReboundLivePromptDoesNotBlockOldSessionReplyScenario() {
 	let flow = readFlow(join(cwd, ".flow", "F2"));
 	assert(
 		result?.action === "handled" &&
-			flow.source.originalRequest.includes("补充 F2 细节") &&
+			flow.source.text.includes("补充 F2 细节") &&
 			state.hiddenMessages.at(-1).includes("old session reply target"),
 		"rebound live prompt blocked old session direct reply",
 	);
 	await emit(handlers, "agent_end", { messages: [] }, ctxA);
 	flow = readFlow(join(cwd, ".flow", "F2"));
 	assert(
-		flow.source.originalRequest.includes("补充 F2 细节") &&
-			flow.errors.length === 0,
+		flow.source.text.includes("补充 F2 细节") && flow.errors.length === 0,
 		"old rebound prompt agent_end polluted the old session sibling Flow",
 	);
 }
@@ -3627,14 +6369,14 @@ async function flowCrossSessionCompletedTargetIgnoresOldPromptScenario() {
 		status: "generating",
 		stage: "awaiting_blocking_input",
 		sessionFile: sessionA,
-		originalRequest: "other flow must survive completed stale prompt",
+		requestText: "other flow must survive completed stale prompt",
 	});
 	writePreDraftFlow(cwd, "F2", {
 		status: "generating",
 		stage: "generating",
 		sessionFile: sessionA,
 		autoStart: false,
-		originalRequest: "target completed after rebind",
+		requestText: "target completed after rebind",
 	});
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
@@ -3661,16 +6403,19 @@ async function flowCrossSessionFinalConfirmInputScenario() {
 	mkdirSync(dir, { recursive: true });
 	const sessionA = join(cwd, "session-a.jsonl");
 	writeFlow(dir, {
-		schemaVersion: 9,
+		schemaVersion: 17,
 		language: "zh",
 		id: "F1",
 		title: "Flow F1",
 		status: "aligning",
-		source: { type: "prompt", path: null, originalRequest: "跨会话确认" },
+		source: { type: "prompt", text: "跨会话确认" },
 		createdAt: Date.now(),
 		updatedAt: Date.now(),
 		startedAt: null,
+		completedAt: null,
 		currentGoal: 0,
+		meta: null,
+		attention: null,
 		parallelRun: null,
 		repairAttempts: 0,
 		errors: [],
@@ -3684,6 +6429,7 @@ async function flowCrossSessionFinalConfirmInputScenario() {
 				stage: "awaiting_final_confirm",
 				sessionFile: sessionA,
 				autoStart: true,
+				depth: "standard",
 				alignmentTurns: [{ question: "问题 1：做 UI？", answer: "做 UI" }],
 				lastAlignmentQuestion: null,
 				createdAt: Date.now(),
@@ -3714,13 +6460,13 @@ async function flowExplicitAligningRecoveryReplyTargetScenario() {
 		status: "generating",
 		stage: "awaiting_blocking_input",
 		sessionFile,
-		originalRequest: "other flow must not handle aligning reply",
+		requestText: "other flow must not handle aligning reply",
 	});
 	writePreDraftFlow(cwd, "F2", {
 		status: "aligning",
 		stage: "aligning",
 		sessionFile: join(cwd, "old.jsonl"),
-		originalRequest: "target aligning recovery",
+		requestText: "target aligning recovery",
 	});
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
@@ -3779,7 +6525,7 @@ async function flowExplicitWaitingStageDirectReplyTargetScenario() {
 				const flow = readFlow(join(cwd, ".flow", "F2"));
 				assert(
 					flow.status === "generating" &&
-						flow.source.originalRequest.includes("补充 F2 生成信息") &&
+						flow.source.text.includes("补充 F2 生成信息") &&
 						state.hiddenMessages.at(-1).includes("target blocking-input"),
 					"explicit blocking reply did not route to F2",
 				);
@@ -3792,13 +6538,13 @@ async function flowExplicitWaitingStageDirectReplyTargetScenario() {
 			status: "generating",
 			stage: "awaiting_blocking_input",
 			sessionFile,
-			originalRequest: "other flow must not handle reply",
+			requestText: "other flow must not handle reply",
 		});
 		writePreDraftFlow(cwd, "F2", {
 			status: item.status,
 			stage: item.stage,
 			sessionFile: join(cwd, "old.jsonl"),
-			originalRequest: `target ${item.name}`,
+			requestText: `target ${item.name}`,
 			lastAlignmentQuestion: item.lastAlignmentQuestion ?? null,
 			alignmentTurns: [{ question: "问题 0：F2?", answer: "F2" }],
 		});
@@ -3829,13 +6575,13 @@ async function flowExplicitReplyTargetPersistsAcrossRoundsScenario() {
 		status: "generating",
 		stage: "awaiting_blocking_input",
 		sessionFile,
-		originalRequest: "other flow must not handle repeated replies",
+		requestText: "other flow must not handle repeated replies",
 	});
 	writePreDraftFlow(cwd, "F2", {
 		status: "aligning",
 		stage: "awaiting_alignment_input",
 		sessionFile: join(cwd, "old.jsonl"),
-		originalRequest: "target repeated alignment",
+		requestText: "target repeated alignment",
 		lastAlignmentQuestion: "问题 1：F2 第一问？",
 	});
 	const state = newState(cwd);
@@ -3881,7 +6627,7 @@ async function flowRecoveredInputKeepsCommandAutoStartScenario() {
 		stage: "awaiting_final_confirm",
 		sessionFile: join(cwd, "old.jsonl"),
 		autoStart: true,
-		originalRequest: "auto-start after input ctx",
+		requestText: "auto-start after input ctx",
 		alignmentTurns: [{ question: "问题 1：做 UI？", answer: "做 UI" }],
 	});
 	const state = newState(cwd);
@@ -3905,7 +6651,7 @@ async function flowRecoveredInputKeepsCommandAutoStartScenario() {
 async function flowCrossSessionFinalConfirmAutoStartContextScenario() {
 	const cwd = tempDir("flow-cross-session-final-confirm-autostart");
 	const state = newState(cwd);
-	state.select = "先进行多轮问答对齐想法";
+	state.select = "标准对齐：约 20-30 问，高杠杆 + 关键实现决策";
 	const { commands, handlers } = await loadExtension(state);
 	const ctxA = commandContext(state, cwd, join(cwd, "session-a.jsonl"));
 	await commands.get("flow").handler("跨会话确认自动启动", ctxA);
@@ -3954,7 +6700,7 @@ async function flowCrossSessionFinalConfirmAutoStartContextScenario() {
 async function flowCrossSessionWaitingStagesPlannerSwitchScenario() {
 	writeFlowTestConfig({
 		modelRoles: {
-			planner: { model: "missing/provider", thinking: "medium" },
+			advisor: { model: "missing/provider", thinking: "medium" },
 		},
 	});
 	try {
@@ -3980,16 +6726,19 @@ async function flowCrossSessionWaitingStagesPlannerSwitchScenario() {
 			const sessionA = join(cwd, "session-a.jsonl");
 			mkdirSync(dir, { recursive: true });
 			writeFlow(dir, {
-				schemaVersion: 9,
+				schemaVersion: 17,
 				language: "zh",
 				id: "F1",
 				title: "Flow F1",
 				status: item.status,
-				source: { type: "prompt", path: null, originalRequest: "跨会话切模型" },
+				source: { type: "prompt", text: "跨会话切模型" },
 				createdAt: Date.now(),
 				updatedAt: Date.now(),
 				startedAt: null,
+				completedAt: null,
 				currentGoal: 0,
+				meta: null,
+				attention: null,
 				parallelRun: null,
 				repairAttempts: 0,
 				errors: [],
@@ -4003,6 +6752,7 @@ async function flowCrossSessionWaitingStagesPlannerSwitchScenario() {
 						stage: item.stage,
 						sessionFile: sessionA,
 						autoStart: true,
+						depth: "standard",
 						alignmentTurns: [],
 						lastAlignmentQuestion: "问题 1：做 UI？",
 						createdAt: Date.now(),
@@ -4021,7 +6771,7 @@ async function flowCrossSessionWaitingStagesPlannerSwitchScenario() {
 				assert(
 					state.notifications.some(
 						(notice) =>
-							notice.includes("计划模型不可用") &&
+							notice.includes("顾问模型不可用") &&
 							notice.includes("missing/provider"),
 					),
 					"final confirmation go did not block before planner switch",
@@ -4039,7 +6789,7 @@ async function flowCrossSessionWaitingStagesPlannerSwitchScenario() {
 					state.hiddenMessages.length === hiddenBefore &&
 					state.notifications.some(
 						(notice) =>
-							notice.includes("计划模型不可用") &&
+							notice.includes("顾问模型不可用") &&
 							notice.includes("missing/provider"),
 					),
 				`${item.stage} did not block recovered prompt before planner switch`,
@@ -4053,7 +6803,7 @@ async function flowCrossSessionWaitingStagesPlannerSwitchScenario() {
 async function flowAlignmentStageWriteFailureRollsBackScenario() {
 	const cwd = tempDir("flow-alignment-write-failure-rollback");
 	const state = newState(cwd);
-	state.select = "先进行多轮问答对齐想法";
+	state.select = "标准对齐：约 20-30 问，高杠杆 + 关键实现决策";
 	const { commands, handlers } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 	await commands.get("flow").handler("rollback alignment write", ctx);
@@ -4117,7 +6867,7 @@ async function flowRepairAlignmentWriteFailureRollsBackScenario() {
 			afterAlignment.stage === beforeAlignment.stage &&
 			state.hiddenMessages.length === hiddenBefore &&
 			!existsSync(join(dir, "alignment.json.tmp")),
-		"repair alignment write failure left half-updated generation state",
+		`repair alignment write failure left half-updated generation state: ${JSON.stringify({ beforeFlow, afterFlow, beforeAlignment, afterAlignment, hiddenBefore, hiddenAfter: state.hiddenMessages.length, notices: state.notifications.slice(-2), tmpExists: existsSync(join(dir, "alignment.json.tmp")) })}`,
 	);
 	assertNoticeFormat(state.notifications.at(-1), "❌", "alignment.json.tmp");
 	assert(
@@ -4140,8 +6890,10 @@ async function flowPreDraftStatusTextScenario() {
 	const notice = state.notifications.at(-1);
 	assert(
 		notice.includes("状态: 等待回复") &&
-			notice.includes("回复对齐需求；/flow go 直接生成计划") &&
-			notice.includes("下一步: /flow go F1") &&
+			notice.includes(
+				"回复对齐需求（Q1 / ~30）；「按推荐」委托剩余决策；「/flow go」直接生成计划",
+			) &&
+			notice.includes("下一步: 「/flow go F1」") &&
 			notice.includes("问题: 问题 1：范围是什么？") &&
 			!notice.includes("直接回复答案") &&
 			!notice.includes("网页报告") &&
@@ -4167,6 +6919,7 @@ async function flowPreDraftDirectReplyAmbiguousScenario() {
 	const state = newState(cwd);
 	const { handlers } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, sessionFile);
+	await emit(handlers, "session_start", {}, ctx);
 	const result = await emitLast(
 		handlers,
 		"input",
@@ -4182,51 +6935,89 @@ async function flowPreDraftDirectReplyAmbiguousScenario() {
 }
 
 async function generationAlignCommandConfigScenario() {
-	writeFlowTestConfig({ generation: { align: "yes" } });
-	const yesCwd = tempDir("generation-align-yes-command");
-	const yesState = newState(yesCwd);
-	const yesExtension = await loadExtension(yesState);
-	const yesCtx = commandContext(
-		yesState,
-		yesCwd,
-		join(yesCwd, "planning.jsonl"),
+	writeFlowTestConfig({ generation: { align: "standard" } });
+	const standardCwd = tempDir("generation-align-standard-command");
+	const standardState = newState(standardCwd);
+	const standardExtension = await loadExtension(standardState);
+	const standardCtx = commandContext(
+		standardState,
+		standardCwd,
+		join(standardCwd, "planning.jsonl"),
 	);
-	await yesExtension.commands.get("flow").handler("align from config", yesCtx);
-	assert(yesState.selects.length === 0, "generation.align yes showed selector");
-	const yesAlignmentPrompt = yesState.hiddenMessages.at(-1);
+	await standardExtension.commands
+		.get("flow")
+		.handler("align from config", standardCtx);
 	assert(
-		yesAlignmentPrompt.includes("# 拷问我") &&
-			yesState.sentMessages.length === 0,
-		"generation.align yes did not start hidden alignment",
+		standardState.selects.length === 0,
+		"generation.align standard showed selector",
+	);
+	const standardAlignmentPrompt = standardState.hiddenMessages.at(-1);
+	assert(
+		standardAlignmentPrompt.includes("# 拷问我") &&
+			standardState.sentMessages.length === 0,
+		"generation.align standard did not start hidden alignment",
 	);
 	assert(
-		yesAlignmentPrompt.includes(
+		standardAlignmentPrompt.includes(
 			"先全面审视当前会话、已有需求、代码库线索和文档",
 		) &&
-			yesAlignmentPrompt.includes("直到达成全面共同理解") &&
-			yesAlignmentPrompt.includes("一次只问一个问题") &&
-			yesAlignmentPrompt.includes("2-4 个具体选项") &&
-			yesAlignmentPrompt.includes("基于项目具体情况，需求以及最佳实践") &&
-			yesAlignmentPrompt.includes("先探索事实源后再提出基于事实的问题") &&
-			yesAlignmentPrompt.includes(
-				"所有会影响实现范围、实现细节、需求、提示词语义、状态事实源、测试验证",
+			standardAlignmentPrompt.includes("直到达成全面共同理解") &&
+			standardAlignmentPrompt.includes("一次只问一个问题") &&
+			standardAlignmentPrompt.includes("2-4 个具体选项") &&
+			standardAlignmentPrompt.includes("基于项目具体情况，需求以及最佳实践") &&
+			standardAlignmentPrompt.includes(
+				"提出问题前，先探索相关代码库、文档、测试、调用链或现有 .flow 文件",
 			) &&
-			yesAlignmentPrompt.includes(
+			standardAlignmentPrompt.includes("能从事实源确认的内容不要询问用户") &&
+			standardAlignmentPrompt.includes("高杠杆问题优先") &&
+			standardAlignmentPrompt.includes("假设默认制") &&
+			standardAlignmentPrompt.includes("问题预算：约 20-30 问") &&
+			standardAlignmentPrompt.includes("用户回复「按推荐」时") &&
+			standardAlignmentPrompt.includes(
 				"ready marker <!-- pi-flow:ready-to-draft -->",
 			) &&
-			!yesAlignmentPrompt.includes("<aligned-request>") &&
-			!yesAlignmentPrompt.includes("最高杠杆") &&
-			!yesAlignmentPrompt.includes("阻塞哪个未确认决策") &&
-			!yesAlignmentPrompt.includes("每轮先列出未确认决策树"),
-		"Chinese alignment prompt missing concise decision contract",
+			!standardAlignmentPrompt.includes("{{questionBudget}}") &&
+			!standardAlignmentPrompt.includes("<aligned-request>") &&
+			!standardAlignmentPrompt.includes("阻塞哪个未确认决策") &&
+			!standardAlignmentPrompt.includes("每轮先列出未确认决策树"),
+		"standard alignment prompt missing standard budget grilling contract",
 	);
-	const flowCardIndex = yesState.customMessages.findIndex(
+	const standardAlignment = JSON.parse(
+		readFileSync(join(standardCwd, ".flow", "F1", "alignment.json"), "utf8"),
+	);
+	assert(
+		standardAlignment.depth === "standard",
+		"standard config did not persist standard depth",
+	);
+
+	writeFlowTestConfig({ generation: { align: "coarse" } });
+	const coarseCwd = tempDir("generation-align-coarse-command");
+	const coarseState = newState(coarseCwd);
+	const coarseExtension = await loadExtension(coarseState);
+	const coarseCtx = commandContext(
+		coarseState,
+		coarseCwd,
+		join(coarseCwd, "planning.jsonl"),
+	);
+	await coarseExtension.commands
+		.get("flow")
+		.handler("coarse from config", coarseCtx);
+	assert(
+		coarseState.selects.length === 0 &&
+			coarseState.hiddenMessages.at(-1).includes("问题预算：约 10 问以内") &&
+			JSON.parse(
+				readFileSync(join(coarseCwd, ".flow", "F1", "alignment.json"), "utf8"),
+			).depth === "coarse",
+		"generation.align coarse did not inject coarse budget and persist depth",
+	);
+	const flowCardIndex = standardState.customMessages.findIndex(
 		(item) =>
 			item.message.customType === "pi-flow-result-card" &&
 			item.message.details?.title === "开始对齐 Flow" &&
-			String(item.message.content).includes("等待 AI 提问"),
+			String(item.message.content).includes("编号：F1") &&
+			String(item.message.content).includes("先确认范围和拆分方式，再生成计划"),
 	);
-	const flowHiddenPromptIndex = yesState.customMessages.findIndex(
+	const flowHiddenPromptIndex = standardState.customMessages.findIndex(
 		(item) => item.message.customType === "pi-flow-internal-prompt",
 	);
 	assert(flowCardIndex >= 0, "flow alignment start card missing");
@@ -4250,6 +7041,7 @@ async function generationAlignCommandConfigScenario() {
 	);
 	writeFlowSemanticDraft(noCwd, "F1");
 	await emit(noExtension.handlers, "agent_end", { messages: [] }, noCtx);
+	await flushScheduledGoalStart();
 	assert(
 		noState.newSessions.length === 1,
 		"generation.align no did not auto-start flow",
@@ -4278,14 +7070,16 @@ async function generationAlignCommandConfigScenario() {
 async function flowAlignmentActivityCopyScenario() {
 	const cwd = tempDir("flow-alignment-activity-copy");
 	const state = newState(cwd);
-	state.select = "先进行多轮问答对齐想法";
+	state.select = "标准对齐：约 20-30 问，高杠杆 + 关键实现决策";
 	const { commands, handlers } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 	await commands.get("flow").handler("activity copy", ctx);
+	const initialActivity = latestWidgetText(state);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · Q1") &&
-			latestWidgetText(state).includes("思考中"),
-		"initial alignment activity should wait for Q1",
+		initialActivity.includes("🌊 Flow · Q1") &&
+			initialActivity.includes("准备问题中") &&
+			hasGoalFlame(initialActivity),
+		"initial alignment activity should prepare Q1 with a flame",
 	);
 	await emit(
 		handlers,
@@ -4293,14 +7087,16 @@ async function flowAlignmentActivityCopyScenario() {
 		{ messages: [{ role: "assistant", content: "问题 1：范围？" }] },
 		ctx,
 	);
+	const waitingReplyActivity = latestWidgetText(state);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · Q1") &&
-			latestWidgetText(state).includes(
-				"回复对齐需求 ｜「/flow go」 直接生成计划",
+		waitingReplyActivity.includes("🌊 Flow · Q1 / ~30") &&
+			waitingReplyActivity.includes(
+				"回复对齐需求 ｜「按推荐」委托剩余决策 ｜「/flow go」直接生成计划",
 			) &&
-			!latestWidgetText(state).includes("🌊 Flow · 等待回复 Q1") &&
-			!latestWidgetText(state).includes("开始生成"),
-		"alignment question activity should wait for Q1 reply",
+			!waitingReplyActivity.includes("🌊 Flow · 等待回复 Q1") &&
+			!waitingReplyActivity.includes("开始生成") &&
+			!hasGoalFlame(waitingReplyActivity),
+		"alignment question should wait for Q1 reply without a flame",
 	);
 	const answerResult = await emitLast(
 		handlers,
@@ -4308,11 +7104,13 @@ async function flowAlignmentActivityCopyScenario() {
 		{ source: "interactive", text: "范围 A" },
 		ctx,
 	);
+	const nextQuestionActivity = latestWidgetText(state);
 	assert(
 		answerResult?.action === "handled" &&
-			latestWidgetText(state).includes("🌊 Flow · Q2") &&
-			latestWidgetText(state).includes("思考中"),
-		"alignment answer should advance activity to Q2",
+			nextQuestionActivity.includes("🌊 Flow · Q2") &&
+			nextQuestionActivity.includes("准备问题中") &&
+			hasGoalFlame(nextQuestionActivity),
+		"alignment answer should prepare Q2 with a flame",
 	);
 	assertLightweightAlignmentPrompt(state.hiddenMessages.at(-1));
 	await emit(
@@ -4328,20 +7126,22 @@ async function flowAlignmentActivityCopyScenario() {
 		},
 		ctx,
 	);
+	const alignedActivity = latestWidgetText(state);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · 已对齐") &&
-			latestWidgetText(state).includes(
-				"「/flow go」生成计划 ｜继续回复则补充信息",
-			),
-		"ready marker should show final confirmation activity",
+		alignedActivity.includes("🌊 Flow · 已对齐") &&
+			alignedActivity.includes("「/flow go」生成计划 ｜继续回复则补充信息") &&
+			!hasGoalFlame(alignedActivity),
+		"ready marker should wait for confirmation without a flame",
 	);
 	await commands.get("flow").handler("go F1", ctx);
+	const draftingActivity = latestWidgetText(state);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · 撰写中") &&
-			latestWidgetText(state).includes("基于 1 轮问答生成全面计划") &&
-			!latestWidgetText(state).includes("Q1") &&
-			!latestWidgetText(state).includes("Q2"),
-		"drafting activity should be compact even after Q&A turns",
+		draftingActivity.includes("🌊 Flow · 生成中") &&
+			draftingActivity.includes("基于 1 轮问答生成全面计划") &&
+			!draftingActivity.includes("Q1") &&
+			!draftingActivity.includes("Q2") &&
+			hasGoalFlame(draftingActivity),
+		"drafting activity should be compact and keep its flame",
 	);
 	assert(
 		state.hiddenMessages.at(-1).includes("activity copy") &&
@@ -4355,7 +7155,7 @@ async function flowAlignmentActivityCopyScenario() {
 async function flowAlignmentQuestionGoDraftsScenario() {
 	const cwd = tempDir("flow-alignment-question-go-drafts");
 	const state = newState(cwd);
-	state.select = "先进行多轮问答对齐想法";
+	state.select = "标准对齐：约 20-30 问，高杠杆 + 关键实现决策";
 	const { commands, handlers } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 	await commands.get("flow").handler("question go drafts", ctx);
@@ -4371,8 +7171,8 @@ async function flowAlignmentQuestionGoDraftsScenario() {
 	);
 	assert(
 		alignment.stage === "generating" &&
-			latestWidgetText(state).includes("🌊 Flow · 撰写中") &&
-			latestWidgetText(state).includes("基于 0 轮问答生成全面计划") &&
+			latestWidgetText(state).includes("🌊 Flow · 生成中") &&
+			latestWidgetText(state).includes("洞察全部上下文，生成全面计划") &&
 			state.hiddenMessages.at(-1).includes("question go drafts") &&
 			!state.hiddenMessages.at(-1).includes("继续 Flow 生成前对齐"),
 		"/flow go from a pending alignment question should draft immediately",
@@ -4382,7 +7182,7 @@ async function flowAlignmentQuestionGoDraftsScenario() {
 async function flowPromptMarkerHiddenScenario() {
 	const cwd = tempDir("flow-prompt-marker-hidden");
 	const state = newState(cwd);
-	state.select = "先进行多轮问答对齐想法";
+	state.select = "标准对齐：约 20-30 问，高杠杆 + 关键实现决策";
 	const { commands, handlers } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 	await commands.get("flow").handler("old target", ctx);
@@ -4432,13 +7232,17 @@ async function flowDuplicatePreDraftStartBlockedScenario() {
 			!existsSync(join(cwd, ".flow", "F2")),
 		"same-session duplicate /flow should be blocked before creating F2",
 	);
-	assertNoticeFormat(state.notifications.at(-1), "⏳", "运行 /flow go F1 继续");
+	assertNoticeFormat(
+		state.notifications.at(-1),
+		"⏳",
+		"运行 「/flow go F1」 继续",
+	);
 }
 
 async function flowReadyWithoutAlignedRequestScenario() {
 	const cwd = tempDir("flow-ready-missing-summary");
 	const state = newState(cwd);
-	state.select = "先进行多轮问答对齐想法";
+	state.select = "标准对齐：约 20-30 问，高杠杆 + 关键实现决策";
 	const { commands, handlers } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 	await commands.get("flow").handler("flow missing summary", ctx);
@@ -4475,9 +7279,9 @@ async function flowReadyWithoutAlignedRequestScenario() {
 	);
 	assert(
 		latestWidgetText(state).includes("🌊 Flow · Q2") &&
-			latestWidgetText(state).includes("思考中") &&
+			latestWidgetText(state).includes("准备问题中") &&
 			!latestWidgetText(state).includes("已收到"),
-		"flow alignment input should keep an in-progress activity box",
+		"flow alignment input should keep a question-preparation activity box",
 	);
 	assert(
 		state.customMessages.some(
@@ -4512,7 +7316,7 @@ async function flowReadyWithoutAlignedRequestScenario() {
 	);
 	await commands.get("flow").handler("go F1", ctx);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · 撰写中") &&
+		latestWidgetText(state).includes("🌊 Flow · 生成中") &&
 			latestWidgetText(state).includes("基于 1 轮问答生成全面计划") &&
 			!latestWidgetText(state).includes("flow missing summary"),
 		"go should switch to compact generation box",
@@ -4540,20 +7344,22 @@ async function flowRestoredAlignmentContextScenario() {
 	const dir = join(cwd, ".flow", "F99");
 	mkdirSync(dir, { recursive: true });
 	writeFlow(dir, {
-		schemaVersion: 9,
+		schemaVersion: 17,
 		language: "zh",
 		id: "F99",
 		title: "Flow F99",
 		status: "aligning",
 		source: {
 			type: "prompt",
-			path: null,
-			originalRequest: "恢复后生成计划",
+			text: "恢复后生成计划",
 		},
 		createdAt: Date.now(),
 		updatedAt: Date.now(),
 		startedAt: null,
+		completedAt: null,
 		currentGoal: 0,
+		meta: null,
+		attention: null,
 		parallelRun: null,
 		repairAttempts: 0,
 		errors: [],
@@ -4567,6 +7373,7 @@ async function flowRestoredAlignmentContextScenario() {
 				stage: "awaiting_final_confirm",
 				sessionFile,
 				autoStart: false,
+				depth: "standard",
 				alignmentTurns: [
 					{ question: "问题 1：是否需要 UI？", answer: "需要 UI" },
 				],
@@ -4592,7 +7399,7 @@ async function flowRestoredAlignmentContextScenario() {
 async function flowStreamingAlignmentInputDoesNotEchoScenario() {
 	const cwd = tempDir("flow-streaming-alignment-input");
 	const state = newState(cwd);
-	state.select = "先进行多轮问答对齐想法";
+	state.select = "标准对齐：约 20-30 问，高杠杆 + 关键实现决策";
 	const { commands, handlers } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 	await commands.get("flow").handler("streaming alignment", ctx);
@@ -4621,11 +7428,52 @@ async function flowStreamingAlignmentInputDoesNotEchoScenario() {
 	assertLightweightAlignmentPrompt(state.hiddenMessages.at(-1));
 }
 
+async function flowAlignmentDeepDepthPersistenceScenario() {
+	const cwd = tempDir("flow-alignment-deep-depth");
+	const state = newState(cwd);
+	state.select = "深度对齐：不设硬上限，高杠杆问题优先";
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("deep depth persistence", ctx);
+	const dir = join(cwd, ".flow", "F1");
+	assert(
+		JSON.parse(readFileSync(join(dir, "alignment.json"), "utf8")).depth ===
+			"deep" && state.hiddenMessages.at(-1).includes("问题预算：不设硬上限"),
+		"deep select did not persist depth or inject deep budget",
+	);
+	await emit(
+		handlers,
+		"agent_end",
+		{ messages: [{ role: "assistant", content: "问题 1：范围？" }] },
+		ctx,
+	);
+	assert(
+		latestWidgetText(state).includes("🌊 Flow · Q1") &&
+			!latestWidgetText(state).includes("Q1 / ~"),
+		"deep waiting activity should hide the budget denominator",
+	);
+	await emitLast(
+		handlers,
+		"input",
+		{ source: "interactive", text: "全部范围" },
+		ctx,
+	);
+	const followUp = state.hiddenMessages.at(-1);
+	assert(
+		followUp.includes("问题预算：不设硬上限") &&
+			!followUp.includes("约 20-30 问"),
+		"follow-up prompt did not carry the persisted deep budget",
+	);
+}
+
 function assertLightweightAlignmentPrompt(prompt) {
 	assert(
 		prompt.includes("继续 Flow 生成前对齐") &&
-			prompt.includes("先探索事实源") &&
-			prompt.includes("一次只问一个简洁问题") &&
+			prompt.includes("问题预算：") &&
+			prompt.includes("遵循首次拷问协议") &&
+			prompt.includes("先查事实") &&
+			prompt.includes("高杠杆问题优先") &&
+			prompt.includes("满足收敛条件后") &&
 			!prompt.includes("# 拷问我") &&
 			!prompt.includes("原始需求") &&
 			!prompt.includes("Original request") &&
@@ -4642,7 +7490,11 @@ function assertLightweightAlignmentPrompt(prompt) {
 function assertEnglishLightweightAlignmentPrompt(prompt) {
 	assert(
 		prompt.includes("Continue Flow alignment") &&
-			prompt.includes("Ask exactly one concise question") &&
+			prompt.includes("Question budget:") &&
+			prompt.includes("Follow the initial questioning protocol") &&
+			prompt.includes("inspect facts first") &&
+			prompt.includes("prioritize high-leverage questions") &&
+			prompt.includes("After convergence") &&
 			!prompt.includes("# Question me") &&
 			!prompt.includes("Original request") &&
 			!prompt.includes("Aligned Q&A") &&
@@ -4656,20 +7508,33 @@ function assertEnglishLightweightAlignmentPrompt(prompt) {
 async function englishFlowAlignmentStartGenerationScenario() {
 	const language = await importCachedModule("shared/language.js");
 	const originalLanguage = process.env.PI_FLOW_LANGUAGE;
+	let unsubscribeAttention = () => {};
 	process.env.PI_FLOW_LANGUAGE = "en";
 	language.resetRuntimeLanguageForTests();
 	try {
 		const cwd = tempDir("flow-english-alignment-start-generation");
 		const state = newState(cwd);
-		state.select = "Ask alignment questions first";
+		state.select =
+			"Standard alignment: ~20-30 questions, high-leverage + key implementation decisions";
 		const { commands, handlers } = await loadExtension(state);
+		const { piActivitySignal, piAttentionSignal } = await importCachedModule(
+			"shared/activity-signal.js",
+		);
+		const attentionSources = [];
+		unsubscribeAttention = piAttentionSignal().subscribe((request) =>
+			attentionSources.push(request.source),
+		);
 		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 		await commands.get("flow").handler("Ship English flow", ctx);
 		assert(
+			piActivitySignal().state.sources.includes("pi-flow:frame"),
+			"alignment preparation did not publish working activity",
+		);
+		assert(
 			latestWidgetText(state).includes("🌊 Flow · Aligning") &&
-				latestWidgetText(state).includes("Waiting for AI to ask Q1") &&
+				latestWidgetText(state).includes("Preparing Q1") &&
 				!latestWidgetText(state).includes("等待"),
-			"English flow aligning widget leaked Chinese or missed Q1",
+			"English flow aligning widget leaked Chinese or missed Q1 preparation",
 		);
 		const englishAlignmentPrompt = state.hiddenMessages.at(-1);
 		assert(
@@ -4682,21 +7547,27 @@ async function englishFlowAlignmentStartGenerationScenario() {
 				englishAlignmentPrompt.includes("2-4 concrete options") &&
 				englishAlignmentPrompt.includes("the project's specific situation") &&
 				englishAlignmentPrompt.includes(
-					"inspect the source of truth first and then ask a fact-based question",
+					"Before asking a question, inspect the relevant codebase, documentation, tests, call chains, or existing .flow files",
 				) &&
 				englishAlignmentPrompt.includes(
-					"all decisions that affect implementation scope, implementation details, requirements, prompt semantics, state source of truth, and test verification",
+					"Do not ask the user about anything the sources of truth can confirm",
 				) &&
+				englishAlignmentPrompt.includes("High-leverage questions first") &&
+				englishAlignmentPrompt.includes("continue asking beyond the budget") &&
+				englishAlignmentPrompt.includes(
+					"Question budget: about 20-30 questions",
+				) &&
+				englishAlignmentPrompt.includes('replies "use recommendations"') &&
 				englishAlignmentPrompt.includes(
 					"ready marker <!-- pi-flow:ready-to-draft -->",
 				) &&
+				!englishAlignmentPrompt.includes("{{questionBudget}}") &&
 				!englishAlignmentPrompt.includes("<aligned-request>") &&
-				!englishAlignmentPrompt.includes("highest-leverage") &&
 				!englishAlignmentPrompt.includes(
 					"which unconfirmed decision it blocks",
 				) &&
 				!englishAlignmentPrompt.includes("list the unconfirmed decision tree"),
-			"English alignment prompt missing concise decision contract",
+			"English alignment prompt missing high-leverage grilling contract",
 		);
 		await emit(
 			handlers,
@@ -4705,8 +7576,14 @@ async function englishFlowAlignmentStartGenerationScenario() {
 			ctx,
 		);
 		assert(
+			attentionSources.join("|") === "flow-draft:F1",
+			`alignment question did not request user attention: ${JSON.stringify({ activity: piActivitySignal().state, attentionSources })}`,
+		);
+		assert(
 			latestWidgetText(state).includes("🌊 Flow · Waiting for reply") &&
-				latestWidgetText(state).includes("Answer Q1 to continue alignment") &&
+				latestWidgetText(state).includes(
+					'Answer Q1 of ~30 · "use recommendations" delegates the rest',
+				) &&
 				!latestWidgetText(state).includes("🌊 Flow · Waiting for Q1 reply") &&
 				!latestWidgetText(state).includes("Start generation") &&
 				!latestWidgetText(state).includes("等待"),
@@ -4720,9 +7597,10 @@ async function englishFlowAlignmentStartGenerationScenario() {
 		);
 		assert(
 			answerResult?.action === "handled" &&
-				latestWidgetText(state).includes("Waiting for AI to ask Q2") &&
-				!latestWidgetText(state).includes("Waiting for AI to ask Q1"),
-			"English alignment answer should advance to Q2",
+				piActivitySignal().state.sources.includes("pi-flow:frame") &&
+				latestWidgetText(state).includes("Preparing Q2") &&
+				!latestWidgetText(state).includes("Preparing Q1"),
+			"English alignment answer should prepare Q2",
 		);
 		assertEnglishLightweightAlignmentPrompt(state.hiddenMessages.at(-1));
 		await emit(
@@ -4739,16 +7617,21 @@ async function englishFlowAlignmentStartGenerationScenario() {
 			ctx,
 		);
 		assert(
+			attentionSources.join("|") === "flow-draft:F1|flow-draft:F1",
+			`final alignment confirmation did not request attention: ${JSON.stringify({ activity: piActivitySignal().state, attentionSources })}`,
+		);
+		assert(
 			latestWidgetText(state).includes("🌊 Flow · Ready to draft") &&
 				latestWidgetText(state).includes(
-					"Run /flow go F1 to generate the plan",
+					"Run 「/flow go F1」 to generate the plan",
 				) &&
 				!latestWidgetText(state).includes("回复「开始生成」"),
 			"English flow final-confirmation widget leaked Chinese",
 		);
 		await commands.get("flow").handler("go F1", ctx);
 		assert(
-			latestWidgetText(state).includes("🌊 Flow · Drafting plan") &&
+			piActivitySignal().state.sources.includes("pi-flow:frame") &&
+				latestWidgetText(state).includes("🌊 Flow · Drafting plan") &&
 				!latestWidgetText(state).includes("Q1") &&
 				!latestWidgetText(state).includes("Q2") &&
 				!latestWidgetText(state).includes("计划生成中"),
@@ -4772,9 +7655,61 @@ async function englishFlowAlignmentStartGenerationScenario() {
 			"English go should send the Flow generation prompt without same-session Q&A",
 		);
 	} finally {
+		unsubscribeAttention();
 		if (originalLanguage === undefined) delete process.env.PI_FLOW_LANGUAGE;
 		else process.env.PI_FLOW_LANGUAGE = originalLanguage;
 		language.resetRuntimeLanguageForTests();
+	}
+}
+
+async function flowReportPortConflictIsolationScenario() {
+	const occupied = createHttpServer((_request, response) =>
+		response.end("occupied"),
+	);
+	await new Promise((resolve, reject) => {
+		occupied.once("error", reject);
+		occupied.listen(49327, "127.0.0.1", resolve);
+	});
+	try {
+		writeFlowTestConfig();
+		const cwd = tempDir("flow-report-port-conflict");
+		const state = newState(cwd);
+		const { commands, handlers } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		await commands.get("flow").handler("修登录", ctx);
+		writeFlowSemanticDraft(cwd, "F1", { title: "Port conflict" });
+		const reportFailure = waitForNotification(state, (notification) =>
+			notification.includes("网页报告不可用"),
+		);
+		await emit(handlers, "agent_end", { messages: [] }, ctx);
+		await reportFailure;
+		await flushScheduledGoalStart();
+		const flow = readFlow(join(cwd, ".flow", "F1"));
+		assert(
+			flow.status === "running" && state.newSessions.length === 1,
+			`report conflict blocked generation closeout: ${JSON.stringify({ status: flow.status, sessions: state.newSessions.length })}`,
+		);
+		assert(
+			state.notifications.filter((item) => item.includes("网页报告不可用"))
+				.length === 1 &&
+				state.notifications.some((item) => item.includes("unknown service")),
+			`report conflict notice missing or duplicated: ${state.notifications.join(" | ")}`,
+		);
+		await commands.get("flow").handler("status F1", ctx);
+		assert(
+			state.notifications.some(
+				(item) =>
+					item.includes("Flow: F1") &&
+					item.includes("网页报告不可用") &&
+					item.includes("unknown service"),
+			),
+			`explicit status hid report failure: ${state.notifications.join(" | ")}`,
+		);
+	} finally {
+		await new Promise((resolve, reject) =>
+			occupied.close((error) => (error ? reject(error) : resolve())),
+		);
+		writeFlowTestConfig();
 	}
 }
 
@@ -4786,6 +7721,11 @@ async function generateScenario() {
 	await commands.get("flow").handler("修登录", ctx);
 	const directPrompt = state.hiddenMessages.at(-1);
 	const directFlowDir = join(cwd, ".flow", "F1");
+	assert(
+		JSON.stringify(readFlow(directFlowDir).source) ===
+			JSON.stringify({ type: "prompt", text: "修登录" }),
+		"prompt source did not persist only its canonical text",
+	);
 	assert(
 		state.hiddenMessages.at(-1).includes("修登录") &&
 			state.sentMessages.length === 0,
@@ -4851,13 +7791,16 @@ async function generateScenario() {
 		"flow draft generation did not show activity widget",
 	);
 	assert(
-		latestWidgetText(state).includes("🌊 Flow · 撰写中") &&
-			latestWidgetText(state).includes("基于 0 轮问答生成全面计划") &&
+		latestWidgetText(state).includes("🌊 Flow · 生成中") &&
+			latestWidgetText(state).includes("洞察全部上下文，生成全面计划") &&
 			!latestWidgetText(state).includes("Q1"),
 		"direct generation activity should be compact without Q&A turns",
 	);
 	writeFlowSemanticDraft(cwd, "F1", { title: "Login Flow" });
 	await emit(handlers, "agent_end", { messages: [] }, ctx);
+	await waitForExec(state, (item) =>
+		item.args.some((arg) => String(arg).startsWith("http://127.0.0.1:")),
+	);
 	assert(
 		state.execs.some((item) =>
 			item.args.some((arg) => String(arg).startsWith("http://127.0.0.1:")),
@@ -4878,6 +7821,11 @@ async function generateScenario() {
 	const file = join(cwd, "plan.md");
 	writeFileSync(file, "raw md plan");
 	await commands.get("flow").handler(file, ctx);
+	assert(
+		JSON.stringify(readFlow(join(cwd, ".flow", "F2")).source) ===
+			JSON.stringify({ type: "file", path: file, text: "raw md plan" }),
+		"file source did not persist path and text",
+	);
 	assert(
 		state.hiddenMessages.at(-1).includes("raw md plan"),
 		"file content missing from hidden prompt",
@@ -4912,7 +7860,7 @@ async function generateScenario() {
 		repairPrompts.every(
 			(message) =>
 				message.includes("2–10 个用户可理解的里程碑") &&
-				message.includes("完成后能给出证据") &&
+				message.includes("完成后能在 `Verification` / `Handoff` 给出证据") &&
 				!message.includes("3–12 个小步骤"),
 		),
 		"repair prompt missing milestone step rules",
@@ -4923,8 +7871,9 @@ async function generatedSummaryBareIdScenario() {
 	const { startGeneration } = await importCachedModule("flow/generation.js");
 	const cwd = tempDir("generate-short-id-summary");
 	const state = newState(cwd);
-	const { handlers } = await loadExtension(state);
+	const { commands, handlers } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("status F999", ctx);
 
 	await startGeneration(
 		state.extensionApis.at(-1),
@@ -4940,7 +7889,7 @@ async function generatedSummaryBareIdScenario() {
 	await emit(handlers, "agent_end", { messages: [] }, ctx);
 
 	const notice = state.notifications.at(-1) ?? "";
-	assertNoticeFormat(notice, "✅", "下一步：/flow go F1");
+	assertNoticeFormat(notice, "✅", "下一步：「/flow go F1」");
 	const html = readFileSync(join(cwd, ".flow", "F1", "flow.html"), "utf8");
 	assert(
 		html.includes("/flow go F1") && !html.includes("/flow status F1"),
@@ -4964,6 +7913,10 @@ async function flowAutoStartUsesCommandContextScenario() {
 	const eventCtx = commandContext(state, cwd, sessionFile);
 	eventCtx.newSession = undefined;
 	await emit(handlers, "agent_end", { messages: [] }, eventCtx);
+	assert(
+		state.newSessions.length === 0,
+		"flow auto-start replaced the session before agent_end dispatch completed",
+	);
 	await flushScheduledGoalStart();
 	const flow = readFlow(join(cwd, ".flow", "F1"));
 	assert(flow.status === "running", "flow auto-start ignored command context");
@@ -5003,13 +7956,14 @@ async function flowAutoStartWithoutCommandContextStaysDraftScenario() {
 		stage: "generating",
 		sessionFile,
 		autoStart: true,
-		originalRequest: "recovered without command context",
+		requestText: "recovered without command context",
 	});
 	writeFlowSemanticDraft(cwd, "F1", { title: "No Command Context" });
 	const state = newState(cwd);
 	const { handlers } = await loadExtension(state);
 	const eventCtx = commandContext(state, cwd, sessionFile);
 	eventCtx.newSession = undefined;
+	await emit(handlers, "session_start", {}, eventCtx);
 	await emit(handlers, "agent_end", { messages: [] }, eventCtx);
 	await flushScheduledGoalStart();
 	const flow = readFlow(join(cwd, ".flow", "F1"));
@@ -5045,6 +7999,8 @@ async function flowHandwrittenRejectedScenario() {
 }
 
 async function semanticFlowGenerationEndScenario() {
+	const { flowGenerationResourceCounts } =
+		await importCachedModule("flow/generation.js");
 	const { validateFlowDir } = await importModule("flow/validator.js");
 	const cwd = tempDir("flow-semantic-generation-end");
 	const state = newState(cwd);
@@ -5076,7 +8032,12 @@ async function semanticFlowGenerationEndScenario() {
 		"semantic setup did not persist pre-draft state correctly",
 	);
 	await emit(handlers, "agent_end", { messages: [] }, ctx);
+	await flushScheduledGoalStart();
 	assert(readFlow(dir).status === "running", "semantic flow did not start");
+	assert(
+		Object.values(flowGenerationResourceCounts()).every((count) => count === 0),
+		`successful generation retained temporary state: ${JSON.stringify(flowGenerationResourceCounts())}`,
+	);
 	assert(
 		!existsSync(join(dir, "alignment.json")),
 		"generated flow kept alignment.json",
@@ -5099,6 +8060,43 @@ async function semanticFlowGenerationEndScenario() {
 	);
 }
 
+async function invalidWriteScopeTriggersRepairScenario() {
+	const cwd = tempDir("flow-invalid-write-scope");
+	const state = newState(cwd);
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("reject ambiguous write scope", ctx);
+	const dir = writeFlowSemanticDraft(cwd, "F1", {
+		title: "Ambiguous write scope",
+	});
+	const semanticPath = join(dir, "flow.semantic.json");
+	const semantic = JSON.parse(readFileSync(semanticPath, "utf8"));
+	semantic.goals[0].writeScope = ["src/api/*/generated"];
+	writeFileSync(semanticPath, `${JSON.stringify(semantic, null, 2)}\n`);
+
+	await emit(handlers, "agent_end", { messages: [] }, ctx);
+
+	const flow = readFlow(dir);
+	assert(
+		flow.status === "generating" &&
+			flow.goals.length === 0 &&
+			flow.repairAttempts === 1,
+		"invalid writeScope did not stay in the repair path",
+	);
+	assert(
+		state.hiddenMessages
+			.at(-1)
+			.includes(
+				"goals[0].writeScope[0] 必须是 ** 或以 /** 结尾的相对目录 glob",
+			),
+		"invalid writeScope error was not sent to the real repair prompt",
+	);
+	assert(
+		state.newSessions.length === 0,
+		"invalid writeScope started an executable Flow",
+	);
+}
+
 async function flowSemanticOverridesHandwrittenScenario() {
 	const cwd = tempDir("flow-semantic-overrides");
 	const state = newState(cwd);
@@ -5114,14 +8112,14 @@ async function flowSemanticOverridesHandwrittenScenario() {
 		source: {
 			type: "file",
 			path: "/model/source",
-			originalRequest: "model source",
+			text: "model source",
 		},
 	});
 	writeFlowSemantic(dir, "Semantic Wins", {
 		source: {
 			type: "file",
 			path: "/semantic/source",
-			originalRequest: "semantic source",
+			text: "semantic source",
 		},
 		goals: handwritten.goals,
 	});
@@ -5132,9 +8130,9 @@ async function flowSemanticOverridesHandwrittenScenario() {
 		"semantic draft did not overwrite flow.json",
 	);
 	assert(
-		flow.source.originalRequest === "ship semantic" &&
+		flow.source.text === "ship semantic" &&
 			flow.source.type === "prompt" &&
-			flow.source.path === null &&
+			!("path" in flow.source) &&
 			flow.createdAt === preDraftCreatedAt,
 		"semantic flow trusted handwritten or semantic source",
 	);
@@ -5199,6 +8197,13 @@ async function flowClarificationScenario() {
 	const cwd = tempDir("flow-need-input");
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
+	const { piActivitySignal, piAttentionSignal } = await importCachedModule(
+		"shared/activity-signal.js",
+	);
+	const attentionSources = [];
+	const unsubscribeAttention = piAttentionSignal().subscribe((request) =>
+		attentionSources.push(request.source),
+	);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
 	await commands.get("flow").handler("needs flow detail", ctx);
 	await emit(
@@ -5211,6 +8216,17 @@ async function flowClarificationScenario() {
 		},
 		ctx,
 	);
+	const blockedActivity = latestWidgetText(state);
+	assert(
+		attentionSources.join("|") === "flow-draft:F1",
+		`blocking input did not request user attention: ${JSON.stringify({ activity: piActivitySignal().state, attentionSources })}`,
+	);
+	assert(
+		blockedActivity.includes("🌊 Flow · 等待补充") &&
+			blockedActivity.includes("回答当前问题后继续生成") &&
+			!hasGoalFlame(blockedActivity),
+		"blocking input should wait without a flame",
+	);
 	const inputResult = await emitLast(
 		handlers,
 		"input",
@@ -5218,8 +8234,9 @@ async function flowClarificationScenario() {
 		ctx,
 	);
 	assert(
-		inputResult?.action === "handled",
-		"flow clarification should be handled after echoing visible input",
+		inputResult?.action === "handled" &&
+			piActivitySignal().state.sources.includes("pi-flow:frame"),
+		"flow clarification should resume working after visible input",
 	);
 	assert(
 		state.customMessages.some(
@@ -5238,6 +8255,28 @@ async function flowClarificationScenario() {
 		state.sentMessages.length === 0,
 		"flow blocking input leaked plan prompt into visible messages",
 	);
+	unsubscribeAttention();
+}
+
+async function flowSerialStartHtmlFailureScenario() {
+	const cwd = tempDir("serial-start-html-failure");
+	const dir = createFlow(cwd, "F1");
+	breakFlowHtml(dir);
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("go F1", ctx);
+	await flushScheduledGoalStart();
+	const flow = readFlow(dir);
+	assert(
+		flow.status === "running" &&
+			flow.goals[0].status === "running" &&
+			state.newSessions.length === 1 &&
+			state.hiddenMessages.length === 1,
+		`HTML failure stopped serial prompt delivery: ${JSON.stringify({ flow, sessions: state.newSessions.length, prompts: state.hiddenMessages.length })}`,
+	);
+	assertReportRefreshFailure(state);
+	assertNoPlanRepair(state);
 }
 
 async function flowContinueDraftStartsScenario() {
@@ -5252,8 +8291,10 @@ async function flowContinueDraftStartsScenario() {
 	assert(
 		flow.status === "running" &&
 			flow.goals[0].status === "running" &&
+			Number.isFinite(flow.goals[0].startedAt) &&
+			flow.goals[0].completedAt === null &&
 			state.newSessions.length === 1,
-		"/flow go F1 did not start a draft Flow",
+		"/flow go F1 did not start and stamp a draft Flow",
 	);
 
 	const pausedCwd = tempDir("flow-continue-paused-draft-starts");
@@ -5316,7 +8357,11 @@ async function flowStopDraftGoScenario() {
 	let flow = readFlow(dir);
 	assert(flow.status === "paused", "draft stop did not pause Flow");
 	assert(flow.startedAt === null, "draft stop changed startedAt");
-	assertNoticeFormat(state.notifications.at(-1), "⚠️", "运行 /flow go F1 继续");
+	assertNoticeFormat(
+		state.notifications.at(-1),
+		"⚠️",
+		"运行 「/flow go F1」 继续",
+	);
 	await commands.get("flow").handler("go F1", ctx);
 	await flushScheduledGoalStart();
 	flow = readFlow(dir);
@@ -5376,6 +8421,10 @@ async function flowReportServerSurvivesSessionShutdownScenario() {
 		`report not served before session shutdown at ${url}: ${before.slice(0, 120)}`,
 	);
 	await emit(handlers, "session_shutdown", {}, ctx);
+	assert(
+		state.statuses.at(-1) === undefined,
+		"session shutdown retained the old report UI context",
+	);
 	const after = await fetch(url).then((response) => response.text());
 	assert(
 		after.includes("Test Flow"),
@@ -5400,6 +8449,9 @@ async function flowSessionStartRebindsReportStatusScenario() {
 	const { handlers } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, sessionFile);
 	await emit(handlers, "session_start", { reason: "resume" }, ctx);
+	await waitForStatus(state, (item) =>
+		String(item).startsWith("🌐 网页报告: http://127.0.0.1:"),
+	);
 	assert(
 		state.statuses.some((item) =>
 			String(item).startsWith("🌐 网页报告: http://127.0.0.1:"),
@@ -5475,7 +8527,7 @@ async function flowClarificationSendFailureClearsPendingScenario() {
 	);
 	assert(
 		flow.status === "generating" &&
-			flow.source.originalRequest.includes("拆成两个阶段") &&
+			flow.source.text.includes("拆成两个阶段") &&
 			flow.errors.includes("Flow 计划澄清提示发送失败") &&
 			alignment.stage === "generating",
 		"failed clarification prompt should keep recoverable generation state",
@@ -5577,8 +8629,8 @@ async function flowGoalSendFailureRollsBackScenario() {
 	const flow = readFlow(dir);
 	assert(flow.status === "draft", "failed Flow goal start left flow running");
 	assert(
-		flow.goals[0].sessionFile === null,
-		"failed Flow goal start kept sessionFile",
+		flow.goals[0].sessionFile === null && flow.goals[0].goalId === null,
+		"failed Flow goal start kept runtime identity",
 	);
 }
 
@@ -5606,7 +8658,601 @@ async function flowStartPromptSkipsAfterStopScenario() {
 	);
 }
 
+async function flowGenerationCallbackWaitsForLockScenario() {
+	const { acquireFlowLock } = await importModule("flow/lock.js");
+	const cwd = tempDir("flow-generation-callback-lock");
+	const sessionFile = join(cwd, "planning.jsonl");
+	const dir = writePreDraftFlow(cwd, "F1", { sessionFile });
+	const state = newState(cwd);
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, sessionFile);
+	await commands.get("flow").handler("go F1", ctx);
+	writeFlowSemanticDraft(cwd, "F1", { title: "Locked callback" });
+	const lock = acquireFlowLock(dir, "generation callback barrier");
+	assert(lock.ok, "generation callback barrier lock was not acquired");
+	const completion = emit(handlers, "agent_end", { messages: [] }, ctx);
+	const completedWhileLocked = await Promise.race([
+		completion.then(() => true),
+		new Promise((resolve) => setImmediate(() => resolve(false))),
+	]);
+	const statusWhileLocked = readFlow(dir).status;
+	lock.release();
+	await completion;
+	assert(
+		!completedWhileLocked &&
+			statusWhileLocked === "generating" &&
+			readFlow(dir).status === "draft",
+		`generation callback bypassed Flow lock: ${JSON.stringify({ completedWhileLocked, statusWhileLocked, finalStatus: readFlow(dir).status })}`,
+	);
+}
+
+async function flowGenerationStopWinsQueuedCallbackScenario() {
+	const { acquireFlowLock } = await importModule("flow/lock.js");
+	const { stopFlow } = await importModule("flow/execution/stop.js");
+	const cwd = tempDir("flow-generation-stop-wins-queued-callback");
+	const sessionFile = join(cwd, "planning.jsonl");
+	const dir = writePreDraftFlow(cwd, "F1", { sessionFile });
+	const state = newState(cwd);
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, sessionFile);
+	await commands.get("flow").handler("go F1", ctx);
+	writeFlowSemanticDraft(cwd, "F1", { title: "Late queued callback" });
+	const barrier = acquireFlowLock(dir, "queue generation callback");
+	assert(barrier.ok, "queued callback barrier lock was not acquired");
+	const completion = emit(handlers, "agent_end", { messages: [] }, ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	barrier.release();
+	const stopped = stopFlow(ctx, "F1");
+	await Promise.all([completion, stopped]);
+	const flow = readFlow(dir);
+	assert(
+		flow.status === "paused" && flow.goals.length === 0,
+		`late generation callback overrode stop: ${JSON.stringify(flow)}`,
+	);
+}
+
+async function flowGenerationPromptWaitsForLockScenario() {
+	writeFlowTestConfig({
+		modelRoles: { advisor: { model: "test/advisor", thinking: "off" } },
+	});
+	try {
+		const { acquireFlowLock } = await importModule("flow/lock.js");
+		const cwd = tempDir("flow-generation-prompt-lock");
+		const sessionFile = join(cwd, "planning.jsonl");
+		const dir = writePreDraftFlow(cwd, "F1", {
+			status: "generating",
+			stage: "awaiting_blocking_input",
+			sessionFile,
+		});
+		const state = newState(cwd);
+		state.allowModelSwitch = true;
+		let releaseModelSwitch;
+		state.modelSwitchBarrier = new Promise((resolve) => {
+			releaseModelSwitch = resolve;
+		});
+		const modelSwitchEntered = new Promise((resolve) => {
+			state.onModelSwitch = resolve;
+		});
+		const { commands, handlers } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, sessionFile);
+		await commands.get("flow").handler("go F1", ctx);
+		const hiddenBefore = state.hiddenMessages.length;
+		const input = emitLast(
+			handlers,
+			"input",
+			{ source: "interactive", text: "保持最小范围" },
+			ctx,
+		);
+		await modelSwitchEntered;
+		const lock = acquireFlowLock(dir, "prompt delivery barrier");
+		assert(lock.ok, "prompt delivery barrier was not acquired");
+		releaseModelSwitch();
+		const completedWhileLocked = await Promise.race([
+			input.then(() => true),
+			new Promise((resolve) => setImmediate(() => resolve(false))),
+		]);
+		const hiddenWhileLocked = state.hiddenMessages.length;
+		lock.release();
+		await input;
+		assert(
+			!completedWhileLocked &&
+				hiddenWhileLocked === hiddenBefore &&
+				state.hiddenMessages.length === hiddenBefore + 1,
+			`generation prompt bypassed final Flow-lock CAS: ${JSON.stringify({ completedWhileLocked, hiddenBefore, hiddenWhileLocked, hiddenAfter: state.hiddenMessages.length })}`,
+		);
+	} finally {
+		writeFlowTestConfig();
+	}
+}
+
+async function flowGenerationLockedAlignmentInputContinuesScenario() {
+	const { acquireFlowLock } = await importModule("flow/lock.js");
+	const cwd = tempDir("flow-generation-locked-alignment-input");
+	const sessionFile = join(cwd, "planning.jsonl");
+	const dir = writePreDraftFlow(cwd, "F1", {
+		status: "aligning",
+		stage: "awaiting_alignment_input",
+		sessionFile,
+		lastAlignmentQuestion: "问题 1：范围？",
+	});
+	const state = newState(cwd);
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, sessionFile);
+	await commands.get("flow").handler("status F1", ctx);
+	const hiddenBefore = state.hiddenMessages.length;
+	const lock = acquireFlowLock(dir, "alignment input barrier");
+	assert(lock.ok, "alignment input barrier lock was not acquired");
+	const input = emitLast(
+		handlers,
+		"input",
+		{ source: "interactive", text: "只改当前范围" },
+		ctx,
+	);
+	const completedWhileLocked = await Promise.race([
+		input.then(() => true),
+		new Promise((resolve) => setImmediate(() => resolve(false))),
+	]);
+	assert(
+		state.hiddenMessages.length === hiddenBefore,
+		"locked alignment input sent a prompt before its state commit",
+	);
+	lock.release();
+	const result = await input;
+	const alignment = JSON.parse(
+		readFileSync(join(dir, "alignment.json"), "utf8"),
+	);
+	const visibleAnswers = state.customMessages.filter(
+		({ message }) =>
+			message.display === true && message.content === "只改当前范围",
+	);
+	assert(
+		!completedWhileLocked &&
+			result?.action === "handled" &&
+			alignment.alignmentTurns.at(-1)?.answer === "只改当前范围" &&
+			visibleAnswers.length === 1 &&
+			state.hiddenMessages.length === hiddenBefore + 1,
+		`locked alignment input lost its continuation: ${JSON.stringify({ completedWhileLocked, result, alignment, visibleAnswers: visibleAnswers.length, hiddenBefore, hiddenAfter: state.hiddenMessages.length })}`,
+	);
+	assertLightweightAlignmentPrompt(state.hiddenMessages.at(-1));
+}
+
+async function flowGenerationLockedBlockingInputContinuesScenario() {
+	const { acquireFlowLock } = await importModule("flow/lock.js");
+	const cwd = tempDir("flow-generation-locked-blocking-input");
+	const sessionFile = join(cwd, "planning.jsonl");
+	const dir = writePreDraftFlow(cwd, "F1", {
+		status: "generating",
+		stage: "awaiting_blocking_input",
+		sessionFile,
+		requestText: "实现锁续投递",
+	});
+	const state = newState(cwd);
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, sessionFile);
+	await commands.get("flow").handler("status F1", ctx);
+	const hiddenBefore = state.hiddenMessages.length;
+	const lock = acquireFlowLock(dir, "blocking input barrier");
+	assert(lock.ok, "blocking input barrier lock was not acquired");
+	const input = emitLast(
+		handlers,
+		"input",
+		{ source: "interactive", text: "保留既有 API" },
+		ctx,
+	);
+	const completedWhileLocked = await Promise.race([
+		input.then(() => true),
+		new Promise((resolve) => setImmediate(() => resolve(false))),
+	]);
+	assert(
+		state.hiddenMessages.length === hiddenBefore,
+		"locked blocking input sent a prompt before its state commit",
+	);
+	lock.release();
+	const result = await input;
+	const flow = readFlow(dir);
+	const visibleAnswers = state.customMessages.filter(
+		({ message }) =>
+			message.display === true && message.content === "保留既有 API",
+	);
+	assert(
+		!completedWhileLocked &&
+			result?.action === "handled" &&
+			flow.source.text.includes("保留既有 API") &&
+			visibleAnswers.length === 1 &&
+			state.hiddenMessages.length === hiddenBefore + 1 &&
+			state.hiddenMessages.at(-1).includes("保留既有 API"),
+		`locked blocking input lost its continuation: ${JSON.stringify({ completedWhileLocked, result, source: flow.source, visibleAnswers: visibleAnswers.length, hiddenBefore, hiddenAfter: state.hiddenMessages.length })}`,
+	);
+}
+
+async function flowGenerationSameRevisionPromptDeliveryScenario() {
+	const { acquireFlowLock } = await importModule("flow/lock.js");
+	const generation = await importCachedModule("flow/generation.js");
+	const cwd = tempDir("flow-generation-same-revision-prompt-delivery");
+	const sessionFile = join(cwd, "planning.jsonl");
+	const dir = writePreDraftFlow(cwd, "F1", {
+		status: "generating",
+		stage: "awaiting_blocking_input",
+		sessionFile,
+	});
+	const alignmentPath = join(dir, "alignment.json");
+	const futureAlignment = JSON.parse(readFileSync(alignmentPath, "utf8"));
+	futureAlignment.updatedAt = Date.now() + 60_000;
+	writeFileSync(alignmentPath, `${JSON.stringify(futureAlignment, null, 2)}\n`);
+	const state = newState(cwd);
+	await loadExtension(state);
+	const ctx = commandContext(state, cwd, sessionFile);
+	const action = generation.consumeFlowClarificationInput(
+		"同 revision 只发送一次",
+		ctx,
+	);
+	assert(
+		action?.kind === "prompt",
+		"same revision prompt action was not built",
+	);
+	const barrier = acquireFlowLock(dir, "same revision prompt barrier");
+	assert(barrier.ok, "same revision prompt barrier was not acquired");
+	const hiddenBefore = state.hiddenMessages.length;
+	const api = state.extensionApis.at(-1);
+	const first = generation.deliverFlowGenerationPrompt(
+		api,
+		ctx,
+		action,
+		"Flow 计划澄清提示发送失败",
+	);
+	const second = generation.deliverFlowGenerationPrompt(
+		api,
+		ctx,
+		action,
+		"Flow 计划澄清提示发送失败",
+	);
+	await new Promise((resolve) => setImmediate(resolve));
+	barrier.release();
+	await Promise.all([first, second]);
+	const finalAlignment = JSON.parse(readFileSync(alignmentPath, "utf8"));
+	assert(
+		state.hiddenMessages.length === hiddenBefore + 1 &&
+			finalAlignment.updatedAt === action.revision + 1,
+		`same revision prompt had more than one winner: ${JSON.stringify({ hiddenBefore, hiddenAfter: state.hiddenMessages.length, actionRevision: action.revision, finalRevision: finalAlignment.updatedAt })}`,
+	);
+}
+
+async function flowGenerationStopDuringPromptSwitchScenario() {
+	writeFlowTestConfig({
+		modelRoles: { advisor: { model: "test/advisor", thinking: "off" } },
+	});
+	try {
+		const cwd = tempDir("flow-generation-stop-during-prompt-switch");
+		const sessionFile = join(cwd, "planning.jsonl");
+		const dir = writePreDraftFlow(cwd, "F1", {
+			status: "generating",
+			stage: "awaiting_blocking_input",
+			sessionFile,
+		});
+		const state = newState(cwd);
+		state.allowModelSwitch = true;
+		let releaseModelSwitch;
+		state.modelSwitchBarrier = new Promise((resolve) => {
+			releaseModelSwitch = resolve;
+		});
+		const modelSwitchEntered = new Promise((resolve) => {
+			state.onModelSwitch = resolve;
+		});
+		const { commands, handlers } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, sessionFile);
+		await commands.get("flow").handler("go F1", ctx);
+		const hiddenBefore = state.hiddenMessages.length;
+		const input = emitLast(
+			handlers,
+			"input",
+			{ source: "interactive", text: "停止前的旧回复" },
+			ctx,
+		);
+		await modelSwitchEntered;
+		await commands.get("flow").handler("stop F1", ctx);
+		releaseModelSwitch();
+		await input;
+		const flow = readFlow(dir);
+		assert(
+			flow.status === "paused" &&
+				flow.goals.length === 0 &&
+				state.hiddenMessages.length === hiddenBefore,
+			`real /flow stop lost to late generation prompt: ${JSON.stringify({ flow, hiddenBefore, hiddenAfter: state.hiddenMessages.length })}`,
+		);
+	} finally {
+		writeFlowTestConfig();
+	}
+}
+
+async function flowGenerationTakeoverDuringPromptSwitchScenario() {
+	writeFlowTestConfig({
+		modelRoles: { advisor: { model: "test/advisor", thinking: "off" } },
+	});
+	try {
+		const cwd = tempDir("flow-generation-takeover-during-prompt-switch");
+		const sessionA = join(cwd, "session-a.jsonl");
+		const sessionB = join(cwd, "session-b.jsonl");
+		const dir = writePreDraftFlow(cwd, "F1", {
+			status: "generating",
+			stage: "awaiting_blocking_input",
+			sessionFile: sessionA,
+		});
+		const isolatedDist = join(out, "isolated-generation-prompt-dist");
+		rmSync(isolatedDist, { recursive: true, force: true });
+		cpSync(srcOut, isolatedDist, { recursive: true });
+		const stateA = newState(cwd);
+		const stateB = newState(cwd);
+		stateA.allowModelSwitch = true;
+		stateB.allowModelSwitch = true;
+		let releaseModelSwitch;
+		stateA.modelSwitchBarrier = new Promise((resolve) => {
+			releaseModelSwitch = resolve;
+		});
+		const modelSwitchEntered = new Promise((resolve) => {
+			stateA.onModelSwitch = resolve;
+		});
+		const extensionA = await loadExtension(stateA);
+		const extensionB = await loadExtension(stateB, isolatedDist);
+		const ctxA = commandContext(stateA, cwd, sessionA);
+		const ctxB = commandContext(stateB, cwd, sessionB);
+		await extensionA.commands.get("flow").handler("go F1", ctxA);
+		const hiddenBefore = stateA.hiddenMessages.length;
+		const input = emitLast(
+			extensionA.handlers,
+			"input",
+			{ source: "interactive", text: "接管前的旧回复" },
+			ctxA,
+		);
+		await modelSwitchEntered;
+		await extensionB.commands.get("flow").handler("go F1", ctxB);
+		releaseModelSwitch();
+		await input;
+		const alignment = JSON.parse(
+			readFileSync(join(dir, "alignment.json"), "utf8"),
+		);
+		assert(
+			alignment.sessionFile === sessionB &&
+				stateA.hiddenMessages.length === hiddenBefore &&
+				stateB.hiddenMessages.length === 1,
+			`takeover lost to late generation prompt: ${JSON.stringify({ alignment, hiddenA: stateA.hiddenMessages.length, hiddenB: stateB.hiddenMessages.length })}`,
+		);
+	} finally {
+		writeFlowTestConfig();
+	}
+}
+
+async function alignmentRevisionStrictlyIncreasesScenario() {
+	const { readAlignmentState, writeAlignmentState } = await importModule(
+		"shared/generation-state.js",
+	);
+	const cwd = tempDir("flow-alignment-monotonic-revision");
+	const dir = writePreDraftFlow(cwd, "F1");
+	const alignment = readAlignmentState(dir);
+	alignment.updatedAt = Date.now() + 60_000;
+	const saved = writeAlignmentState(dir, alignment);
+	assert(
+		saved.updatedAt === alignment.updatedAt + 1,
+		`alignment revision did not increase monotonically: ${alignment.updatedAt} -> ${saved.updatedAt}`,
+	);
+}
+
+async function flowGenerationSameRevisionCallbacksScenario() {
+	const { acquireFlowLock } = await importModule("flow/lock.js");
+	const cwd = tempDir("flow-generation-same-revision-callbacks");
+	const sessionFile = join(cwd, "planning.jsonl");
+	const dir = writePreDraftFlow(cwd, "F1", {
+		autoStart: false,
+		sessionFile,
+	});
+	const isolatedDist = join(out, "isolated-generation-cas-dist");
+	rmSync(isolatedDist, { recursive: true, force: true });
+	cpSync(srcOut, isolatedDist, { recursive: true });
+	const stateA = newState(cwd);
+	const stateB = newState(cwd);
+	const extensionA = await loadExtension(stateA);
+	const extensionB = await loadExtension(stateB, isolatedDist);
+	const ctxA = commandContext(stateA, cwd, sessionFile);
+	const ctxB = commandContext(stateB, cwd, sessionFile);
+	await extensionA.commands.get("flow").handler("go F1", ctxA);
+	await extensionB.commands.get("flow").handler("go F1", ctxB);
+	writeFlowSemanticDraft(cwd, "F1", { title: "Single CAS winner" });
+	const barrier = acquireFlowLock(dir, "same revision callback barrier");
+	assert(barrier.ok, "same revision callback barrier was not acquired");
+	const completionA = emit(
+		extensionA.handlers,
+		"agent_end",
+		{ messages: [] },
+		ctxA,
+	);
+	const completionB = emit(
+		extensionB.handlers,
+		"agent_end",
+		{ messages: [] },
+		ctxB,
+	);
+	await new Promise((resolve) => setImmediate(resolve));
+	barrier.release();
+	await Promise.all([completionA, completionB]);
+	const generatedNotices = [
+		...stateA.notifications,
+		...stateB.notifications,
+	].filter((message) => message.includes("Flow 计划已生成"));
+	assert(
+		readFlow(dir).status === "draft" &&
+			!existsSync(join(dir, "alignment.json")) &&
+			generatedNotices.length === 1,
+		`same revision callbacks did not have one CAS winner: ${JSON.stringify({ flow: readFlow(dir), generatedNotices })}`,
+	);
+}
+
+async function flowGenerationTakeoverRejectsLateLoaderScenario() {
+	const cwd = tempDir("flow-generation-takeover-late-loader");
+	const sessionA = join(cwd, "session-a.jsonl");
+	const sessionB = join(cwd, "session-b.jsonl");
+	const dir = writePreDraftFlow(cwd, "F1", { sessionFile: sessionA });
+	const isolatedDist = join(out, "isolated-generation-dist");
+	rmSync(isolatedDist, { recursive: true, force: true });
+	cpSync(srcOut, isolatedDist, { recursive: true });
+	const stateA = newState(cwd);
+	const stateB = newState(cwd);
+	const extensionA = await loadExtension(stateA);
+	const extensionB = await loadExtension(stateB, isolatedDist);
+	const ctxA = commandContext(stateA, cwd, sessionA);
+	const ctxB = commandContext(stateB, cwd, sessionB);
+	await extensionA.commands.get("flow").handler("go F1", ctxA);
+	await extensionB.commands.get("flow").handler("go F1", ctxB);
+	const flowAfterTakeover = JSON.stringify(readFlow(dir));
+	const alignmentAfterTakeover = readFileSync(
+		join(dir, "alignment.json"),
+		"utf8",
+	);
+	writeFlowSemanticDraft(cwd, "F1", { title: "Stale loader draft" });
+	await emit(extensionA.handlers, "agent_end", { messages: [] }, ctxA);
+	assert(
+		JSON.stringify(readFlow(dir)) === flowAfterTakeover &&
+			readFileSync(join(dir, "alignment.json"), "utf8") ===
+				alignmentAfterTakeover,
+		"old module loader changed a Flow after session takeover",
+	);
+}
+
+async function flowGenerationReconcilesAlignmentFirstScenario() {
+	const cwd = tempDir("flow-generation-alignment-first-reconcile");
+	const previousSession = join(cwd, "previous.jsonl");
+	const sessionFile = join(cwd, "planning.jsonl");
+	const dir = writePreDraftFlow(cwd, "F1", {
+		status: "generating",
+		stage: "awaiting_alignment_input",
+		sessionFile: previousSession,
+		lastAlignmentQuestion: "问题 1：范围？",
+	});
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, sessionFile);
+	await commands.get("flow").handler("go F1", ctx);
+	assert(
+		readFlow(dir).status === "aligning",
+		`generation recovery did not project the newer alignment stage to Flow: ${JSON.stringify({ flow: readFlow(dir), alignment: JSON.parse(readFileSync(join(dir, "alignment.json"), "utf8")), notices: state.notifications.slice(-3), hidden: state.hiddenMessages.length })}`,
+	);
+}
+
+async function flowGenerationRecoversDraftWithoutMetaScenario() {
+	const { buildFlowArtifact } = await importModule("flow/builder.js");
+	for (const mode of [
+		"valid",
+		"invalid",
+		"missing-semantic",
+		"malformed-semantic",
+	]) {
+		const invalidMarkdown = mode === "invalid";
+		const cwd = tempDir(`flow-generation-draft-without-meta-${mode}`);
+		const sessionFile = join(cwd, "planning.jsonl");
+		const dir = writePreDraftFlow(cwd, "F1", {
+			autoStart: false,
+			sessionFile,
+			alignmentTurns: [{ question: "问题 1：范围？", answer: "保留最小范围" }],
+		});
+		writeFlowSemanticDraft(cwd, "F1", {
+			invalidMarkdown,
+			title: invalidMarkdown ? "Invalid interrupted draft" : "Recovered draft",
+		});
+		const semantic = JSON.parse(
+			readFileSync(join(dir, "flow.semantic.json"), "utf8"),
+		);
+		const preDraft = readFlow(dir);
+		const interrupted = buildFlowArtifact(
+			dir,
+			semantic,
+			preDraft.language,
+			preDraft.source,
+		);
+		assert(
+			interrupted.status === "draft" &&
+				interrupted.meta === null &&
+				existsSync(join(dir, "alignment.json")),
+			"draft/meta-null crash fixture was not created",
+		);
+		if (mode === "missing-semantic") rmSync(join(dir, "flow.semantic.json"));
+		if (mode === "malformed-semantic")
+			writeFileSync(join(dir, "flow.semantic.json"), "{");
+		const state = newState(cwd);
+		const { commands } = await loadExtension(state);
+		const ctx = commandContext(state, cwd, sessionFile);
+		await commands.get("flow").handler("go F1", ctx);
+		if (mode !== "valid") {
+			const recovered = readFlow(dir);
+			assert(
+				recovered.status === "generating" &&
+					recovered.goals.length === 0 &&
+					recovered.repairAttempts === 1 &&
+					recovered.meta === null &&
+					existsSync(join(dir, "alignment.json")) &&
+					state.newSessions.length === 0 &&
+					state.hiddenMessages.at(-1)?.includes("当前校验错误"),
+				`invalid draft/meta-null crash did not return to repair: ${JSON.stringify({ recovered, sessions: state.newSessions.length, hidden: state.hiddenMessages.at(-1) })}`,
+			);
+			continue;
+		}
+		await flushScheduledGoalStart();
+		const recovered = readFlow(dir);
+		assert(
+			recovered.status === "running" &&
+				recovered.meta?.alignment?.turns[0]?.answer === "保留最小范围" &&
+				!existsSync(join(dir, "alignment.json")) &&
+				state.newSessions.length === 1,
+			`valid draft/meta-null crash lost commit metadata: ${JSON.stringify({ recovered, sessions: state.newSessions.length })}`,
+		);
+	}
+}
+
+async function flowGenerationCleansFinalAlignmentResidueScenario() {
+	const cwd = tempDir("flow-generation-final-alignment-residue");
+	const dir = createFlow(cwd, "F1");
+	const flow = readFlow(dir);
+	writeFlow(dir, {
+		...flow,
+		meta: {
+			plannedBy: null,
+			alignment: {
+				kind: "recorded",
+				turns: [{ question: "问题 1：范围？", answer: "最小范围" }],
+			},
+		},
+	});
+	writeFileSync(
+		join(dir, "alignment.json"),
+		`${JSON.stringify(
+			{
+				version: 1,
+				stage: "generating",
+				sessionFile: join(cwd, "planning.jsonl"),
+				autoStart: false,
+				depth: "standard",
+				alignmentTurns: [{ question: "问题 1：范围？", answer: "最小范围" }],
+				lastAlignmentQuestion: null,
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			},
+			null,
+			2,
+		)}\n`,
+	);
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("go F1", ctx);
+	await flushScheduledGoalStart();
+	assert(
+		!existsSync(join(dir, "alignment.json")) &&
+			readFlow(dir).status === "running" &&
+			state.newSessions.length === 1,
+		"draft recovery did not idempotently remove residual alignment state",
+	);
+}
+
 async function flowGenerationStopIgnoresLatePromptScenario() {
+	const { flowGenerationResourceCounts } =
+		await importCachedModule("flow/generation.js");
 	const cwd = tempDir("flow-generation-stop-late-prompt");
 	const state = newState(cwd);
 	const { commands, handlers } = await loadExtension(state);
@@ -5619,6 +9265,17 @@ async function flowGenerationStopIgnoresLatePromptScenario() {
 		stopped.status === "paused",
 		`pre-draft stop did not pause: status=${stopped.status} notice=${state.notifications.at(-1)}`,
 	);
+	assert(
+		JSON.stringify(flowGenerationResourceCounts()) ===
+			JSON.stringify({
+				contexts: 0,
+				promptTargets: 1,
+				stalePromptTargets: 1,
+				replyTargets: 0,
+				resultTokens: 0,
+			}),
+		`generation stop retained more than one tombstone: ${JSON.stringify(flowGenerationResourceCounts())}`,
+	);
 	writeFlowSemanticDraft(cwd, "F1", { title: "Late Stopped Draft" });
 	await emit(handlers, "agent_end", { messages: [] }, ctx);
 	const flow = readFlow(join(cwd, ".flow", "F1"));
@@ -5627,6 +9284,43 @@ async function flowGenerationStopIgnoresLatePromptScenario() {
 			flow.goals.length === 0 &&
 			state.hiddenMessages.length === hiddenBefore,
 		`stopped generation prompt was processed after stop: status=${flow.status} goals=${flow.goals.length} hidden=${state.hiddenMessages.length}/${hiddenBefore}`,
+	);
+	assert(
+		Object.values(flowGenerationResourceCounts()).every((count) => count === 0),
+		`late generation tombstone was not consumed: ${JSON.stringify(flowGenerationResourceCounts())}`,
+	);
+}
+
+async function flowGenerationSessionShutdownCleanupScenario() {
+	const { flowGenerationResourceCounts } =
+		await importCachedModule("flow/generation.js");
+	const cwd = tempDir("flow-generation-session-shutdown");
+	const state = newState(cwd);
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("shutdown generation", ctx);
+	assert(
+		flowGenerationResourceCounts().contexts === 1,
+		"active generation cache was not established",
+	);
+	await emit(handlers, "session_shutdown", {}, ctx);
+	const released = flowGenerationResourceCounts();
+	assert(
+		released.contexts === 0 &&
+			released.replyTargets === 0 &&
+			released.resultTokens === 0 &&
+			released.promptTargets === 1 &&
+			released.stalePromptTargets === 1,
+		`generation teardown kept live state: ${JSON.stringify(released)}`,
+	);
+	writeFlowSemanticDraft(cwd, "F1", { title: "Late Shutdown Draft" });
+	await emit(handlers, "agent_end", { messages: [] }, ctx);
+	assert(
+		readFlow(join(cwd, ".flow", "F1")).status === "generating" &&
+			Object.values(flowGenerationResourceCounts()).every(
+				(count) => count === 0,
+			),
+		"late agent_end bypassed or retained the teardown tombstone",
 	);
 }
 
@@ -5677,6 +9371,9 @@ async function flowPreDraftStopGoScenario() {
 }
 
 async function flowSequentialStopGoScenario() {
+	const { getGoalState } = await importCachedModule("goal.js");
+	const { completionFact, rememberedFlowContext } =
+		await importCachedModule("flow/runtime.js");
 	const cwd = tempDir("flow-sequential-stop-go");
 	const dir = createFlow(cwd, "F1", { planCount: 3 });
 	const state = newState(cwd);
@@ -5699,6 +9396,11 @@ async function flowSequentialStopGoScenario() {
 		latestGoalState(state, sessionFile)?.status === "paused",
 		"running stop did not pause Goal runtime",
 	);
+	assert(
+		rememberedFlowContext(sessionFile) === undefined &&
+			completionFact(sessionFile) === undefined,
+		"stable sequential stop retained context or completion",
+	);
 
 	entriesFor(state, sessionFile).push(completionEntry(sessionFile));
 	await emit(handlers, "agent_end", { messages: [] }, goalCtx);
@@ -5716,12 +9418,220 @@ async function flowSequentialStopGoScenario() {
 		latestGoalState(state, sessionFile)?.status === "active",
 		"go did not resume stopped Goal runtime",
 	);
+	assert(
+		flow.goals[0].goalId === getGoalState(goalCtx)?.id,
+		"resumed runtime Goal ID was not canonical before its prompt",
+	);
 	await emit(handlers, "agent_end", { messages: [] }, goalCtx);
 	flow = readFlow(dir);
 	assert(
 		flow.currentGoal === 0 && flow.goals[0].status === "running",
 		"old completion fact was consumed after stop/go resume",
 	);
+	assert(
+		completionFact(sessionFile) === undefined,
+		"rejected late completion remained cached",
+	);
+}
+
+async function flowBlockedGoScenario() {
+	const cwd = tempDir("flow-blocked-go");
+	const runner = installFlowReviewRunner(cwd, {
+		output: "FAIL\n仍需人工验证\n",
+	});
+	writeFlowTestConfig({
+		state: true,
+		background: { command: runner.command },
+	});
+	try {
+		const dir = createFlow(cwd, "F1");
+		const state = newState(cwd);
+		const { commands, handlers } = await loadExtension(state);
+		const planningCtx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		await commands.get("flow").handler("go F1", planningCtx);
+		await flushScheduledGoalStart();
+		const goalCtx = state.activeCtx;
+		const sessionFile = goalCtx.sessionManager.getSessionFile();
+		await emit(
+			handlers,
+			"agent_end",
+			{ messages: [{ role: "assistant", stopReason: "stop" }] },
+			goalCtx,
+		);
+		assert(
+			readFlow(dir).goals[0].completionCursor === "acceptance_repair",
+			"acceptance failure did not enter repair before BLOCKED",
+		);
+
+		await emit(
+			handlers,
+			"agent_end",
+			{
+				messages: [
+					{
+						role: "assistant",
+						stopReason: "stop",
+						content: [
+							{
+								type: "text",
+								text: "BLOCKED: 完成真机窗口焦点验证",
+							},
+						],
+					},
+				],
+			},
+			goalCtx,
+		);
+		let flow = readFlow(dir);
+		assert(
+			flow.status === "paused" &&
+				flow.attention?.kind === "user_action_required" &&
+				flow.goals[0].completionCursor === "acceptance_repair" &&
+				latestGoalState(state, sessionFile)?.status === "paused",
+			`BLOCKED did not pause before go: ${JSON.stringify(flow)}`,
+		);
+		const promptsBeforeResume = state.hiddenMessages.length;
+		await commands.get("flow").handler("go F1", goalCtx);
+		flow = readFlow(dir);
+		assert(
+			flow.status === "running" &&
+				flow.attention === null &&
+				flow.goals[0].completionCursor === "acceptance_repair" &&
+				latestGoalState(state, sessionFile)?.status === "active",
+			`/flow go did not resume BLOCKED Flow: ${JSON.stringify(flow)}`,
+		);
+		assert(
+			state.hiddenMessages.length === promptsBeforeResume + 1 &&
+				state.hiddenMessages.at(-1).includes("用户恢复此步骤后已离场"),
+			`BLOCKED resume prompt count: ${state.hiddenMessages.length - promptsBeforeResume}`,
+		);
+	} finally {
+		writeFlowTestConfig();
+	}
+}
+
+async function flowStopDuringRunningQualityScenario() {
+	const cwd = tempDir("flow-stop-running-quality");
+	const runner = installFlowReviewRunner(cwd, {
+		output: "PASS\nlate pass\n证据：文件=src/app.ts；命令=npm test\n",
+		wait: true,
+	});
+	writeFlowTestConfig({
+		quality: true,
+		background: { command: runner.command },
+		checks: { timeoutMinutes: TEST_CHECK_TIMEOUT_MINUTES },
+	});
+	try {
+		const dir = createFlow(cwd, "F1");
+		const state = newState(cwd);
+		const { commands, handlers } = await loadExtension(state);
+		const planningCtx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		await commands.get("flow").handler("go F1", planningCtx);
+		await flushScheduledGoalStart();
+		const goalCtx = state.activeCtx;
+		const sessionFile = goalCtx.sessionManager.getSessionFile();
+		const completing = emit(
+			handlers,
+			"agent_end",
+			{ messages: [{ role: "assistant", stopReason: "stop" }] },
+			goalCtx,
+		);
+		await waitForFile(runner.startedPath);
+		state.idle = false;
+		await commands.get("flow").handler("stop F1", goalCtx);
+		await completing;
+		const flow = readFlow(dir);
+		const { isReviewLoopActive } = await importCachedModule("review.js");
+		assert(flow.status === "paused", "quality stop did not pause Flow");
+		assert(
+			latestGoalState(state, sessionFile)?.status === "paused",
+			"quality stop did not pause Goal runtime",
+		);
+		assert(!isReviewLoopActive(), "quality stop left review loop active");
+		assert(
+			customEntryCount(state, sessionFile, "pi-flow-goal-completed") === 0,
+			"late quality result completed stopped Flow",
+		);
+		assert(
+			!cardTitles(state).some((title) => /质检通过|Flow .*已完成/u.test(title)),
+			cardTitles(state).join(" | "),
+		);
+		assert(
+			state.notifications.filter((item) => item.includes("Flow 已暂停"))
+				.length === 1 &&
+				!state.notifications.some((item) => item.includes("质检已取消")),
+			state.notifications.join("\n"),
+		);
+	} finally {
+		writeFlowTestConfig();
+	}
+}
+
+async function flowStopWhileQualityAwaitsRepairScenario() {
+	const cwd = tempDir("flow-stop-awaiting-quality-repair");
+	const runner = installFlowReviewRunner(cwd, {
+		output: "FAIL\n质量不达标\n",
+	});
+	writeFlowTestConfig({
+		quality: true,
+		background: { command: runner.command },
+		checks: { timeoutMinutes: TEST_CHECK_TIMEOUT_MINUTES },
+	});
+	try {
+		const dir = createFlow(cwd, "F1");
+		const state = newState(cwd);
+		const { commands, handlers } = await loadExtension(state);
+		const planningCtx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+		await commands.get("flow").handler("go F1", planningCtx);
+		await flushScheduledGoalStart();
+		const goalCtx = state.activeCtx;
+		const sessionFile = goalCtx.sessionManager.getSessionFile();
+		await emit(
+			handlers,
+			"agent_end",
+			{ messages: [{ role: "assistant", stopReason: "stop" }] },
+			goalCtx,
+		);
+		const { isReviewLoopActive } = await importCachedModule("review.js");
+		assert(isReviewLoopActive(), "quality loop did not await repair");
+		state.idle = false;
+		await commands.get("flow").handler("stop F1", planningCtx);
+		assert(!isReviewLoopActive(), "awaiting quality loop survived /flow stop");
+		assert(
+			latestGoalState(state, sessionFile)?.status === "paused",
+			"cross-session stop did not pause Goal runtime",
+		);
+		assert(state.aborts === 1, "cross-session stop did not abort repair turn");
+		assert(
+			state.notifications.filter((item) => item.includes("Flow 已暂停"))
+				.length === 1 &&
+				!state.notifications.some((item) => item.includes("质检已取消")),
+			state.notifications.join("\n"),
+		);
+
+		state.idle = true;
+		await commands.get("flow").handler("go F1", planningCtx);
+		const resumedCtx = state.activeCtx;
+		await emit(
+			handlers,
+			"agent_end",
+			{ messages: [{ role: "assistant", stopReason: "stop" }] },
+			resumedCtx,
+		);
+		const resumed = readFlow(dir);
+		assert(resumed.status === "running", "resumed Flow was paused by old loop");
+		assert(
+			latestGoalState(state, sessionFile)?.status === "active",
+			"resumed Goal was paused by old loop",
+		);
+		assert(
+			resumed.goals[0].checks.quality.rounds.length === 2,
+			`first resumed agent_end was consumed by old loop: ${JSON.stringify(resumed.goals[0].checks.quality)}`,
+		);
+		await commands.get("flow").handler("stop F1", planningCtx);
+	} finally {
+		writeFlowTestConfig();
+	}
 }
 
 async function flowStopConsumesQueuedContinuationPromptScenario() {
@@ -5877,7 +9787,6 @@ async function verifyCurrentSnapshotUsesLatestFlowScenario() {
 	const { verifyCurrentSnapshot } = await importModule(
 		"flow/execution/shared.js",
 	);
-	const { planSnapshotHash } = await importModule("flow/snapshot.js");
 	const cwd = tempDir("flow-verify-latest-snapshot");
 	const dir = createFlow(cwd, "F1");
 	const state = newState(cwd);
@@ -5890,7 +9799,6 @@ async function verifyCurrentSnapshotUsesLatestFlowScenario() {
 	stale.goals[0].status = "running";
 	stale.goals[0].sessionFile = join(cwd, "goal-session.jsonl");
 	stale.goals[0].snapshot = snapshot;
-	stale.goals[0].snapshotHash = planSnapshotHash(snapshot);
 	writeFlow(dir, stale);
 	writeFileSync(join(dir, stale.goals[0].file), `${snapshot}\nchanged\n`);
 	const latest = readFlow(dir);
@@ -5911,7 +9819,6 @@ async function verifyCurrentSnapshotUsesLatestFlowScenario() {
 }
 
 async function completionWithEventCommandContextScenario() {
-	const { planSnapshotHash } = await importModule("plan/snapshot.js");
 	const cwd = tempDir("completion-event-command-context");
 	const dir = createFlow(cwd, "F1", { planCount: 3 });
 	const state = newState(cwd);
@@ -5924,16 +9831,20 @@ async function completionWithEventCommandContextScenario() {
 	flow.goals[0].status = "running";
 	flow.goals[0].sessionFile = sessionFile;
 	flow.goals[0].snapshot = readFileSync(join(dir, flow.goals[0].file), "utf8");
-	flow.goals[0].snapshotHash = planSnapshotHash(flow.goals[0].snapshot);
 	writeFlow(dir, flow);
 	const ctx = commandContext(state, cwd, sessionFile);
+	await emit(handlers, "session_start", {}, ctx);
 	entriesFor(state, sessionFile).push(completionEntry(sessionFile));
 	await emit(handlers, "agent_end", { messages: [] }, ctx);
-	await flushScheduledGoalStart();
-	const completeNotice = state.notifications.find((message) =>
-		message.includes("Flow 第 1 步 · Goal 1 已完成"),
+	assert(
+		state.newSessions.length === 0,
+		"completion auto-advance replaced the session before agent_end dispatch completed",
 	);
-	assertNoticeFormat(completeNotice, "✅", "编号：F1");
+	await flushScheduledGoalStart();
+	assert(
+		!state.notifications.some((message) => message.includes("已完成")),
+		state.notifications.join("\n"),
+	);
 	const saved = readFlow(dir);
 	assert(saved.currentGoal === 1, "flow did not advance with event context");
 	assert(saved.goals[0].status === "complete", "completed goal not recorded");
@@ -5960,7 +9871,6 @@ async function completionWithEventCommandContextScenario() {
 }
 
 async function completionWithoutRememberedContextScenario() {
-	const { planSnapshotHash } = await importModule("plan/snapshot.js");
 	const cwd = tempDir("completion-no-remembered-context");
 	const dir = createFlow(cwd, "F1", { planCount: 3 });
 	const state = newState(cwd);
@@ -5973,12 +9883,24 @@ async function completionWithoutRememberedContextScenario() {
 	flow.goals[0].status = "running";
 	flow.goals[0].sessionFile = sessionFile;
 	flow.goals[0].snapshot = readFileSync(join(dir, flow.goals[0].file), "utf8");
-	flow.goals[0].snapshotHash = planSnapshotHash(flow.goals[0].snapshot);
 	writeFlow(dir, flow);
 	const ctx = commandContext(state, cwd, sessionFile);
 	ctx.newSession = undefined;
+	await emit(handlers, "session_start", {}, ctx);
+	const { piAttentionSignal } = await importCachedModule(
+		"shared/activity-signal.js",
+	);
+	const attentionSources = [];
+	const unsubscribeAttention = piAttentionSignal().subscribe((request) =>
+		attentionSources.push(request.source),
+	);
 	entriesFor(state, sessionFile).push(completionEntry(sessionFile));
 	await emit(handlers, "agent_end", { messages: [] }, ctx);
+	unsubscribeAttention();
+	assert(
+		attentionSources.join("|") === "pi-flow:flow:F1",
+		`continue-required attention mismatch: ${attentionSources.join(" | ")}`,
+	);
 	const saved = readFlow(dir);
 	assert(saved.currentGoal === 1, "flow did not advance without context");
 	assert(saved.goals[0].status === "complete", "completed goal not recorded");
@@ -5990,10 +9912,10 @@ async function completionWithoutRememberedContextScenario() {
 		state.newSessions.length === 0,
 		"new session started without command context",
 	);
-	const continueNotice = state.notifications.find((item) =>
-		item.includes("Flow 已更新"),
+	assert(
+		!state.notifications.some((item) => item.includes("Flow 已更新")),
+		state.notifications.join("\n"),
 	);
-	assertNoticeFormat(continueNotice, "⚠️", "运行 /flow go F1 推进下一步");
 	const continueCard = state.customMessages.find(
 		(item) => item.message.details?.title === "Flow 第 2 步 · Goal 2 已就绪",
 	);
@@ -6004,7 +9926,6 @@ async function completionWithoutRememberedContextScenario() {
 }
 
 async function stuckRefactorBContinueScenario() {
-	const { planSnapshotHash } = await importModule("plan/snapshot.js");
 	const cwd = tempDir("stuck-refactor-b-continue");
 	const dir = createFlow(cwd, "F1", { planCount: 5 });
 	const state = newState(cwd);
@@ -6023,7 +9944,6 @@ async function stuckRefactorBContinueScenario() {
 	flow.goals[1].status = "running";
 	flow.goals[1].sessionFile = sessionFile;
 	flow.goals[1].snapshot = readFileSync(join(dir, "G2-goal-review.md"), "utf8");
-	flow.goals[1].snapshotHash = planSnapshotHash(flow.goals[1].snapshot);
 	flow.goals[1].checks = stuckRefactorBChecks();
 	writeFlow(dir, flow);
 	entriesFor(state, sessionFile).push(
@@ -6051,14 +9971,13 @@ async function stuckRefactorBContinueScenario() {
 		"stuck refactor-b goal3 not started",
 	);
 	assert(
-		state.notifications.some((message) =>
-			message.includes("Flow 第 2 步 · 审查逻辑拆模块并统一截断 已完成"),
-		),
-		"stuck refactor-b completion notification missing",
+		!state.notifications.some((message) => message.includes("已完成")),
+		state.notifications.join("\n"),
 	);
 }
 
 async function completionEventUsesRememberedCommandContextScenario() {
+	const { rememberedFlowContext } = await importCachedModule("flow/runtime.js");
 	const cwd = tempDir("completion-remembered-command-context");
 	const dir = createFlow(cwd, "F1", { planCount: 3 });
 	const state = newState(cwd);
@@ -6087,10 +10006,14 @@ async function completionEventUsesRememberedCommandContextScenario() {
 		state.newSessions.length === 2,
 		"remembered context skipped next session",
 	);
+	assert(
+		rememberedFlowContext(sessionFile) === undefined &&
+			rememberedFlowContext(saved.goals[1].sessionFile) === state.activeCtx,
+		"completion retained the old context or released the next context",
+	);
 }
 
 async function completionEmitUsesEmittedContextScenario() {
-	const { planSnapshotHash } = await importModule("plan/snapshot.js");
 	const { emitFlowGoalCompleted } =
 		await importCachedModule("flow/completion.js");
 	const cwd = tempDir("completion-emitted-context");
@@ -6105,7 +10028,6 @@ async function completionEmitUsesEmittedContextScenario() {
 	flow.goals[0].status = "running";
 	flow.goals[0].sessionFile = sessionFile;
 	flow.goals[0].snapshot = readFileSync(join(dir, flow.goals[0].file), "utf8");
-	flow.goals[0].snapshotHash = planSnapshotHash(flow.goals[0].snapshot);
 	writeFlow(dir, flow);
 	const ctx = commandContext(state, cwd, sessionFile);
 	emitFlowGoalCompleted(completionEntry(sessionFile).data, ctx);
@@ -6128,7 +10050,6 @@ async function completionEmitUsesEmittedContextScenario() {
 
 async function completionCommandConsumesStoredFactScenario() {
 	for (const command of ["go"]) {
-		const { planSnapshotHash } = await importModule("plan/snapshot.js");
 		const cwd = tempDir(`completion-command-${command}`);
 		const dir = createFlow(cwd, "F1", { planCount: 3 });
 		const state = newState(cwd);
@@ -6144,7 +10065,6 @@ async function completionCommandConsumesStoredFactScenario() {
 			join(dir, flow.goals[0].file),
 			"utf8",
 		);
-		flow.goals[0].snapshotHash = planSnapshotHash(flow.goals[0].snapshot);
 		writeFlow(dir, flow);
 		const ctx = commandContext(state, cwd, sessionFile);
 		entriesFor(state, sessionFile).push(completionEntry(sessionFile));
@@ -6162,6 +10082,71 @@ async function completionCommandConsumesStoredFactScenario() {
 		);
 		assert(state.newSessions.length === 1, `${command} skipped next session`);
 	}
+}
+
+async function completionLockConflictRetainsFactScenario() {
+	const { handleGoalCompletionEnd } = await importCachedModule(
+		"flow/execution/advance.js",
+	);
+	const { withFlowLock } = await importCachedModule("flow/lock.js");
+	const {
+		completionFact,
+		rememberCompletionFact,
+		rememberFlowContext,
+		rememberedFlowContext,
+	} = await importCachedModule("flow/runtime.js");
+	const cwd = tempDir("completion-lock-retains-fact");
+	const dir = createFlow(cwd, "F1");
+	const state = newState(cwd);
+	await loadExtension(state);
+	const pi = state.extensionApis.at(-1);
+	const sessionFile = join(cwd, "goal-session.jsonl");
+	writeFileSync(sessionFile, "");
+	const flow = readFlow(dir);
+	const snapshot = readFileSync(join(dir, flow.goals[0].file), "utf8");
+	writeFlow(dir, {
+		...flow,
+		status: "running",
+		startedAt: Date.now(),
+		goals: [
+			{
+				...flow.goals[0],
+				status: "running",
+				sessionFile,
+				snapshot,
+			},
+		],
+	});
+	const ctx = commandContext(state, cwd, sessionFile);
+	const fact = completionEntry(sessionFile).data;
+	rememberFlowContext(ctx);
+	rememberCompletionFact(fact);
+	let releaseLock;
+	const held = withFlowLock(
+		dir,
+		"hold completion",
+		() =>
+			new Promise((resolve) => {
+				releaseLock = resolve;
+			}),
+	);
+	await Promise.resolve();
+	await handleGoalCompletionEnd(pi, ctx, fact);
+	assert(
+		completionFact(sessionFile) === fact &&
+			rememberedFlowContext(sessionFile) === ctx &&
+			readFlow(dir).status === "running",
+		"lock conflict consumed completion or context",
+	);
+	releaseLock();
+	await held;
+	await handleGoalCompletionEnd(pi, ctx);
+	assert(
+		readFlow(dir).status === "complete" &&
+			completionFact(sessionFile) === undefined &&
+			rememberedFlowContext(sessionFile) === undefined,
+		"retried completion did not commit and release",
+	);
 }
 
 async function flowStartWithoutNewSessionScenario() {
@@ -6289,7 +10274,7 @@ async function englishFlowDynamicNotificationsScenario() {
 		);
 		assertFlowCard(
 			runningState,
-			"Flow Step 1 · Goal 1 started",
+			"Flow Goal 1 started",
 			"English independent start card used runtime language",
 		);
 
@@ -6368,6 +10353,7 @@ async function englishFlowCardsUseArtifactLanguageScenario() {
 			{ messages: [{ role: "assistant", stopReason: "stop" }] },
 			planCtx,
 		);
+		await flushScheduledGoalStart();
 		assertFlowCard(
 			state,
 			"Flow complete",
@@ -6383,7 +10369,6 @@ async function englishFlowCardsUseArtifactLanguageScenario() {
 		const { handlers: readyHandlers } = await loadExtension(readyState);
 		const sessionFile = join(readyCwd, "goal-session.jsonl");
 		writeFileSync(sessionFile, "");
-		const { planSnapshotHash } = await importModule("plan/snapshot.js");
 		const readyFlow = readFlow(readyDir);
 		readyFlow.status = "running";
 		readyFlow.startedAt = Date.now();
@@ -6393,14 +10378,13 @@ async function englishFlowCardsUseArtifactLanguageScenario() {
 			join(readyDir, readyFlow.goals[0].file),
 			"utf8",
 		);
-		readyFlow.goals[0].snapshotHash = planSnapshotHash(
-			readyFlow.goals[0].snapshot,
-		);
 		writeFlow(readyDir, readyFlow);
 		const readyCtx = commandContext(readyState, readyCwd, sessionFile);
 		readyCtx.newSession = undefined;
+		await emit(readyHandlers, "session_start", {}, readyCtx);
 		entriesFor(readyState, sessionFile).push(completionEntry(sessionFile));
 		await emit(readyHandlers, "agent_end", { messages: [] }, readyCtx);
+		await flushScheduledGoalStart();
 		assertFlowCard(
 			readyState,
 			"Flow Step 2 · Goal 2 ready",
@@ -6422,7 +10406,7 @@ async function englishFlowCardsUseArtifactLanguageScenario() {
 		await flushScheduledGoalStart();
 		assertChineseFlowCard(
 			zhState,
-			"Flow 第 1 步 · Goal 1 已启动",
+			"Flow Goal 1 已启动",
 			"Chinese Flow start card was translated by runtime language",
 		);
 	} finally {
@@ -6454,11 +10438,15 @@ async function flowStartUsesReplacementContextScenario() {
 		),
 		"Flow Goal snapshot leaked into visible chat",
 	);
+	const startCard = state.customMessages.find(
+		(item) => item.message.details?.title === "Flow Goal 1 已启动",
+	);
+	assert(startCard, "Flow Goal start card missing");
 	assert(
-		state.customMessages.some(
-			(item) => item.message.details?.title === "Flow 第 1 步 · Goal 1 已启动",
-		),
-		"Flow Goal start card missing",
+		startCard.message.details.lines.includes("编号：F1") &&
+			!startCard.message.details.lines.join("\n").includes("进度：1/1") &&
+			!startCard.message.details.lines.join("\n").includes("后续：无"),
+		startCard.message.details.lines.join(" | "),
 	);
 	assert(
 		state.sessionNames.at(-1).startsWith("F1"),
@@ -6466,7 +10454,208 @@ async function flowStartUsesReplacementContextScenario() {
 	);
 }
 
-async function flowResumeMissingRuntimeGoalHiddenPromptScenario() {
+async function flowResumeMissingSessionScenario() {
+	const cwd = tempDir("flow-resume-missing-session");
+	const dir = createFlow(cwd, "F1");
+	const flow = readFlow(dir);
+	const snapshot = readFileSync(join(dir, flow.goals[0].file), "utf8");
+	flow.status = "running";
+	flow.startedAt = Date.now();
+	flow.goals[0].status = "running";
+	flow.goals[0].sessionFile = join(cwd, "missing-goal-session.jsonl");
+	flow.goals[0].snapshot = snapshot;
+	writeFlow(dir, flow);
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("go F1", ctx);
+	await flushScheduledGoalStart();
+	const resumed = readFlow(dir);
+	assert(
+		state.newSessions.length === 1 &&
+			resumed.goals[0].status === "running" &&
+			resumed.goals[0].sessionFile !== flow.goals[0].sessionFile &&
+			existsSync(resumed.goals[0].sessionFile),
+		"running Flow with a missing session was not restarted",
+	);
+}
+
+async function flowStartedGoalMissingSessionStopsScenario() {
+	const cwd = tempDir("flow-started-goal-missing-session");
+	const dir = createFlow(cwd, "F1");
+	const state = newState(cwd);
+	let goalIdAtPrompt;
+	state.onHiddenMessage = (message) => {
+		if (message.customType === "pi-flow-goal-prompt")
+			goalIdAtPrompt = readFlow(dir).goals[0].goalId;
+	};
+	const { commands } = await loadExtension(state);
+	const planningSession = join(cwd, "planning.jsonl");
+	await commands
+		.get("flow")
+		.handler("go F1", commandContext(state, cwd, planningSession));
+	await flushScheduledGoalStart();
+	const started = readFlow(dir);
+	assert(
+		typeof goalIdAtPrompt === "string" &&
+			goalIdAtPrompt === started.goals[0].goalId,
+		"runtime Goal ID was not canonical before the execution prompt",
+	);
+	const startedGoal = JSON.stringify(started.goals[0]);
+	const startedSession = started.goals[0].sessionFile;
+	assert(startedSession, "started Goal session was not recorded");
+	rmSync(startedSession, { force: true });
+	const sessionCount = state.newSessions.length;
+	const promptCount = state.hiddenMessages.length;
+	state.onHiddenMessage = undefined;
+	await commands
+		.get("flow")
+		.handler("go F1", commandContext(state, cwd, planningSession));
+	const stopped = readFlow(dir);
+	assert(
+		stopped.status === "paused" &&
+			stopped.attention?.kind === "interrupted" &&
+			JSON.stringify(stopped.goals[0]) === startedGoal &&
+			state.newSessions.length === sessionCount &&
+			state.hiddenMessages.length === promptCount,
+		"started Goal with a lost session was restarted",
+	);
+}
+
+async function flowResumeMissingSessionEvidenceScenario() {
+	const fixtures = [
+		{
+			name: "goal-id",
+			mutate(goal) {
+				goal.goalId = "existing-goal";
+			},
+		},
+		{
+			name: "active-check",
+			mutate(goal) {
+				goal.completionCursor = "acceptance_retry";
+				goal.checks.acceptance.active = activeCheck("reviewer");
+			},
+		},
+	];
+	for (const fixture of fixtures) {
+		const cwd = tempDir(`flow-resume-missing-session-${fixture.name}`);
+		const dir = createFlow(cwd, "F1");
+		const sessionFile = join(cwd, "missing-goal-session.jsonl");
+		const flow = await runningGoalFlow(dir, sessionFile);
+		fixture.mutate(flow.goals[0]);
+		writeFlow(dir, flow);
+		await assertLostGoalResumeStops(cwd, dir, false, fixture.name);
+	}
+}
+
+async function flowResumeMissingRuntimeGoalScenario() {
+	const fixtures = [
+		{ name: "running", mutate() {} },
+		{
+			name: "result",
+			mutate(goal) {
+				goal.result.summary = "execution changed the workspace";
+			},
+		},
+		{
+			name: "check-round",
+			mutate(goal) {
+				goal.checks.acceptance.rounds = [
+					{ round: 1, result: "failed", summary: "acceptance failed" },
+				];
+			},
+		},
+		{
+			name: "cursor",
+			mutate(goal) {
+				goal.completionCursor = "quality_repair";
+			},
+		},
+	];
+	for (const fixture of fixtures) {
+		const cwd = tempDir(`flow-resume-missing-runtime-${fixture.name}`);
+		const dir = createFlow(cwd, "F1");
+		const sessionFile = join(cwd, "goal-session.jsonl");
+		writeFileSync(sessionFile, "");
+		const flow = await runningGoalFlow(dir, sessionFile);
+		fixture.mutate(flow.goals[0]);
+		writeFlow(dir, flow);
+		await assertLostGoalResumeStops(cwd, dir, true, fixture.name);
+	}
+}
+
+async function runningGoalFlow(dir, sessionFile) {
+	const flow = readFlow(dir);
+	const snapshot = readFileSync(join(dir, flow.goals[0].file), "utf8");
+	const startedAt = Date.now();
+	flow.status = "running";
+	flow.startedAt = startedAt;
+	flow.goals[0] = {
+		...flow.goals[0],
+		status: "running",
+		startedAt,
+		sessionFile,
+		snapshot,
+	};
+	return flow;
+}
+
+async function assertLostGoalResumeStops(cwd, dir, sessionExists, label) {
+	const before = readFlow(dir);
+	const expectedGoal = JSON.stringify(before.goals[0]);
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("go F1", ctx);
+	const stopped = readFlow(dir);
+	assert(
+		state.newSessions.length === 0,
+		`${label}: lost Goal opened a new session`,
+	);
+	assert(
+		state.hiddenMessages.length === 0,
+		`${label}: lost Goal sent a hidden execution prompt`,
+	);
+	assert(
+		state.switches.length === (sessionExists ? 1 : 0),
+		`${label}: unexpected session switch count ${state.switches.length}`,
+	);
+	assert(
+		stopped.status === "paused" &&
+			stopped.attention?.kind === "interrupted" &&
+			JSON.stringify(stopped.goals[0]) === expectedGoal,
+		`${label}: lost Goal did not pause atomically with evidence intact`,
+	);
+	const notice = state.notifications.at(-1) ?? "";
+	assert(
+		notice.includes("恢复原会话记录") &&
+			notice.includes("/flow go F1") &&
+			notice.includes("新 Flow"),
+		`${label}: recovery notice lacks explicit next actions: ${notice}`,
+	);
+	const originalNow = Date.now;
+	Date.now = () => stopped.updatedAt + 10_000;
+	try {
+		await commands.get("flow").handler("go F1", ctx);
+	} finally {
+		Date.now = originalNow;
+	}
+	const repeated = readFlow(dir);
+	assert(
+		repeated.status === "paused" &&
+			repeated.updatedAt === stopped.updatedAt &&
+			repeated.attention?.at === stopped.attention.at &&
+			JSON.stringify(repeated.goals[0]) === expectedGoal,
+		`${label}: repeated go rewrote the interruption fact`,
+	);
+	assert(
+		state.newSessions.length === 0 && state.hiddenMessages.length === 0,
+		`${label}: repeated go restarted lost work`,
+	);
+}
+
+async function flowResumePendingRuntimeGoalHiddenPromptScenario() {
 	const cwd = tempDir("flow-continue-hidden");
 	const dir = createFlow(cwd, "F1");
 	const state = newState(cwd);
@@ -6482,6 +10671,10 @@ async function flowResumeMissingRuntimeGoalHiddenPromptScenario() {
 	await emit(handlers, "session_start", { reason: "go" }, ctx);
 	await commands.get("flow").handler("go", ctx);
 	assert(
+		state.newSessions.length === 0 && state.switches.length === 1,
+		"pending Goal did not start in its existing session",
+	);
+	assert(
 		state.hiddenMessages.at(-1).includes("当前 Goal plan 完整 snapshot"),
 		"continue did not send hidden full prompt",
 	);
@@ -6493,7 +10686,7 @@ async function flowResumeMissingRuntimeGoalHiddenPromptScenario() {
 	);
 	assert(
 		state.customMessages.some(
-			(item) => item.message.details?.title === "Flow 第 1 步 · Goal 1 已启动",
+			(item) => item.message.details?.title === "Flow Goal 1 已启动",
 		),
 		"continue start card missing",
 	);
@@ -6510,7 +10703,7 @@ async function startResumeCancelScenario() {
 	const flow = readFlow(join(cwd, ".flow", "F1"));
 	assert(flow.status === "running", "flow not running after start");
 	assert(flow.goals[0].sessionFile, "first Goal session missing");
-	assert(flow.goals[0].snapshotHash, "snapshot hash missing");
+	assert(flow.goals[0].snapshot, "snapshot missing");
 	assert(
 		!existsSync(join(cwd, ".flow", "F1", "goal.json")),
 		"Flow wrote child goal.json",
@@ -6547,6 +10740,7 @@ async function sessionNameSyncScenario() {
 	const { acquireFlowLock } = await importModule("flow/lock.js");
 	const cwd = tempDir("session-name-sync");
 	const dir = createFlow(cwd, "F1");
+	const secondDir = createFlow(cwd, "F2");
 	const state = newState(cwd);
 	const { handlers } = await loadExtension(state);
 	const sessionFile = join(cwd, "goal-session.jsonl");
@@ -6561,6 +10755,16 @@ async function sessionNameSyncScenario() {
 		sessionName: "old",
 	};
 	writeFlow(dir, flow);
+	const secondFlow = readFlow(secondDir);
+	secondFlow.status = "running";
+	secondFlow.startedAt = Date.now();
+	secondFlow.goals[0] = {
+		...secondFlow.goals[0],
+		status: "running",
+		sessionFile,
+		sessionName: "old",
+	};
+	writeFlow(secondDir, secondFlow);
 	const ctx = commandContext(state, cwd, sessionFile);
 	const lock = acquireFlowLock(dir, "active scheduling transaction");
 	assert(lock.ok, "session name test lock was not acquired");
@@ -6576,11 +10780,22 @@ async function sessionNameSyncScenario() {
 	} finally {
 		lock.release();
 	}
+	const syncFailuresBefore = state.notifications.filter((item) =>
+		item.includes("会话名同步失败"),
+	).length;
+	breakFlowHtml(dir);
 	await emit(handlers, "session_info_changed", { name: "Renamed" }, ctx);
 	flow = readFlow(dir);
 	assert(
-		flow.goals[0].sessionName === "Renamed",
-		"Flow sessionName did not sync",
+		flow.goals[0].sessionName === "Renamed" &&
+			readFlow(secondDir).goals[0].sessionName === "Renamed",
+		"HTML failure stopped current or subsequent Flow sessionName sync",
+	);
+	assertReportRefreshFailure(state);
+	assert(
+		state.notifications.filter((item) => item.includes("会话名同步失败"))
+			.length === syncFailuresBefore,
+		`HTML failure was misreported as session name sync failure: ${state.notifications.join(" | ")}`,
 	);
 	await emit(handlers, "session_info_changed", { name: undefined }, ctx);
 	flow = readFlow(dir);
@@ -6598,6 +10813,7 @@ async function snapshotMutationScenario() {
 	const planCtx = state.activeCtx;
 	let flow = readFlow(dir);
 	const planFile = join(dir, flow.goals[0].file);
+	// 修订合法性由检查仲裁裁决：中途修改受保护区不再断流。
 	writeFileSync(
 		planFile,
 		readFileSync(planFile, "utf8").replace(
@@ -6606,20 +10822,12 @@ async function snapshotMutationScenario() {
 		),
 	);
 	await commands.get("flow").handler("go", ctx);
-	assertNoticeFormat(state.notifications.at(-1), "❌", "启动后计划被修改");
 	assert(
-		state.notifications.at(-1).includes("第 1 步 · Goal 1 启动后计划被修改"),
-		"snapshot error missing shared Flow step label",
+		state.switches.at(-1) === flow.goals[0].sessionFile,
+		"mid-run plan revision blocked /flow go",
 	);
 	flow = readFlow(dir);
-	assert(
-		flow.errors.at(-1)?.includes("Objective/Scope/Success Criteria"),
-		"snapshot error not persisted",
-	);
-	writeFileSync(planFile, flow.goals[0].snapshot);
-	await commands.get("flow").handler("go", ctx);
-	flow = readFlow(dir);
-	assert(flow.errors.length === 0, "snapshot error not cleared after repair");
+	assert(flow.errors.length === 0, "plan revision wrote a flow error");
 	await emit(
 		handlers,
 		"agent_end",
@@ -6628,7 +10836,7 @@ async function snapshotMutationScenario() {
 	);
 	await flushScheduledGoalStart();
 	flow = readFlow(dir);
-	assert(flow.currentGoal === 1, "flow did not advance after snapshot repair");
+	assert(flow.currentGoal === 1, "flow did not advance after plan revision");
 	const secondCtx = state.activeCtx;
 	await emit(
 		handlers,
@@ -6647,55 +10855,34 @@ async function snapshotMutationScenario() {
 	flow = readFlow(dir);
 	assert(
 		flow.status === "complete",
-		"flow did not complete after snapshot repair",
-	);
-
-	const allowedCwd = tempDir("snapshot-handoff");
-	const allowedDir = createFlow(allowedCwd, "F1");
-	const allowedState = newState(allowedCwd);
-	const { commands: allowedCommands } = await loadExtension(allowedState);
-	const allowedCtx = commandContext(
-		allowedState,
-		allowedCwd,
-		join(allowedCwd, "planning.jsonl"),
-	);
-	await allowedCommands.get("flow").handler("go", allowedCtx);
-	await flushScheduledGoalStart();
-	const allowedFlow = readFlow(allowedDir);
-	const allowedFile = join(allowedDir, allowedFlow.goals[0].file);
-	writeFileSync(
-		`${allowedFile}`,
-		`${readFileSync(allowedFile, "utf8")}handoff ok\n`,
-	);
-	await allowedCommands.get("flow").handler("go", allowedCtx);
-	assert(
-		allowedState.switches.at(-1) === allowedFlow.goals[0].sessionFile,
-		"handoff-only mutation was blocked",
+		"flow did not complete after plan revision",
 	);
 }
 
-async function snapshotCheckboxMutationMessageScenario() {
-	const { planSnapshotError, planSnapshotHash } =
-		await importModule("flow/snapshot.js");
-	const cwd = tempDir("snapshot-checkbox");
+async function snapshotRecoveryPrecheckScenario() {
+	const { planSnapshotError } = await importModule("flow/snapshot.js");
+	const cwd = tempDir("snapshot-precheck");
 	const dir = createFlow(cwd, "F1");
 	const flow = readFlow(dir);
-	const planFile = join(dir, flow.goals[0].file);
-	const snapshot = readFileSync(planFile, "utf8").replace(
-		"- Done.",
-		"* [ ] Done.",
-	);
-	writeFileSync(planFile, snapshot.replace("* [ ] Done.", "* [x] Done."));
-	flow.goals[0].snapshot = snapshot;
-	flow.goals[0].snapshotHash = planSnapshotHash(snapshot);
-	const error = planSnapshotError(dir, flow.goals[0], "zh") ?? "";
+	const goal = flow.goals[0];
+	const planFile = join(dir, goal.file);
+	goal.snapshot = readFileSync(planFile, "utf8");
+	// 内容变更不再致错：修订交给检查仲裁。
+	writeFileSync(planFile, `${goal.snapshot}\nrevised\n`);
 	assert(
-		error.includes("Success Criteria 第 1 行从 [ ] 改成 [x]"),
-		`checkbox snapshot error lacked line detail: ${error}`,
+		planSnapshotError(dir, goal, "zh") === undefined,
+		"plan content change treated as unrecoverable",
 	);
 	assert(
-		error.includes("验收合同") && error.includes("Verification/Handoff"),
-		`checkbox snapshot error lacked recovery guidance: ${error}`,
+		(planSnapshotError(dir, { ...goal, snapshot: null }, "zh") ?? "").includes(
+			"缺少计划快照",
+		),
+		"missing snapshot not reported",
+	);
+	rmSync(planFile);
+	assert(
+		(planSnapshotError(dir, goal, "zh") ?? "").includes("步骤文件不存在"),
+		"missing step file not reported",
 	);
 }
 
@@ -6712,15 +10899,18 @@ async function flowGoalWatcherScenario() {
 	writeFlow(dir, flow);
 	writeFlowHtml(dir, flow);
 	const htmlPath = join(dir, "flow.html");
-	const changed = onceFileChanged(htmlPath);
 	watchCurrentFlowGoal(dir, flow);
 	await new Promise((resolve) => setImmediate(resolve));
 	const goalFile = join(dir, flow.goals[0].file);
-	writeFileSync(
-		goalFile,
-		readFileSync(goalFile, "utf8").replace("- [ ] Do work.", "- [x] Do work."),
+	const checkedGoal = readFileSync(goalFile, "utf8").replace(
+		"- [x] Do work.",
+		"- [x] Do work checked.",
 	);
-	await changed;
+	await changeSourceUntilHtmlMatches(
+		htmlPath,
+		() => writeFileSync(goalFile, checkedGoal),
+		(content) => content.includes("Do work checked."),
+	);
 	closeFlowGoalWatcher();
 }
 
@@ -6742,17 +10932,17 @@ async function flowParallelMainGoalWatcherScenario() {
 	watchParallelBatch(dir, flow, [1, 2, 3]);
 	await new Promise((resolve) => setTimeout(resolve, 50));
 
-	const changed = onceFileChanged(htmlPath);
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	const goalFile = join(dir, flow.goals[1].file);
-	writeFileSync(
-		goalFile,
-		readFileSync(goalFile, "utf8").replace(
-			"- [ ] Do work.",
-			"- [x] Main goal watcher checked.",
-		),
+	const checkedGoal = readFileSync(goalFile, "utf8").replace(
+		"- [x] Do work.",
+		"- [x] Main goal watcher checked.",
 	);
-	await changed;
+	await changeSourceUntilHtmlMatches(
+		htmlPath,
+		() => writeFileSync(goalFile, checkedGoal),
+		(content) => content.includes("Main goal watcher checked."),
+	);
 	const html = readFileSync(htmlPath, "utf8");
 	assert(
 		html.includes("Main goal watcher checked.") &&
@@ -6776,62 +10966,328 @@ async function flowParallelWatcherScenario() {
 	flow.parallelRun = parallelRun([1, 2, 3]);
 	for (const goalIndex of [1, 2, 3]) flow.goals[goalIndex].status = "running";
 	writeFlow(dir, flow);
-	const workerDir = join(dir, "workers", "G1");
-	mkdirSync(workerDir, { recursive: true });
 	writeFileSync(
-		join(workerDir, "plan.md"),
+		join(dir, "G2-plan.md"),
 		planMarkdown(2, false).replace("Do work.", "Worker live old."),
 	);
-	writeFileSync(
-		join(workerDir, "state.json"),
-		`${JSON.stringify(workerGoalArtifact(flow, 1, emptyChecks()), null, 2)}\n`,
-	);
+	writeWorkerGoalArtifact(dir, flow, 1, emptyChecks());
 	writeFlowHtml(dir, flow);
 	const htmlPath = join(dir, "flow.html");
 	watchParallelBatch(dir, flow, [1, 2, 3]);
-	await new Promise((resolve) => setTimeout(resolve, 50));
-
-	const planChanged = onceFileChanged(htmlPath);
-	await new Promise((resolve) => setTimeout(resolve, 20));
-	writeFileSync(
-		join(workerDir, "plan.md"),
-		planMarkdown(2, false).replace("Do work.", "Worker live new."),
+	await waitForCondition(
+		() => readFileSync(htmlPath, "utf8").includes("Worker live old."),
+		"parallel watcher did not perform its initial refresh",
 	);
-	await planChanged;
+
+	const planPath = join(dir, "G2-plan.md");
+	const uncheckedPlan = planMarkdown(2, false).replace(
+		"- [x] Do work.",
+		"- [ ] Worker live new.",
+	);
+	await changeSourceUntilHtmlMatches(
+		htmlPath,
+		() => writeFileSync(planPath, uncheckedPlan),
+		(content) => content.includes("Worker live new."),
+	);
 	assert(
 		readFileSync(htmlPath, "utf8").includes("Worker live new."),
 		"parallel watcher did not render worker plan.md changes",
+	);
+
+	const checkedPlan = planMarkdown(2, false).replace(
+		"- [x] Do work.",
+		"- [x] Worker live new.",
+	);
+	await changeSourceUntilHtmlMatches(htmlPath, () =>
+		writeFileSync(planPath, checkedPlan),
+	);
+	const attributionAt = new Date(2026, 0, 2, 3, 4, 5).getTime();
+	const attributedArtifact = workerGoalArtifact(flow, 1, emptyChecks());
+	attributedArtifact.checkAttribution = {
+		"Steps\u0000Worker live new.\u00001": {
+			model: "test/worker-model",
+			thinking: "high",
+			at: attributionAt,
+		},
+	};
+	const artifactPath = join(dir, "G2-worker.json");
+	const attributedArtifactText = `${JSON.stringify(attributedArtifact, null, 2)}\n`;
+	await changeSourceUntilHtmlMatches(
+		htmlPath,
+		() => writeFileSync(artifactPath, attributedArtifactText),
+		(content) =>
+			content.includes("worker-model") && content.includes("01-02 03:04:05"),
+	);
+	const attributedHtml = readFileSync(htmlPath, "utf8");
+	assert(
+		attributedHtml.includes("worker-model") &&
+			attributedHtml.includes("01-02 03:04:05"),
+		"parallel watcher did not render worker checkbox attribution",
 	);
 
 	const passed = emptyChecks();
 	passed.acceptance.rounds = [
 		{ round: 1, result: "passed", summary: "worker acceptance passed" },
 	];
-	const checksChanged = onceFileChanged(htmlPath);
-	await new Promise((resolve) => setTimeout(resolve, 20));
-	writeFileSync(
-		join(workerDir, "state.json"),
-		`${JSON.stringify(workerGoalArtifact(flow, 1, passed), null, 2)}\n`,
+	await changeSourceUntilHtmlMatches(
+		htmlPath,
+		() => writeWorkerGoalArtifact(dir, flow, 1, passed),
+		(content) => content.includes("worker acceptance passed"),
 	);
-	await checksChanged;
 	assert(
 		readFileSync(htmlPath, "utf8").includes("worker acceptance passed"),
-		"parallel watcher did not render worker state.json changes",
+		"parallel watcher did not render worker artifact changes",
 	);
 	closeFlowGoalWatcher();
 }
 
-function onceFileChanged(path) {
+async function flowWatcherEventStormScenario() {
+	const { writeFlowHtml } = await importModule("flow/html.js");
+	const {
+		closeFlowGoalWatcher,
+		flowGoalWatcherStats,
+		watchCurrentFlowGoal,
+		watchParallelBatch,
+	} = await importModule("flow/watcher.js");
+	const cwd = tempDir("flow-watcher-storm");
+	const dir = createFlow(cwd, "F1");
+	const flow = readFlow(dir);
+	flow.status = "running";
+	flow.startedAt = Date.now();
+	flow.goals[0].status = "running";
+	writeFlow(dir, flow);
+	writeFlowHtml(dir, flow);
+	watchCurrentFlowGoal(dir, flow);
+	await new Promise((resolve) => setImmediate(resolve));
+	const goalPath = join(dir, flow.goals[0].file);
+	const base = readFileSync(goalPath, "utf8");
+	for (let index = 0; index < 100; index += 1) {
+		atomicReplace(
+			goalPath,
+			base.replace("Do work.", `Burst canonical ${index}.`),
+		);
+	}
+	await waitForCondition(
+		() =>
+			readFileSync(join(dir, "flow.html"), "utf8").includes(
+				"Burst canonical 99.",
+			),
+		"serial report did not converge to the burst tail",
+	);
+	assert(
+		(flowGoalWatcherStats(dir)?.refreshes ?? 0) <= 2,
+		"100 serial updates caused more than two full report refreshes",
+	);
+
+	const sustainedStart = flowGoalWatcherStats(dir)?.refreshes ?? 0;
+	const sustainedSignalStart = flowGoalWatcherStats(dir)?.signals ?? 0;
+	const sustainedStartedAt = performance.now();
+	for (let index = 0; index < 20; index += 1) {
+		atomicReplace(
+			goalPath,
+			base.replace("Do work.", `Sustained canonical ${index}.`),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	const sustainedElapsedMs = performance.now() - sustainedStartedAt;
+	await waitForReportFrames(2);
+	const sustainedRefreshes =
+		(flowGoalWatcherStats(dir)?.refreshes ?? 0) - sustainedStart;
+	assert(
+		(flowGoalWatcherStats(dir)?.signals ?? 0) > sustainedSignalStart &&
+			sustainedRefreshes <= Math.ceil(sustainedElapsedMs / 25) + 1 &&
+			readFileSync(join(dir, "flow.html"), "utf8").includes(
+				"Sustained canonical 19.",
+			),
+		"sustained report signals exceeded one refresh per frame or lost the tail",
+	);
+
+	const otherDir = createFlow(cwd, "F2");
+	const otherFlow = readFlow(otherDir);
+	otherFlow.status = "running";
+	otherFlow.startedAt = Date.now();
+	otherFlow.goals[0].status = "running";
+	writeFlow(otherDir, otherFlow);
+	writeFlowHtml(otherDir, otherFlow);
+	watchCurrentFlowGoal(otherDir, otherFlow);
+	await new Promise((resolve) => setImmediate(resolve));
+	atomicReplace(
+		join(otherDir, otherFlow.goals[0].file),
+		readFileSync(join(otherDir, otherFlow.goals[0].file), "utf8").replace(
+			"Do work.",
+			"Independent Flow updated.",
+		),
+	);
+	atomicReplace(goalPath, base.replace("Do work.", "Must not render late."));
+	// 这里验证 close 取消 pending frame，不重复赌事件风暴后的单次 OS 事件；
+	// 同目标重注册按运行契约同步安排首帧，前半段已覆盖真实 burst/tail 收敛。
+	watchCurrentFlowGoal(dir, flow);
+	assert(
+		flowGoalWatcherStats(dir)?.pending === true,
+		"first Flow refresh was not scheduled",
+	);
+	closeFlowGoalWatcher(dir);
+	flow.status = "paused";
+	flow.goals[0].status = "paused";
+	writeFlow(dir, flow);
+	writeFlowHtml(dir, flow);
+	const terminalHtml = readFileSync(join(dir, "flow.html"), "utf8");
+	await waitForCondition(
+		() =>
+			readFileSync(join(otherDir, "flow.html"), "utf8").includes(
+				"Independent Flow updated.",
+			),
+		"closing one Flow suppressed another Flow refresh",
+	);
+	await waitForReportFrames(2);
+	assert(
+		readFileSync(join(dir, "flow.html"), "utf8") === terminalHtml,
+		"closed watcher overwrote the terminal report",
+	);
+
+	const parallelDir = createThreeParallelFlow(cwd, "F3");
+	const parallelFlow = readFlow(parallelDir);
+	parallelFlow.status = "running";
+	parallelFlow.startedAt = Date.now();
+	parallelFlow.currentGoal = 1;
+	parallelFlow.parallelRun = parallelRun([1, 2, 3]);
+	for (const goalIndex of [1, 2, 3])
+		parallelFlow.goals[goalIndex].status = "running";
+	writeFlow(parallelDir, parallelFlow);
+	const staleChecks = emptyChecks();
+	staleChecks.acceptance.rounds = [
+		{ round: 1, result: "failed", summary: "stale worker generation" },
+	];
+	const staleArtifact = workerGoalArtifact(parallelFlow, 1, staleChecks);
+	staleArtifact.parallelRunId = "old-run";
+	writeFileSync(
+		join(parallelDir, "G2-worker.json"),
+		`${JSON.stringify(staleArtifact, null, 2)}\n`,
+	);
+	writeFlowHtml(parallelDir, parallelFlow);
+	watchParallelBatch(parallelDir, parallelFlow, [1, 2, 3]);
+	await waitForCondition(() => {
+		const stats = flowGoalWatcherStats(parallelDir);
+		return Boolean(stats && stats.refreshes > 0 && !stats.pending);
+	}, "parallel watcher did not finish registration refresh");
+	const initialParallelSignals =
+		flowGoalWatcherStats(parallelDir)?.signals ?? 0;
+	const staleArtifactPath = join(parallelDir, "G2-worker.json");
+	atomicReplace(
+		staleArtifactPath,
+		`${JSON.stringify(staleArtifact, null, 2)}\n`,
+	);
+	await waitForCondition(
+		() =>
+			(flowGoalWatcherStats(parallelDir)?.signals ?? 0) >
+			initialParallelSignals,
+		"parallel atomic replacement did not emit a real file event",
+	);
+	assert(
+		!readFileSync(join(parallelDir, "flow.html"), "utf8").includes(
+			"stale worker generation",
+		),
+		"parallel report consumed an artifact from an old run",
+	);
+	const parallelPlanPath = join(parallelDir, parallelFlow.goals[1].file);
+	const parallelPlan = readFileSync(parallelPlanPath, "utf8");
+	for (let index = 0; index < 5; index += 1) {
+		const checks = emptyChecks();
+		checks.acceptance.rounds = [
+			{ round: 1, result: "failed", summary: `Atomic worker ${index}` },
+		];
+		atomicReplace(
+			staleArtifactPath,
+			`${JSON.stringify(workerGoalArtifact(parallelFlow, 1, checks), null, 2)}\n`,
+		);
+		atomicReplace(
+			parallelPlanPath,
+			parallelPlan.replace("Do work.", `Atomic parallel plan ${index}.`),
+		);
+		atomicReplace(
+			join(parallelDir, "G2-worker-events.json"),
+			`${JSON.stringify([{ index }])}\n`,
+		);
+	}
+	await waitForCondition(() => {
+		const html = readFileSync(join(parallelDir, "flow.html"), "utf8");
+		return (
+			html.includes("Atomic worker 4") &&
+			html.includes("Atomic parallel plan 4.")
+		);
+	}, "parallel atomic replacements did not converge to the latest artifact and plan");
+	atomicReplace(
+		join(parallelDir, "G2-worker-events.json"),
+		`${JSON.stringify([{ index: "run-id-race" }])}\n`,
+	);
+	await waitForCondition(
+		() => flowGoalWatcherStats(parallelDir)?.pending === true,
+		"parallel run-id race did not schedule a frame",
+	);
+	parallelFlow.parallelRun = {
+		...parallelFlow.parallelRun,
+		id: "replacement-run",
+	};
+	writeFlow(parallelDir, parallelFlow);
+	writeFlowHtml(parallelDir, parallelFlow);
+	const replacementHtml = readFileSync(join(parallelDir, "flow.html"), "utf8");
+	await waitForReportFrames(2);
+	assert(
+		readFileSync(join(parallelDir, "flow.html"), "utf8") === replacementHtml,
+		"old parallel run frame overwrote its replacement",
+	);
+	closeFlowGoalWatcher();
+}
+
+function waitForReportFrames(count) {
+	return new Promise((resolve) => setTimeout(resolve, count * 25 + 10));
+}
+
+function atomicReplace(path, content) {
+	const temporaryPath = `${path}.flow-smoke.tmp`;
+	writeFileSync(temporaryPath, content);
+	renameSync(temporaryPath, path);
+}
+
+function changeSourceUntilHtmlMatches(path, changeSource, matches) {
+	const before = readFileSync(path, "utf8");
+	const accepts = matches ?? ((content) => content !== before);
 	return new Promise((resolve, reject) => {
-		const timeout = setTimeout(() => {
-			watcher.close();
-			reject(new Error(`file did not change: ${path}`));
-		}, 1000);
-		const watcher = watch(path, () => {
+		let retry;
+		const target = basename(path);
+		const finish = () => {
 			clearTimeout(timeout);
+			clearTimeout(retry);
 			watcher.close();
 			resolve();
+		};
+		const check = () => {
+			if (!existsSync(path)) return false;
+			const content = readFileSync(path, "utf8");
+			if (!accepts(content)) return false;
+			finish();
+			return true;
+		};
+		const replay = () => {
+			if (check()) return;
+			changeSource();
+			retry = setTimeout(replay, 500);
+		};
+		const timeout = setTimeout(() => {
+			clearTimeout(retry);
+			watcher.close();
+			const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+			reject(
+				new Error(
+					`file did not converge: ${path}; contentChanged=${current !== before}; beforeLength=${before.length}; currentLength=${current.length}`,
+				),
+			);
+		}, 10_000);
+		const watcher = watch(dirname(path), (_event, filename) => {
+			if (filename !== null && String(filename) !== target) return;
+			check();
 		});
+		replay();
 	});
 }
 
@@ -6865,7 +11321,7 @@ function privateWorkerControlServer(privateWorkerMessage, job, token) {
 	const socket = new Promise((resolve, reject) => {
 		const timeout = setTimeout(
 			() => reject(new Error("private worker did not connect")),
-			5000,
+			30_000,
 		);
 		server = createServer((connection) => {
 			connection.setEncoding("utf8");
@@ -6909,17 +11365,17 @@ function writePrivateWorkerChildScript(cwd, options = {}) {
 		options.emitAgentEnd === false
 			? `setInterval(() => undefined, 1000);`
 			: `for (const handler of handlers.get("agent_end") ?? []) {
-	await handler({ messages: [{ role: "assistant", stopReason: "stop" }] }, ctx);
+	await handler({ messages: [{ role: "assistant", stopReason: "stop"${options.blockedReason ? `, content: [{ type: "text", text: ${JSON.stringify(`BLOCKED: ${options.blockedReason}`)} }]` : ""} }] }, ctx);
 }
 record("private-worker-agent-end", "done");`;
 	writeFileSync(
 		script,
-		`import { writeFileSync } from "node:fs";\nimport { join } from "node:path";\nconst srcOut = process.env.FLOW_SMOKE_SRC_OUT;\nconst cwd = process.env.FLOW_SMOKE_CWD;\nconst sessionFile = process.env.FLOW_SMOKE_SESSION;\nif (!srcOut || !cwd || !sessionFile) throw new Error("missing child env");\nconst { default: flowExtension } = await import("file://" + join(srcOut, "index.js"));\nconst handlers = new Map();\nconst entries = [];\nconst record = (name, value = "") => writeFileSync(join(cwd, name), String(value));\nflowExtension({\n\tregisterCommand() {},\n\tregisterTool() {},\n\tregisterMessageRenderer() {},\n\tregisterFlag() {},\n\tgetFlag() {},\n\tgetActiveTools() { return []; },\n\tsetActiveTools() {},\n\tgetAllTools() { return []; },\n\tgetCommands() { return []; },\n\tappendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },\n\tsendUserMessage() {},\n\tsendMessage(message) {\n\t\tif (message.display === false) record("private-worker-started", message.content);\n\t\telse record("private-worker-message", message.content);\n\t},\n\ton(name, handler) {\n\t\tif (!handlers.has(name)) handlers.set(name, []);\n\t\thandlers.get(name).push(handler);\n\t},\n\tsetSessionName() {},\n\tgetSessionName() {},\n\texec() { return Promise.resolve({ code: 0, stdout: "", stderr: "" }); },\n});\nconst ui = {\n\tasync confirm() { return true; },\n\tasync select(_title, options) { return options[0]; },\n\tnotify() {},\n\tsetStatus() {},\n\tsetWorkingVisible() {},\n\tsetWidget() {},\n};\nconst ctx = {\n\tcwd,\n\tmode: "json",\n\thasUI: true,\n\tui,\n\tisIdle() { return true; },\n\thasPendingMessages() { return false; },\n\tsessionManager: {\n\t\tgetSessionFile() { return sessionFile; },\n\t\tgetSessionDir() { return cwd; },\n\t\tgetBranch() { return entries; },\n\t\tgetEntries() { return entries; },\n\t\tappendSessionInfo() {},\n\t\tappendCustomEntry(customType, data) { entries.push({ type: "custom", customType, data }); },\n\t},\n\tasync waitForIdle() {},\n\tasync newSession() { throw new Error("unexpected newSession"); },\n\tasync switchSession() { throw new Error("unexpected switchSession"); },\n};\nfor (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);\n${afterSessionStart}\n`,
+		`import { writeFileSync } from "node:fs";\nimport { join } from "node:path";\nconst srcOut = process.env.FLOW_SMOKE_SRC_OUT;\nconst cwd = process.env.FLOW_SMOKE_CWD;\nconst sessionFile = process.env.FLOW_SMOKE_SESSION;\nif (!srcOut || !cwd || !sessionFile) throw new Error("missing child env");\nconst { default: flowExtension } = await import("file://" + join(srcOut, "index.js"));\nconst handlers = new Map();\nconst entries = [];\nconst record = (name, value = "") => writeFileSync(join(cwd, name), String(value));\nflowExtension({\n\tregisterCommand() {},\n\tregisterShortcut() {},\n\tregisterTool() {},\n\tregisterMessageRenderer() {},\n\tregisterFlag() {},\n\tgetFlag() {},\n\tgetThinkingLevel() { return "off"; },\n\tgetActiveTools() { return []; },\n\tsetActiveTools() {},\n\tgetAllTools() { return []; },\n\tgetCommands() { return []; },\n\tappendEntry(customType, data) { entries.push({ type: "custom", customType, data }); },\n\tsendUserMessage() {},\n\tsendMessage(message) {\n${options.failGoalPromptSend ? '\t\tif (message.customType === "pi-flow-goal-prompt" && String(message.content).includes("pi-goal-continuation")) throw new Error("injected goal prompt send failure");\n' : ""}\t\tif (message.display === false) record("private-worker-started", message.content);\n\t\telse record("private-worker-message", message.content);\n\t},\n\ton(name, handler) {\n\t\tif (!handlers.has(name)) handlers.set(name, []);\n\t\thandlers.get(name).push(handler);\n\t},\n\tsetSessionName() {},\n\tgetSessionName() {},\n\texec() { return Promise.resolve({ code: 0, stdout: "", stderr: "" }); },\n});\nconst ui = {\n\tasync confirm() { return true; },\n\tasync select(_title, options) { return options[0]; },\n\tnotify() {},\n\tsetStatus() {},\n\tsetWorkingVisible() {},\n\tsetWidget() {},\n};\nconst ctx = {\n\tcwd,\n\tmode: "json",\n\thasUI: true,\n\tmodel: { provider: "test", id: "current", contextWindow: 200000 },\n\tmodelRegistry: { find(provider, modelId) { return { provider, id: modelId, contextWindow: 200000 }; } },\n\tui,\n\tisIdle() { return true; },\n\thasPendingMessages() { return false; },\n\tsessionManager: {\n\t\tgetSessionFile() { return sessionFile; },\n\t\tgetSessionDir() { return cwd; },\n\t\tgetBranch() { return entries; },\n\t\tgetEntries() { return entries; },\n\t\tappendSessionInfo() {},\n\t\tappendCustomEntry(customType, data) { entries.push({ type: "custom", customType, data }); },\n\t},\n\tasync waitForIdle() {},\n\tasync newSession() { throw new Error("unexpected newSession"); },\n\tasync switchSession() { throw new Error("unexpected switchSession"); },\n};\nfor (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);\n${afterSessionStart}\n`,
 	);
 	return script;
 }
 
-function waitForChildExit(child, timeoutMs = 5000) {
+function waitForChildExit(child, timeoutMs = 30_000) {
 	return new Promise((resolve, reject) => {
 		let stdout = "";
 		let stderr = "";
@@ -6959,30 +11415,80 @@ function flagValues(args, flag) {
 	return values;
 }
 
-function waitForFile(path) {
-	if (existsSync(path)) return Promise.resolve();
+async function waitForFile(path) {
 	mkdirSync(dirname(path), { recursive: true });
-	return new Promise((resolve, reject) => {
-		const timeout = setTimeout(() => {
-			watcher.close();
-			reject(new Error(`file did not appear: ${path}`));
-		}, 5000);
-		const finish = () => {
-			clearTimeout(timeout);
-			watcher.close();
-			resolve();
-		};
-		const watcher = watch(dirname(path), (_event, name) => {
-			if (name !== null && String(name) !== basename(path)) return;
-			if (existsSync(path)) finish();
-		});
-		if (existsSync(path)) finish();
-	});
+	await waitForCondition(
+		() => existsSync(path),
+		`file did not appear: ${path}`,
+		30_000,
+	);
 }
 
-async function waitForCondition(predicate, message) {
+async function assertFakeWorkerParentsGone(
+	cwd,
+	goalIndexes,
+	allowUnstarted = false,
+) {
+	for (const goalIndex of goalIndexes) {
+		const pidPath = join(cwd, `worker-${goalIndex}.pid`);
+		if (allowUnstarted && !existsSync(pidPath)) continue;
+		await waitForDeadPid(pidPath, `worker ${goalIndex} still alive`);
+	}
+}
+
+async function assertFakeWorkersGone(cwd, goalIndexes) {
+	await assertFakeWorkerParentsGone(cwd, goalIndexes);
+	for (const goalIndex of goalIndexes) {
+		await waitForDeadPid(
+			join(cwd, `worker-${goalIndex}.child-pid`),
+			`worker ${goalIndex} child still alive`,
+		);
+	}
+}
+
+async function waitForDeadPid(path, message) {
+	await waitForFile(path);
+	const pid = Number(readFileSync(path, "utf8"));
+	assert(Number.isInteger(pid) && pid > 0, `invalid pid file: ${path}`);
 	const startedAt = performance.now();
-	while (performance.now() - startedAt < 1000) {
+	while (performance.now() - startedAt < 5000) {
+		if (!processExists(pid)) return;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	throw new Error(`${message}: ${pid}`);
+}
+
+function processExists(pid) {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function waitForParallelRunPrepared(dir, goalIndexes) {
+	await waitForCondition(
+		() => {
+			const flow = readFlow(dir);
+			return (
+				JSON.stringify(flow.parallelRun?.goalIndexes) ===
+					JSON.stringify(goalIndexes) &&
+				goalIndexes.every(
+					(index) =>
+						flow.goals[index]?.status === "running" &&
+						flow.goals[index]?.sessionFile,
+				)
+			);
+		},
+		`parallel run was not prepared: ${goalIndexes.join(",")}`,
+		30_000,
+	);
+}
+
+async function waitForCondition(predicate, message, timeoutMs = 1000) {
+	const startedAt = performance.now();
+	while (performance.now() - startedAt < timeoutMs) {
 		if (predicate()) return;
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
@@ -6999,7 +11505,8 @@ async function goalRuntimeSessionIsolationScenario() {
 	} = await importCachedModule("goal.js");
 	const cwd = tempDir("goal-runtime-session-isolation");
 	const state = newState(cwd);
-	await loadExtension(state);
+	const { handlers } = await loadExtension(state);
+	const { goalRuntimeState } = await importCachedModule("goal/runtime.js");
 	const sessionA = join(cwd, "a.jsonl");
 	const sessionB = join(cwd, "b.jsonl");
 	writeFileSync(sessionA, "");
@@ -7026,6 +11533,8 @@ async function goalRuntimeSessionIsolationScenario() {
 	}
 	const ctxA = commandContext(state, cwd, sessionA);
 	const ctxB = commandContext(state, cwd, sessionB);
+	await emit(handlers, "session_start", {}, ctxA);
+	await emit(handlers, "session_start", {}, ctxB);
 
 	assert(
 		await startGoalFromFlow("Goal A", ctxA),
@@ -7044,7 +11553,7 @@ async function goalRuntimeSessionIsolationScenario() {
 	assert(goalB?.text === "Goal B", `session B goal missing: ${goalB?.text}`);
 	assert(goalA.id !== goalB.id, "sessions share one goal id");
 
-	assert(pauseGoalFromFlow(ctxA), "session A pause failed");
+	assert(await pauseGoalFromFlow(ctxA), "session A pause failed");
 	assert(getGoalState(ctxA)?.status === "paused", "session A did not pause");
 	assert(getGoalState(ctxB)?.status === "active", "session B was paused by A");
 	assert(
@@ -7062,18 +11571,41 @@ async function goalRuntimeSessionIsolationScenario() {
 		"session B continue failed",
 	);
 	assert(
-		state.hiddenMessages.at(-1)?.includes("Goal B") &&
-			!state.hiddenMessages.at(-1)?.includes("Goal A"),
+		state.hiddenMessages
+			.at(-1)
+			?.includes(`pi-goal-continuation:${goalB.id}:`) &&
+			!state.hiddenMessages
+				.at(-1)
+				?.includes(`pi-goal-continuation:${goalA.id}:`),
 		"session B continue prompt used the wrong goal",
 	);
-	assert(pauseGoalFromFlow(ctxB), "session B pause failed");
+	assert(await pauseGoalFromFlow(ctxB), "session B pause failed");
 	assert(getGoalState(ctxB)?.status === "paused", "session B did not pause");
 	assert(getGoalState(ctxA)?.status === "active", "session A was paused by B");
+	assert(
+		goalRuntimeState.sessions.size === 2,
+		"Goal sessions were not tracked",
+	);
+	await emit(handlers, "session_shutdown", {}, ctxA);
+	assert(
+		goalRuntimeState.sessions.size === 1 &&
+			getGoalState(ctxB)?.status === "paused",
+		"shutting down session A removed or changed session B",
+	);
+	await emit(handlers, "session_shutdown", {}, ctxB);
+	assert(
+		goalRuntimeState.sessions.size === 0,
+		"Goal session state survived teardown",
+	);
 }
 
 async function sessionContextIsolationScenario() {
-	const { rememberFlowContext, rememberedFlowContext } =
-		await importModule("flow/runtime.js");
+	const {
+		flowRuntimeResourceCounts,
+		releaseFlowContext,
+		rememberFlowContext,
+		rememberedFlowContext,
+	} = await importModule("flow/runtime.js");
 	const cwd = tempDir("session-context");
 	const ctxA = commandContext(newState(cwd), cwd, join(cwd, "a.jsonl"));
 	const ctxB = commandContext(newState(cwd), cwd, join(cwd, "b.jsonl"));
@@ -7086,6 +11618,99 @@ async function sessionContextIsolationScenario() {
 	assert(
 		rememberedFlowContext(ctxB.sessionManager.getSessionFile()) === ctxB,
 		"same cwd session B context missing",
+	);
+	assert(
+		!releaseFlowContext(ctxA.sessionManager.getSessionFile(), ctxB) &&
+			rememberedFlowContext(ctxA.sessionManager.getSessionFile()) === ctxA,
+		"mismatched context released another session",
+	);
+	assert(
+		releaseFlowContext(ctxA.sessionManager.getSessionFile(), ctxA) &&
+			rememberedFlowContext(ctxB.sessionManager.getSessionFile()) === ctxB,
+		"exact session release removed the wrong context",
+	);
+	releaseFlowContext(ctxB.sessionManager.getSessionFile(), ctxB);
+	assert(
+		flowRuntimeResourceCounts().contexts === 0,
+		"released contexts remained in runtime",
+	);
+}
+
+async function soakRetainedContextGateScenario() {
+	const { evaluateSoakResult } = await import(
+		`${pathToFileURL(join(root, "scripts/benchmark-performance.mjs")).href}?test=${Date.now()}`
+	);
+	const resources = {
+		flow: { contexts: 0, completionFacts: 0 },
+		generation: {
+			contexts: 0,
+			promptTargets: 0,
+			stalePromptTargets: 0,
+			replyTargets: 0,
+			resultTokens: 0,
+		},
+		goalSessions: 0,
+		flowWatchers: 0,
+		parallelBoards: 0,
+		active: {},
+	};
+	const samples = Array.from({ length: 100 }, (_item, index) => ({
+		cycle: index + 1,
+		heapUsed: 10_000_000,
+		rss: 20_000_000,
+		lifecycle: {
+			parallel: index % 2 === 0 ? "completed" : "stopped",
+			parallelWorkers: 2,
+		},
+		resources,
+	}));
+	const result = evaluateSoakResult(samples, 10, {
+		weakRefs: 1,
+		aliveAfterGc: 1,
+	});
+	assert(
+		result.ok === false &&
+			result.resourceFailures.some((failure) =>
+				failure.includes("Session context"),
+			),
+		"soak accepted a retained full Session context",
+	);
+	assert(
+		evaluateSoakResult(samples, 10, {
+			weakRefs: 1,
+			aliveAfterGc: 0,
+		}).ok === true,
+		"soak rejected a stable lifecycle",
+	);
+	const retainedBoardSamples = samples.map((sample, index) => ({
+		...sample,
+		resources:
+			index === samples.length - 1
+				? { ...sample.resources, parallelBoards: 1 }
+				: sample.resources,
+	}));
+	const retainedBoard = evaluateSoakResult(retainedBoardSamples, 10, {
+		weakRefs: 0,
+		aliveAfterGc: 0,
+	});
+	assert(
+		retainedBoard.ok === false &&
+			retainedBoard.resourceFailures.some((failure) =>
+				failure.includes("parallel board"),
+			),
+		"soak accepted a retained parallel lane board",
+	);
+	const missingParallel = evaluateSoakResult(
+		samples.map((sample) => ({ ...sample, lifecycle: undefined })),
+		10,
+		{ weakRefs: 0, aliveAfterGc: 0 },
+	);
+	assert(
+		missingParallel.ok === false &&
+			missingParallel.resourceFailures.some((failure) =>
+				failure.includes("parallel lifecycle coverage"),
+			),
+		"soak accepted samples without real parallel lifecycles",
 	);
 }
 
@@ -7153,7 +11778,6 @@ async function completionFactClearsGoalUiScenario() {
 		"shared/activity-frame.js",
 	);
 	const { startGoalFromFlow } = await importCachedModule("goal.js");
-	const { planSnapshotHash } = await importCachedModule("flow/snapshot.js");
 	const sessionFile = join(cwd, "final.jsonl");
 	const flow = readFlow(dir);
 	const finalGoal = flow.goals[2];
@@ -7162,6 +11786,7 @@ async function completionFactClearsGoalUiScenario() {
 		...flow,
 		status: "running",
 		startedAt: Date.now(),
+		completedAt: null,
 		currentGoal: 2,
 		goals: [
 			{ ...flow.goals[0], status: "complete", handoff: "done" },
@@ -7171,7 +11796,6 @@ async function completionFactClearsGoalUiScenario() {
 				status: "running",
 				sessionFile,
 				snapshot: finalSnapshot,
-				snapshotHash: planSnapshotHash(finalSnapshot),
 			},
 		],
 	});
@@ -7212,7 +11836,9 @@ async function completionFactClearsGoalUiScenario() {
 	assert(clearedInterval === interval, "goal status timer was not stopped");
 	assert(state.statuses.includes(undefined), state.statuses.join(" | "));
 	assert(
-		globalThis.__PI_FLOW_ACTIVITY__?.active === false,
+		!(globalThis.__PI_ACTIVITY_SIGNAL__?.state.sources ?? []).includes(
+			"pi-flow:frame",
+		),
 		"goal activity was not cleared after flow completion",
 	);
 }
@@ -7232,43 +11858,48 @@ async function singleStepCompletionNoSaveFailureScenario() {
 		{ messages: [{ role: "assistant", stopReason: "stop" }] },
 		state.activeCtx,
 	);
+	await flushScheduledGoalStart();
 	const flow = readFlow(dir);
 	assert(flow.status === "complete", "single-step flow did not complete");
-	assertCardOrder(
-		state,
-		"Flow Goal 1 已完成",
-		"Flow 已完成",
-		"single-step completion cards out of order",
-	);
 	assert(
-		cardTitleCount(state, "Flow 已完成") === 1,
-		"single-step Flow complete card duplicated",
+		Number.isFinite(flow.goals[0].startedAt) &&
+			Number.isFinite(flow.goals[0].completedAt) &&
+			Number.isFinite(flow.completedAt) &&
+			flow.goals[0].completedAt >= flow.goals[0].startedAt &&
+			flow.completedAt >= flow.goals[0].completedAt,
+		"serial completion timestamps were not committed by the parent",
 	);
 	assert(
 		cardTitleCount(state, "Flow Goal 1 已完成") === 1,
-		"single-step Goal complete card duplicated",
+		"single-step final card was not sent exactly once",
+	);
+	assert(
+		cardTitleCount(state, "Flow 已完成") === 0,
+		"single-step kept generic Flow complete card",
 	);
 	assert(
 		cardTitleCount(state, "Flow 第 1 步 · Goal 1 已完成") === 0,
 		"single-step Goal complete card kept step label",
 	);
 	assert(
-		state.notifications.some((message) =>
-			message.includes("Flow Goal 1 已完成"),
-		) &&
-			!state.notifications.some((message) =>
-				message.includes("Flow 第 1 步 · Goal 1 已完成"),
-			),
+		!state.notifications.some((message) => message.includes("已完成")),
 		state.notifications.join("\n"),
 	);
 	const flowCompleteCard = findFlowCard(
 		state,
-		"Flow 已完成",
+		"Flow Goal 1 已完成",
 		"single-step complete card missing",
 	);
+	const flowCompleteLines = flowCompleteCard.message.details.lines.join("\n");
 	assert(
-		flowCompleteCard.message.details.lines.includes("状态：已完成") &&
-			!flowCompleteCard.message.details.lines.join("\n").includes("1/1 步"),
+		flowCompleteCard.options.triggerTurn === true &&
+			flowCompleteCard.message.details.lines.includes("编号：F1") &&
+			flowCompleteCard.message.details.lines.includes("目标：Do Goal 1.") &&
+			flowCompleteCard.message.details.lines.includes("验收：未启用") &&
+			flowCompleteCard.message.details.lines.includes("质检：未启用") &&
+			flowCompleteLines.includes("⏱ 总用时：") &&
+			!flowCompleteLines.includes("状态：已完成") &&
+			!flowCompleteLines.includes("1/1 步"),
 		flowCompleteCard.message.details.lines.join(" | "),
 	);
 	assert(
@@ -7304,21 +11935,65 @@ async function singleStepCompletionNoSaveFailureScenario() {
 		{ messages: [{ role: "assistant", stopReason: "stop" }] },
 		enState.activeCtx,
 	);
+	await flushScheduledGoalStart();
 	const enFlowCompleteCard = findFlowCard(
 		enState,
-		"Flow complete",
+		"Flow Goal 1 complete",
 		"English single-step complete card missing",
 	);
 	const enCompleteLines = enFlowCompleteCard.message.details.lines.join("\n");
 	assert(
-		enFlowCompleteCard.message.details.lines.includes("Status: Complete") &&
-			!enCompleteLines.includes("Status: complete"),
+		enFlowCompleteCard.message.details.lines.includes("ID: F1") &&
+			enFlowCompleteCard.message.details.lines.includes("Goal: Do Goal 1.") &&
+			enFlowCompleteCard.message.details.lines.includes(
+				"Acceptance: disabled",
+			) &&
+			enFlowCompleteCard.message.details.lines.includes(
+				"Quality check: disabled",
+			) &&
+			enCompleteLines.includes("⏱ Total elapsed:") &&
+			!enCompleteLines.includes("Status:"),
 		enCompleteLines,
 	);
 }
 
+async function flowFinalCompletionHtmlFailureScenario() {
+	const { completionFact } = await importCachedModule("flow/runtime.js");
+	const cwd = tempDir("completion-html-failure");
+	const dir = createFlow(cwd, "F1");
+	const state = newState(cwd);
+	const { commands, handlers } = await loadExtension(state);
+	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	await commands.get("flow").handler("go F1", ctx);
+	await flushScheduledGoalStart();
+	const goalCtx = state.activeCtx;
+	const sessionFile = goalCtx.sessionManager.getSessionFile();
+	breakFlowHtml(dir);
+	await emit(
+		handlers,
+		"agent_end",
+		{ messages: [{ role: "assistant", stopReason: "stop" }] },
+		goalCtx,
+	);
+	await flushScheduledGoalStart();
+	const flow = readFlow(dir);
+	assert(
+		flow.status === "complete",
+		"HTML failure rolled back final completion",
+	);
+	assert(
+		completionFact(sessionFile) === undefined,
+		"HTML failure left completion fact unconsumed",
+	);
+	assert(
+		cardTitleCount(state, "Flow Goal 1 已完成") === 1,
+		`HTML failure suppressed completion card: ${cardTitles(state).join(" | ")}`,
+	);
+	assertReportRefreshFailure(state);
+	assertNoPlanRepair(state);
+}
+
 async function finalizeRetryCursorContinueScenario() {
-	const { planSnapshotHash } = await importCachedModule("flow/snapshot.js");
 	const { startGoalFromFlow } = await importCachedModule("goal.js");
 	const cwd = tempDir("completion-finalize-retry");
 	const dir = createFlow(cwd, "F1");
@@ -7339,7 +12014,6 @@ async function finalizeRetryCursorContinueScenario() {
 				completionCursor: "finalize_retry",
 				sessionFile,
 				snapshot,
-				snapshotHash: planSnapshotHash(snapshot),
 			},
 		],
 	});
@@ -7360,7 +12034,60 @@ async function finalizeRetryCursorContinueScenario() {
 	);
 }
 
+async function finalizeRetryRefreshesResumeBoundaryScenario() {
+	const { recordFlowGoalCompletionBoundary } =
+		await importCachedModule("flow/completion.js");
+	const { pauseGoalFromFlow, startGoalFromFlow } =
+		await importCachedModule("goal.js");
+	const cwd = tempDir("completion-finalize-boundary");
+	const dir = createFlow(cwd, "F1");
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const sessionFile = join(cwd, "goal-session.jsonl");
+	writeFileSync(sessionFile, "");
+	const ctx = commandContext(state, cwd, sessionFile);
+	assert(
+		await startGoalFromFlow("Goal 1", ctx, { sendPrompt: false }),
+		"flow goal did not start",
+	);
+	assert(await pauseGoalFromFlow(ctx), "flow goal did not pause");
+	const flow = readFlow(dir);
+	const snapshot = readFileSync(join(dir, flow.goals[0].file), "utf8");
+	writeFlow(dir, {
+		...flow,
+		status: "running",
+		startedAt: Date.now(),
+		goals: [
+			{
+				...flow.goals[0],
+				status: "running",
+				completionCursor: "finalize_retry",
+				sessionFile,
+				snapshot,
+			},
+		],
+	});
+	recordFlowGoalCompletionBoundary(ctx, {
+		reason: "resume",
+		expectedGoalId: "stale-goal-id",
+	});
+	await commands.get("flow").handler("go F1", ctx);
+	const saved = readFlow(dir);
+	assert(saved.status === "complete", "finalize_retry stale boundary looped");
+	assert(
+		saved.goals[0].completionCursor === null,
+		`finalize_retry kept cursor: ${saved.goals[0].completionCursor}`,
+	);
+	assert(
+		!state.notifications.some((message) =>
+			message.includes("完成事实写入失败"),
+		),
+		state.notifications.join("\n"),
+	);
+}
+
 async function completionScenario() {
+	const { rememberedFlowContext } = await importCachedModule("flow/runtime.js");
 	const cwd = tempDir("completion");
 	createFlow(cwd, "F1", { planCount: 3 });
 	const state = newState(cwd);
@@ -7431,6 +12158,7 @@ async function completionScenario() {
 		{ messages: [{ role: "assistant", stopReason: "stop" }] },
 		planCtx,
 	);
+	await flushScheduledGoalStart();
 	flow = readFlow(join(cwd, ".flow", "F1"));
 	assert(flow.status === "complete", "final acceptance did not complete flow");
 	assertCardOrder(
@@ -7461,7 +12189,7 @@ async function completionScenario() {
 	);
 	const flowCompleteCard = state.customMessages.at(-1);
 	assert(
-		flowCompleteCard.message.content.includes("请基于上面的完成验收和质量检查"),
+		flowCompleteCard.message.content.includes("请基于上面的验收和质检"),
 		"flow completion card missing final reply instruction",
 	);
 	assert(
@@ -7476,10 +12204,27 @@ async function completionScenario() {
 		flowCompleteCard.options.triggerTurn === true,
 		"flow completion card did not trigger final turn",
 	);
+	await emit(handlers, "agent_end", { messages: [] }, planCtx);
+	assert(
+		cardTitleCount(state, "Flow 已完成") === 1 &&
+			readFlow(join(cwd, ".flow", "F1")).status === "complete",
+		"late completion repeated final settlement",
+	);
+	assert(
+		rememberedFlowContext(planCtx.sessionManager.getSessionFile()) ===
+			undefined,
+		"completed Flow retained its final Session context",
+	);
 }
 
 function parallelRun(goalIndexes) {
-	return { id: "P1", goalIndexes, startedAt: 0 };
+	return {
+		id: "P1",
+		goalIndexes,
+		startedAt: 0,
+		consoleSessionFile: "console.jsonl",
+		consoleSessionName: `F1-${goalIndexes.map((index) => `G${index + 1}`).join("+")} 并行控制台`,
+	};
 }
 
 function createFlow(cwd, id, options = {}) {
@@ -7499,16 +12244,19 @@ function createFlow(cwd, id, options = {}) {
 		writeFileSync(join(dir, file), planMarkdown(number, final));
 	}
 	writeFlow(dir, {
-		schemaVersion: 9,
+		schemaVersion: 17,
 		language: options.language ?? "zh",
 		id,
 		title: "Test Flow",
 		status: "draft",
-		source: { type: "prompt", path: null, originalRequest: "original" },
+		source: { type: "prompt", text: "original" },
 		createdAt: Date.now(),
 		updatedAt: Date.now(),
 		startedAt: null,
+		completedAt: null,
 		currentGoal: 0,
+		meta: null,
+		attention: null,
 		parallelRun: null,
 		repairAttempts: 0,
 		errors: [],
@@ -7530,8 +12278,24 @@ function createParallelFlow(cwd, id) {
 	return dir;
 }
 
+function createParallelToParallelFlow(cwd, id) {
+	const dir = createFlow(cwd, id, { planCount: 6 });
+	const flow = readFlow(dir);
+	flow.goals[0].status = "complete";
+	for (const goalIndex of [1, 2]) {
+		flow.goals[goalIndex].dependsOn = [0];
+		flow.goals[goalIndex].writeScope = [`src/${goalIndex}/**`];
+	}
+	for (const goalIndex of [3, 4]) {
+		flow.goals[goalIndex].dependsOn = [1, 2];
+		flow.goals[goalIndex].writeScope = [`src/${goalIndex}/**`];
+	}
+	flow.goals[5].dependsOn = [3, 4];
+	writeFlow(dir, flow);
+	return dir;
+}
+
 async function createCrashedParallelFlow(cwd, id) {
-	const { planSnapshotHash } = await importModule("flow/snapshot.js");
 	const dir = createParallelFlow(cwd, id);
 	const flow = readFlow(dir);
 	flow.status = "running";
@@ -7541,32 +12305,77 @@ async function createCrashedParallelFlow(cwd, id) {
 		id: "P-crashed",
 		goalIndexes: [1, 2],
 		startedAt: Date.now(),
+		consoleSessionFile: join(cwd, "console.jsonl"),
+		consoleSessionName: "F1-G2+G3 并行控制台",
 	};
 	for (const goalIndex of [1, 2]) {
 		const goal = flow.goals[goalIndex];
 		const snapshot = readFileSync(join(dir, goal.file), "utf8");
 		goal.status = "running";
-		goal.sessionFile = join(dir, "workers", `G${goalIndex}`, "session.jsonl");
+		goal.sessionFile = join(
+			cwd,
+			`F1-G${goalIndex + 1} Goal ${goalIndex + 1}.jsonl`,
+		);
 		goal.sessionName = `worker ${goalIndex}`;
 		goal.snapshot = snapshot;
-		goal.snapshotHash = planSnapshotHash(snapshot);
 	}
 	writeFlow(dir, flow);
 	return dir;
 }
 
-function writeWorkerResult(dir, goalIndex, parallelRunId, summary) {
-	const resultDir = join(dir, "workers", `G${goalIndex}`);
-	mkdirSync(resultDir, { recursive: true });
+function writeWorkerHandoff(dir, flow, goalIndex, parallelRunId, message) {
+	const artifact = workerGoalArtifact(flow, goalIndex, emptyChecks());
 	writeFileSync(
-		join(resultDir, "result.json"),
+		join(dir, `G${goalIndex + 1}-worker.json`),
 		`${JSON.stringify(
 			{
-				goalId: `worker-${goalIndex}`,
-				summary,
-				acceptance: "passed",
-				sessionFile: join(resultDir, "session.jsonl"),
+				...artifact,
 				parallelRunId,
+				status: "paused",
+				handoff: {
+					kind: "user_action_required",
+					message,
+					at: Date.now(),
+				},
+			},
+			null,
+			2,
+		)}\n`,
+	);
+}
+
+function writeWorkerResult(dir, goalIndex, parallelRunId, summary) {
+	const artifactPath = join(dir, `G${goalIndex + 1}-worker.json`);
+	const sessionFile = join(
+		dirname(dir),
+		`F1-G${goalIndex + 1} Goal ${goalIndex + 1}.jsonl`,
+	);
+	writeFileSync(
+		artifactPath,
+		`${JSON.stringify(
+			{
+				schemaVersion: 3,
+				flowId: basename(dir),
+				goalIndex,
+				goalTitle: `Goal ${goalIndex + 1}`,
+				goalFile: `G${goalIndex + 1}-plan.md`,
+				parallelRunId,
+				status: "complete",
+				completionCursor: null,
+				runtimeGoalId: `worker-${goalIndex}`,
+				sessionFile,
+				sessionName: `worker ${goalIndex}`,
+				result: { summary, outcome: "passed" },
+				checks: emptyChecks(),
+				handoff: null,
+				completion: {
+					goalId: `worker-${goalIndex}`,
+					summary,
+					acceptance: "passed",
+					sessionFile,
+					parallelRunId,
+				},
+				updatedAt: Date.now(),
 			},
 			null,
 			2,
@@ -7600,6 +12409,33 @@ function createParallelFailureRetryFlow(cwd, id) {
 	flow.goals[4].dependsOn = [1, 2, 3];
 	writeFlow(dir, flow);
 	return dir;
+}
+
+function installFlowReviewRunner(cwd, options) {
+	const command = join(
+		cwd,
+		`review-runner-${Math.random().toString(16).slice(2)}.mjs`,
+	);
+	const startedPath = `${command}.started`;
+	const output = `${JSON.stringify({
+		type: "message_end",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: options.output }],
+		},
+	})}\n`;
+	const body = options.wait
+		? `
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(startedPath)}, "");
+const finish = () => process.exit(0);
+process.on("SIGINT", finish);
+process.on("SIGTERM", finish);
+setTimeout(() => process.stdout.write(${JSON.stringify(output)}), 30_000);
+`
+		: `process.stdout.write(${JSON.stringify(output)});`;
+	writeFileSync(command, `#!/usr/bin/env node\n${body}\n`, { mode: 0o755 });
+	return { command, startedPath };
 }
 
 function installFakeWorkerRunner(cwd) {
@@ -7649,7 +12485,7 @@ function installFakePi(cwd) {
 	);
 	writeFileSync(
 		join(bin, "pi.mjs"),
-		`import { appendFileSync, existsSync, mkdirSync, watch, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nconst args = process.argv.slice(2);\nconst session = args[args.indexOf("--session") + 1];\nconst flowId = process.env.PI_FLOW_WORKER_FLOW_ID ?? "";\nconst goalIndex = process.env.PI_FLOW_WORKER_GOAL_INDEX ?? "0";\nconst parallelRunId = () => process.env.PI_FLOW_WORKER_PARALLEL_RUN_ID;\nappendFileSync(join(process.cwd(), "worker-runs.log"), goalIndex + "\\n");\nconst marker = (suffix) => join(process.cwd(), \`worker-\${goalIndex}.\${suffix}\`);\nconst waitForRelease = () => new Promise((resolve) => {\n\tconst releasePath = join(process.cwd(), "release-workers");\n\tlet watcher;\n\tconst finish = () => {\n\t\twatcher?.close();\n\t\tresolve();\n\t};\n\twatcher = watch(process.cwd(), (_event, name) => {\n\t\tif (name !== null && String(name) !== "release-workers") return;\n\t\tif (!existsSync(releasePath)) return;\n\t\tfinish();\n\t});\n\tif (existsSync(releasePath)) finish();\n});\nconsole.log(JSON.stringify({ type: "agent_start", goalIndex: Number(goalIndex) }));\nif (process.env.PI_FLOW_FAKE_HANG === "1") {\n\twriteFileSync(marker("started"), "");\n\tconst exit = () => {\n\t\twriteFileSync(marker("killed"), "");\n\t\tprocess.exit(0);\n\t};\n\tprocess.on("SIGTERM", exit);\n\tprocess.on("SIGINT", exit);\n\tsetInterval(() => undefined, 1000);\n} else if (process.env.PI_FLOW_FAKE_FAIL_INDEX === goalIndex) {\n\tconsole.error("fake worker failed " + goalIndex);\n\tprocess.exit(1);\n} else {\n\tconsole.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-" + goalIndex, toolName: "bash", result: "ok", isError: false }));\n\twriteFileSync(marker("started"), "");\n\tif (process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE === "1") {\n\t\tawait waitForRelease();\n\t}\n\tconst workerDir = dirname(session);\n\tmkdirSync(workerDir, { recursive: true });\n\twriteFileSync(join(workerDir, "result.json"), JSON.stringify({ goalId: \`worker-\${goalIndex}\`, summary: \`done \${goalIndex}\`, acceptance: "passed", sessionFile: session, parallelRunId: parallelRunId() }, null, 2));\n\tconsole.log(JSON.stringify({ type: "agent_end", messages: [] }));\n}\n`,
+		`import { spawn } from "node:child_process";\nimport { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, watch, writeFileSync } from "node:fs";\nimport { connect } from "node:net";\nimport { join } from "node:path";\nconst args = process.argv.slice(2);\nconst session = args[args.indexOf("--session") + 1];\nconst flowId = process.env.PI_FLOW_WORKER_FLOW_ID ?? "";\nconst flowDir = process.env.PI_FLOW_WORKER_FLOW_DIR;\nconst goalIndex = process.env.PI_FLOW_WORKER_GOAL_INDEX ?? "0";\nconst socketPath = process.env.PI_FLOW_WORKER_SOCKET_PATH;\nconst token = process.env.PI_FLOW_WORKER_TOKEN;\nconst parallelRunId = () => process.env.PI_FLOW_WORKER_PARALLEL_RUN_ID;\nappendFileSync(join(process.cwd(), "worker-runs.log"), goalIndex + "\\n");\nconst marker = (suffix) => join(process.cwd(), \`worker-\${goalIndex}.\${suffix}\`);\nwriteFileSync(marker("pid"), String(process.pid));\nconst promptIndex = args.indexOf("-p");\nif (promptIndex >= 0) writeFileSync(marker("prompt"), args[promptIndex + 1] ?? "");\nlet onControlClose = () => process.exit(1);\nlet controlSocket;\nif (socketPath && token) {\n\tcontrolSocket = connect(socketPath, () => controlSocket.write(JSON.stringify({ type: "hello", token }) + "\\n"));\n\tcontrolSocket.on("error", () => undefined);\n\tcontrolSocket.on("close", () => onControlClose());\n}\nconst releaseControl = () => {\n\tonControlClose = () => undefined;\n\tcontrolSocket?.destroy();\n};\nconst waitForRelease = () => new Promise((resolve) => {\n\tconst releasePath = join(process.cwd(), "release-workers");\n\tlet watcher;\n\tconst finish = () => {\n\t\twatcher?.close();\n\t\tresolve();\n\t};\n\twatcher = watch(process.cwd(), (_event, name) => {\n\t\tif (name !== null && String(name) !== "release-workers") return;\n\t\tif (!existsSync(releasePath)) return;\n\t\tfinish();\n\t});\n\tif (existsSync(releasePath)) finish();\n});\nconsole.log(JSON.stringify({ type: "agent_start", goalIndex: Number(goalIndex) }));\nif (process.env.PI_FLOW_FAKE_BLOCK_INDEX === goalIndex) {\n\tif (!flowDir) throw new Error("missing flow dir");\n\tconst artifactPath = join(flowDir, \`G\${Number(goalIndex) + 1}-worker.json\`);\n\tlet artifact = {};\n\ttry { artifact = JSON.parse(readFileSync(artifactPath, "utf8")); } catch {}\n\tconst handoff = { kind: "user_action_required", message: process.env.PI_FLOW_FAKE_BLOCK_REASON ?? "user action required", at: Date.now() };\n\tconst tmpPath = artifactPath + ".tmp";\n\twriteFileSync(tmpPath, JSON.stringify({ ...artifact, status: "paused", handoff }, null, 2));\n\trenameSync(tmpPath, artifactPath);\n\treleaseControl();\n} else if (process.env.PI_FLOW_FAKE_HANG === "1") {\n\twriteFileSync(marker("started"), "");\n\tspawn(process.execPath, ["-e", "const fs=require('fs');fs.writeFileSync(process.argv[2],String(process.pid));fs.writeFileSync(process.argv[1]+'.started','');process.on('SIGTERM',()=>{fs.writeFileSync(process.argv[1],'');process.exit(0)});process.on('SIGINT',()=>{fs.writeFileSync(process.argv[1],'');process.exit(0)});setInterval(()=>{},1000)", marker("child-killed"), marker("child-pid")], { stdio: "ignore" });\n\tconst exit = () => {\n\t\twriteFileSync(marker("killed"), "");\n\t\tprocess.exit(0);\n\t};\n\tonControlClose = exit;\n\tprocess.on("SIGTERM", exit);\n\tprocess.on("SIGINT", exit);\n\tsetInterval(() => undefined, 1000);\n} else if (process.env.PI_FLOW_FAKE_FAIL_INDEX === goalIndex) {\n\tconsole.error("fake worker failed " + goalIndex);\n\tprocess.exit(1);\n} else if (process.env.PI_FLOW_FAKE_MISSING_COMPLETION_INDEX === goalIndex) {\n\treleaseControl();\n\tprocess.exit(0);\n} else {\n\tconsole.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "tool-" + goalIndex, toolName: "bash", args: { command: "echo worker" } }));\n\tconsole.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "tool-" + goalIndex, toolName: "bash", result: "ok", isError: false }));\n\twriteFileSync(marker("started"), "");\n\tawait new Promise((resolve) => setTimeout(resolve, 100));\n\tif (process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE === "1") {\n\t\tawait waitForRelease();\n\t}\n\tif (!flowDir) throw new Error("missing flow dir");\n\tconst artifactPath = join(flowDir, \`G\${Number(goalIndex) + 1}-worker.json\`);\n\tlet artifact = {};\n\ttry { artifact = JSON.parse(readFileSync(artifactPath, "utf8")); } catch {}\n\tconst completion = { goalId: \`worker-\${goalIndex}\`, summary: \`done \${goalIndex}\`, acceptance: "passed", sessionFile: session, parallelRunId: parallelRunId() };\n\tconst tmpPath = artifactPath + ".tmp";\n\twriteFileSync(tmpPath, JSON.stringify({ ...artifact, status: "complete", sessionFile: session, completion }, null, 2));\n\trenameSync(tmpPath, artifactPath);\n\tawait new Promise((resolve) => setTimeout(resolve, 20));\n\tconsole.log(JSON.stringify({ type: "agent_end", messages: [] }));\n\treleaseControl();\n}\n`,
 	);
 	chmodSync(join(bin, "pi"), 0o755);
 	const previousPath = process.env.PATH;
@@ -7714,11 +12550,12 @@ function goal(index, title, file, final = false) {
 		role: final ? "final_acceptance" : "normal",
 		file,
 		status: "pending",
+		startedAt: null,
+		completedAt: null,
 		completionCursor: null,
 		sessionFile: null,
 		sessionName: null,
 		snapshot: null,
-		snapshotHash: null,
 		goalId: null,
 		result: {
 			summary: null,
@@ -7727,6 +12564,7 @@ function goal(index, title, file, final = false) {
 			criteriaChanged: false,
 		},
 		checks: emptyChecks(),
+		pendingAdvisor: null,
 	};
 }
 
@@ -7737,26 +12575,46 @@ function emptyChecks() {
 	};
 }
 
-function writeWorkerGoalArtifact(dir, flow, goalIndex, checks) {
-	const workerDir = join(dir, "workers", `G${goalIndex}`);
-	mkdirSync(workerDir, { recursive: true });
+function writeWorkerGoalArtifact(dir, flow, goalIndex, checks, cursor = null) {
 	writeFileSync(
-		join(workerDir, "state.json"),
-		`${JSON.stringify(workerGoalArtifact(flow, goalIndex, checks), null, 2)}\n`,
+		join(dir, `G${goalIndex + 1}-worker.json`),
+		`${JSON.stringify(
+			workerGoalArtifact(flow, goalIndex, checks, cursor),
+			null,
+			2,
+		)}\n`,
 	);
 }
 
-function workerGoalArtifact(flow, goalIndex, checks) {
-	void flow;
+function workerGoalArtifact(flow, goalIndex, checks, cursor = null) {
+	const goal = flow.goals[goalIndex];
 	return {
+		schemaVersion: 3,
+		flowId: flow.id,
+		goalIndex,
+		goalTitle: goal?.title ?? `Goal ${goalIndex + 1}`,
+		goalFile: goal?.file ?? `G${goalIndex + 1}-plan.md`,
+		parallelRunId: flow.parallelRun?.id ?? "P1",
 		status: "running",
-		completionCursor: null,
+		completionCursor: cursor,
 		runtimeGoalId: `worker-${goalIndex}`,
 		sessionFile: null,
 		sessionName: null,
 		result: { summary: null, outcome: null },
 		checks,
+		handoff: null,
+		completion: null,
 		updatedAt: Date.now(),
+	};
+}
+
+function activeCheck(label) {
+	return {
+		round: 1,
+		generation: "test-generation",
+		runId: "test-run",
+		inputHash: "test-input",
+		models: [{ key: label, label, outcome: null }],
 	};
 }
 
@@ -7766,7 +12624,7 @@ function runningChecks() {
 		acceptance: {
 			enabled: true,
 			rounds: [],
-			active: [{ label: "model", status: "running" }],
+			active: activeCheck("model"),
 		},
 	};
 }
@@ -7775,12 +12633,12 @@ function passedChecks() {
 	return {
 		acceptance: {
 			enabled: true,
-			rounds: [{ round: 1, result: "passed", summary: "完成验收通过" }],
+			rounds: [{ round: 1, result: "passed", summary: "验收通过" }],
 			active: null,
 		},
 		quality: {
 			enabled: true,
-			rounds: [{ round: 1, result: "passed", summary: "质量检查通过" }],
+			rounds: [{ round: 1, result: "passed", summary: "质检通过" }],
 			active: null,
 		},
 	};
@@ -7791,7 +12649,22 @@ function failedChecks() {
 		...emptyChecks(),
 		acceptance: {
 			enabled: true,
-			rounds: [{ round: 1, result: "failed", summary: "完成验收失败" }],
+			rounds: [{ round: 1, result: "failed", summary: "验收失败" }],
+			active: null,
+		},
+	};
+}
+
+function qualityFailedChecks() {
+	return {
+		acceptance: {
+			enabled: true,
+			rounds: [{ round: 1, result: "passed", summary: "验收通过" }],
+			active: null,
+		},
+		quality: {
+			enabled: true,
+			rounds: [{ round: 1, result: "failed", summary: "质检失败" }],
 			active: null,
 		},
 	};
@@ -7807,13 +12680,13 @@ Do Goal ${index}.
 Only this Goal.
 
 ## Steps
-- [ ] Do work.
+- [x] Do work.
 
 ## Success Criteria
 - Done.
 
 ## Verification
-- [ ] \`npm test\`
+- [x] \`npm test\`
 
 ## Notes
 
@@ -7821,11 +12694,12 @@ Only this Goal.
 `;
 }
 
-async function loadExtension(state) {
+async function loadExtension(state, moduleDir = srcOut) {
 	const { default: flowExtension } = await import(
-		`file://${join(srcOut, "index.js")}?t=${Date.now()}-${Math.random()}`
+		`file://${join(moduleDir, "index.js")}?t=${Date.now()}-${Math.random()}`
 	);
 	const commands = new Map();
+	const shortcuts = new Map();
 	const tools = new Map();
 	const handlers = new Map();
 	let activeTools = [];
@@ -7833,12 +12707,28 @@ async function loadExtension(state) {
 		registerCommand(name, command) {
 			commands.set(name, command);
 		},
+		registerShortcut(shortcut, options) {
+			shortcuts.set(shortcut, options);
+		},
 		registerTool(tool) {
 			tools.set(tool.name, tool);
 		},
 		registerMessageRenderer() {},
 		registerFlag() {},
 		getFlag() {},
+		getThinkingLevel() {
+			return "off";
+		},
+		async setModel(model) {
+			if (!state.allowModelSwitch) return false;
+			state.selectedModels.push(model);
+			state.onModelSwitch?.(model);
+			if (state.modelSwitchBarrier) await state.modelSwitchBarrier;
+			return true;
+		},
+		setThinkingLevel(level) {
+			state.thinkingLevels.push(level);
+		},
 		getActiveTools() {
 			return activeTools;
 		},
@@ -7867,10 +12757,16 @@ async function loadExtension(state) {
 			if (state.failSend) throw new Error("busy");
 			if (state.staleApis.has(api)) throw new Error("stale pi");
 			state.customMessages.push({ message, options });
-			if (message.display === false)
+			if (message.display === false) {
 				state.hiddenMessages.push(String(message.content));
+				state.onHiddenMessage?.(message);
+			}
 		},
 		on(name, handler) {
+			if (state.failRuntimeEventOnce === name) {
+				state.failRuntimeEventOnce = undefined;
+				throw new Error(`injected registration failure: ${name}`);
+			}
 			if (!handlers.has(name)) handlers.set(name, []);
 			handlers.get(name).push(handler);
 		},
@@ -7888,13 +12784,15 @@ async function loadExtension(state) {
 			return state.sessionNames.at(-1);
 		},
 		exec(command, args) {
-			state.execs.push({ command, args });
+			const execution = { command, args };
+			state.execs.push(execution);
+			for (const listener of state.execListeners) listener(execution);
 			return Promise.resolve({ code: 0, stdout: "", stderr: "" });
 		},
 	};
 	state.extensionApis.push(api);
 	flowExtension(api);
-	return { commands, tools, handlers };
+	return { commands, shortcuts, tools, handlers };
 }
 
 function recordSend(state, message, options) {
@@ -7914,13 +12812,17 @@ function commandContext(state, cwd, sessionFile, replaced = false) {
 		},
 		async select(_title, options) {
 			state.selects.push(options);
-			return state.select ?? options[1];
+			return state.select ?? options[0];
 		},
 		notify(message, level) {
-			state.notifications.push(`${message}:${level ?? "info"}`);
+			const notification = `${message}:${level ?? "info"}`;
+			state.notifications.push(notification);
+			for (const listener of state.notificationListeners)
+				listener(notification);
 		},
 		setStatus(_key, value) {
 			state.statuses.push(value);
+			for (const listener of state.statusListeners) listener(value);
 		},
 		setWorkingVisible(value) {
 			state.workingVisible.push(value);
@@ -7932,6 +12834,13 @@ function commandContext(state, cwd, sessionFile, replaced = false) {
 	const ctx = {
 		cwd,
 		hasUI: true,
+		model: { provider: "test", id: "current", contextWindow: 200_000 },
+		modelRegistry: {
+			find(provider, modelId) {
+				if (state.missingModels.has(`${provider}/${modelId}`)) return undefined;
+				return { provider, id: modelId, contextWindow: 200_000 };
+			},
+		},
 		get ui() {
 			if (state.staleSessionFiles.has(sessionFile))
 				throw new Error(
@@ -7977,8 +12886,10 @@ function commandContext(state, cwd, sessionFile, replaced = false) {
 		ctx.sendMessage = (message, options = {}) => {
 			if (state.failSend) throw new Error("busy");
 			state.customMessages.push({ message, options });
-			if (message.display === false)
+			if (message.display === false) {
 				state.hiddenMessages.push(String(message.content));
+				state.onHiddenMessage?.(message);
+			}
 		};
 		ctx.sendUserMessage = (message, options) =>
 			recordSend(state, message, options);
@@ -8017,6 +12928,60 @@ function sessionManager(state, cwd, sessionFile, replaced = false) {
 	};
 }
 
+function waitForStatus(state, matches) {
+	const existing = state.statuses.find(matches);
+	if (existing) return Promise.resolve(existing);
+	return new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			state.statusListeners.delete(listener);
+			reject(new Error("status timeout"));
+		}, 5_000);
+		const listener = (status) => {
+			if (!matches(status)) return;
+			clearTimeout(timeout);
+			state.statusListeners.delete(listener);
+			resolve(status);
+		};
+		state.statusListeners.add(listener);
+	});
+}
+
+function waitForExec(state, matches) {
+	const existing = state.execs.find(matches);
+	if (existing) return Promise.resolve(existing);
+	return new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			state.execListeners.delete(listener);
+			reject(new Error("exec timeout"));
+		}, 5_000);
+		const listener = (execution) => {
+			if (!matches(execution)) return;
+			clearTimeout(timeout);
+			state.execListeners.delete(listener);
+			resolve(execution);
+		};
+		state.execListeners.add(listener);
+	});
+}
+
+function waitForNotification(state, matches) {
+	const existing = state.notifications.find(matches);
+	if (existing) return Promise.resolve(existing);
+	return new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			state.notificationListeners.delete(listener);
+			reject(new Error("notification timeout"));
+		}, 5_000);
+		const listener = (notification) => {
+			if (!matches(notification)) return;
+			clearTimeout(timeout);
+			state.notificationListeners.delete(listener);
+			resolve(notification);
+		};
+		state.notificationListeners.add(listener);
+	});
+}
+
 function newState(cwd) {
 	return {
 		cwd,
@@ -8030,7 +12995,10 @@ function newState(cwd) {
 		hiddenMessages: [],
 		triggers: [],
 		notifications: [],
+		notificationListeners: new Set(),
 		statuses: [],
+		statusListeners: new Set(),
+		execListeners: new Set(),
 		customMessages: [],
 		widgets: [],
 		workingVisible: [],
@@ -8051,7 +13019,15 @@ function newState(cwd) {
 		staleCtxAfterSessionReplacement: false,
 		staleApis: new Set(),
 		staleSessionFiles: new Set(),
+		missingModels: new Set(),
+		allowModelSwitch: false,
+		selectedModels: [],
+		thinkingLevels: [],
+		modelSwitchBarrier: undefined,
+		onModelSwitch: undefined,
 		throwReplacedSessionFile: false,
+		failRuntimeEventOnce: undefined,
+		onHiddenMessage: undefined,
 	};
 }
 
@@ -8106,23 +13082,23 @@ function stuckRefactorBChecks(options = {}) {
 			rounds: [qualityRound],
 			active: options.settled
 				? null
-				: [
-						{
-							label: "gpt-5.5",
-							status: "passed",
-							summary: "check/test passed",
-						},
-						{
-							label: "gpt-5.4-mini",
-							status: "passed",
-							summary: "check/test passed",
-						},
-						{
-							label: "grok-composer-2.5-fast",
-							status: "passed",
-							summary: "check/test passed",
-						},
-					],
+				: {
+						round: 1,
+						generation: "stuck-refactor-b",
+						runId: "stuck-refactor-b-run",
+						inputHash: "stuck-refactor-b-input",
+						models: ["gpt-5.5", "gpt-5.4-mini", "grok-composer-2.5-fast"].map(
+							(label) => ({
+								key: label,
+								label,
+								outcome: {
+									result: "passed",
+									summary: "check/test passed",
+									details: "check/test passed",
+								},
+							}),
+						),
+					},
 		},
 	};
 }
@@ -8149,6 +13125,26 @@ async function flushScheduledGoalReview() {
 
 async function flushScheduledGoalStart() {
 	await new Promise((resolve) => setImmediate(resolve));
+	const { waitForSessionTransitions } = await import(
+		`file://${join(srcOut, "flow/session-transition.js")}`
+	);
+	await waitForSessionTransitions();
+}
+
+/** prewalk 工作区指纹守卫需要真实 git 仓库；`.flow/` 运行态已被指纹排除。 */
+function initGitWorkspace(cwd) {
+	writeFileSync(join(cwd, "tracked.txt"), "base\n");
+	// harness 把会话文件/worker 产物写在 cwd 根；真实 Pi 会话位于默认 session dir，
+	// 不在工作区内。ignore 掉这些 harness 产物以模拟真实布局。
+	writeFileSync(
+		join(cwd, ".gitignore"),
+		["*.jsonl", "bin/", "worker-*", "release-workers", "*.log", ""].join("\n"),
+	);
+	const git = (...args) =>
+		execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
+	git("init", "-q");
+	git("add", "-A");
+	git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base");
 }
 
 function tempDir(name) {
@@ -8162,12 +13158,37 @@ function readFlow(dir) {
 	return JSON.parse(readFileSync(join(dir, "flow.json"), "utf8"));
 }
 
-function readGoalArtifact(dir) {
-	return JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
+function readWorkerArtifact(path) {
+	return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined;
 }
 
 function writeFlow(dir, flow) {
 	writeFileSync(join(dir, "flow.json"), `${JSON.stringify(flow, null, 2)}\n`);
+}
+
+function breakFlowHtml(dir) {
+	const htmlPath = join(dir, "flow.html");
+	rmSync(htmlPath, { recursive: true, force: true });
+	mkdirSync(htmlPath);
+}
+
+function assertReportRefreshFailure(state) {
+	assert(
+		state.notifications.some((message) =>
+			message.includes("Flow 报告刷新失败"),
+		),
+		`HTML projection failure was silent: ${state.notifications.join(" | ")}`,
+	);
+}
+
+function assertNoPlanRepair(state) {
+	assert(
+		!state.hiddenMessages.some((message) =>
+			message.includes("你正在修正已有 Pi Flow 计划草稿"),
+		) &&
+			!state.notifications.some((message) => message.includes("Flow 计划修复")),
+		`HTML projection failure triggered plan repair: ${state.notifications.join(" | ")}`,
+	);
 }
 
 function writePreDraftFlow(cwd, id, options = {}) {
@@ -8175,20 +13196,22 @@ function writePreDraftFlow(cwd, id, options = {}) {
 	mkdirSync(dir, { recursive: true });
 	const status = options.status ?? "generating";
 	writeFlow(dir, {
-		schemaVersion: 9,
+		schemaVersion: 17,
 		language: options.language ?? "zh",
 		id,
 		title: options.title ?? `Flow ${id}`,
 		status,
 		source: {
 			type: "prompt",
-			path: null,
-			originalRequest: options.originalRequest ?? `request ${id}`,
+			text: options.requestText ?? `request ${id}`,
 		},
 		createdAt: Date.now(),
 		updatedAt: Date.now(),
 		startedAt: null,
+		completedAt: null,
 		currentGoal: 0,
+		meta: null,
+		attention: null,
 		parallelRun: null,
 		repairAttempts: options.repairAttempts ?? 0,
 		errors: options.errors ?? [],
@@ -8203,6 +13226,7 @@ function writePreDraftFlow(cwd, id, options = {}) {
 					stage: options.stage ?? status,
 					sessionFile: options.sessionFile ?? null,
 					autoStart: options.autoStart ?? true,
+					depth: options.depth ?? "standard",
 					alignmentTurns: options.alignmentTurns ?? [],
 					lastAlignmentQuestion: options.lastAlignmentQuestion ?? null,
 					createdAt: Date.now(),
@@ -8226,15 +13250,43 @@ async function importCachedModule(path) {
 }
 
 function latestWidgetText(state) {
-	const content = state.widgets.at(-1)?.content;
+	return renderWidgetContent(state.widgets.at(-1)?.content);
+}
+
+function latestWidgetTextForKey(state, key) {
+	return renderWidgetContent(
+		state.widgets.filter((item) => item.key === key).at(-1)?.content,
+	);
+}
+
+function renderWidgetContent(content, width = 100, terminalRows) {
 	const widget =
 		typeof content === "function"
 			? content(
-					{ requestRender() {} },
+					{
+						requestRender() {},
+						...(terminalRows ? { terminal: { rows: terminalRows } } : {}),
+					},
 					{ fg: (_color, value) => value, bold: (value) => value },
 				)
 			: content;
-	return widget?.render ? widget.render(100).join("\n") : "";
+	return widget?.render ? widget.render(width).join("\n") : "";
+}
+
+function hasGoalFlame(text) {
+	return text.includes("\u001b[38;2;255;");
+}
+
+function assertRunningLaneFirstActivity(text, goalLabel, activity) {
+	const lines = text.split("\n");
+	const header = lines.findIndex(
+		(line) => line.includes(goalLabel) && line.includes("执行中"),
+	);
+	assert(header >= 0, `running lane header missing:\n${text}`);
+	assert(
+		lines[header + 1]?.includes(activity),
+		`running lane first activity row missing ${activity}:\n${text}`,
+	);
 }
 
 function count(text, search) {

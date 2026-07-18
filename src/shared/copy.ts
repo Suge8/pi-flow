@@ -28,16 +28,21 @@ export interface UiCopy {
 	planId: string;
 	source: string;
 	updatedAt: string;
-	originalRequest: string;
+	request: string;
 	validationErrors: string;
 	completionAcceptance: string;
 	completionAcceptanceHint: string;
 	qualityCheck: string;
 	qualityCheckHint: string;
 	disabled: string;
+	accepting: string;
 	checking: string;
-	repairing: string;
+	completing: string;
+	optimizing: string;
 	waiting: string;
+	noDetailedOutput: string;
+	themeToLight: string;
+	themeToDark: string;
 	draftStatus: string;
 	aligningStatus: string;
 	generatingStatus: string;
@@ -45,7 +50,8 @@ export interface UiCopy {
 	failed: string;
 	error: string;
 	model: string;
-	allStepsDone: (total: number) => string;
+	deliveryDetails: string;
+	completionTitle: (total: number) => string;
 	flowWaitingStart: (total: number) => string;
 	flowRunningStep: (label: string) => string;
 	goalProgressCaption: (
@@ -78,23 +84,28 @@ const ZH: UiCopy = {
 	outcome: "成果",
 	fullDetails: "完整说明",
 	completionStandards: "完成标准与验证",
-	successCriteria: "怎么算完成",
+	successCriteria: "验收标准",
 	verification: "怎么验证",
 	notes: "备注",
 	debug: "调试",
 	planId: "计划 ID",
 	source: "来源",
 	updatedAt: "更新时间",
-	originalRequest: "原始需求",
+	request: "原始需求",
 	validationErrors: "校验错误",
-	completionAcceptance: "完成验收",
+	completionAcceptance: "验收",
 	completionAcceptanceHint: "确保目标完整完成",
-	qualityCheck: "质量检查",
+	qualityCheck: "质检",
 	qualityCheckHint: "把关实现质量",
 	disabled: "未启用",
-	checking: "检查中",
-	repairing: "修复中",
+	accepting: "验收中",
+	checking: "质检中",
+	completing: "补完中",
+	optimizing: "优化中",
 	waiting: "等待",
+	noDetailedOutput: "暂无详细输出",
+	themeToLight: "切换到浅色",
+	themeToDark: "切换到深色",
 	draftStatus: "待启动",
 	aligningStatus: "对齐中",
 	generatingStatus: "生成中",
@@ -102,7 +113,8 @@ const ZH: UiCopy = {
 	failed: "未通过",
 	error: "错误",
 	model: "模型",
-	allStepsDone: (total) => `全部 ${total} 步已完成`,
+	deliveryDetails: "交付详情",
+	completionTitle: (total) => `全部完成 · ${total} 步`,
 	flowWaitingStart: (total) => `共 ${total} 步，等待启动`,
 	flowRunningStep: (label) => `正在执行${label}`,
 	goalProgressCaption: (done, total, passed, checks) =>
@@ -138,16 +150,21 @@ const EN: UiCopy = {
 	planId: "Plan ID",
 	source: "Source",
 	updatedAt: "Updated at",
-	originalRequest: "Original request",
+	request: "Original request",
 	validationErrors: "Validation errors",
-	completionAcceptance: "Completion acceptance",
+	completionAcceptance: "Acceptance",
 	completionAcceptanceHint: "Verify the goal is complete",
 	qualityCheck: "Quality check",
 	qualityCheckHint: "Review implementation quality",
 	disabled: "Disabled",
+	accepting: "Accepting",
 	checking: "Checking",
-	repairing: "Fixing",
+	completing: "Completing",
+	optimizing: "Optimizing",
 	waiting: "Waiting",
+	noDetailedOutput: "No detailed output",
+	themeToLight: "Switch to light",
+	themeToDark: "Switch to dark",
 	draftStatus: "Ready to start",
 	aligningStatus: "Aligning",
 	generatingStatus: "Generating",
@@ -155,7 +172,9 @@ const EN: UiCopy = {
 	failed: "Failed",
 	error: "Error",
 	model: "Model",
-	allStepsDone: (total) => `All ${total} steps complete`,
+	deliveryDetails: "Delivery details",
+	completionTitle: (total) =>
+		`All complete · ${total} ${total === 1 ? "step" : "steps"}`,
 	flowWaitingStart: (total) => `${total} steps, waiting to start`,
 	flowRunningStep: (label) => `Running ${label}`,
 	goalProgressCaption: (done, total, passed, checks) =>

@@ -5,9 +5,12 @@ import {
 	resumePausedGoalFromFlow,
 } from "../../goal.js";
 import type { Language } from "../../shared/config.js";
+import { formatError } from "../../shared/guards.js";
 import { runtimeLanguage } from "../../shared/language.js";
 import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
-import { writeFlowHtml } from "../html.js";
+import { refreshFlowHtmlProjection } from "../html.js";
+import { flowLockBusyMessage, withFlowLockSync } from "../lock.js";
+import { currentSessionFile, flowOwnerForSession } from "../ownership.js";
 import { planSnapshotError } from "../snapshot.js";
 import { currentGoal, latestFlow, writeFlow } from "../store.js";
 import {
@@ -19,6 +22,7 @@ import {
 	resolveFlowTarget,
 } from "../target.js";
 import type { FlowLocation, FlowState } from "../types.js";
+import { replaceGoal } from "../util.js";
 import { validateFlowDir } from "../validator.js";
 
 export async function continueCurrentGoal(ctx: ExtensionContext) {
@@ -29,7 +33,13 @@ export async function continueCurrentGoal(ctx: ExtensionContext) {
 		return "no_goal";
 	}
 	if (goal.status === "paused" || goal.status === "budget_limited") {
-		const result = await resumePausedGoalFromFlow(ctx);
+		const owner = flowOwnerForSession(ctx);
+		const result = await resumePausedGoalFromFlow(ctx, {
+			onGoalIdChanged: owner
+				? (goalId) =>
+						syncFlowGoalId(ctx, owner.dir, owner.flow.language, goalId)
+				: undefined,
+		});
 		notifyUser(
 			ctx,
 			continueResultText(result, goal.language),
@@ -55,6 +65,64 @@ export async function continueCurrentGoal(ctx: ExtensionContext) {
 		goal.language,
 	);
 	return "not_resumable";
+}
+
+function syncFlowGoalId(
+	ctx: ExtensionContext,
+	dir: string,
+	language: Language,
+	goalId: string,
+) {
+	try {
+		const synced = withFlowLockSync(dir, "sync resumed Goal ID", () => {
+			const validation = validateFlowDir(dir, language);
+			if (!validation.ok || !validation.flow) {
+				notifyUser(
+					ctx,
+					flowValidationFailedNotice(validation.errors, language),
+					"info",
+					language,
+				);
+				return false;
+			}
+			const flow = validation.flow;
+			const plan = currentGoal(flow);
+			if (
+				flow.status !== "running" ||
+				plan?.status !== "running" ||
+				plan.sessionFile !== currentSessionFile(ctx)
+			)
+				return false;
+			if (plan.goalId === goalId) return true;
+			writeFlow(dir, {
+				...flow,
+				goals: replaceGoal(flow, plan.index, { ...plan, goalId }),
+			});
+			return true;
+		});
+		if (synced.ok) return synced.value;
+		notifyUser(
+			ctx,
+			flowLockBusyMessage(synced.owner, language),
+			"info",
+			language,
+		);
+		return false;
+	} catch (error) {
+		notifyUser(
+			ctx,
+			goalIdSyncFailedNotice(formatError(error), language),
+			"info",
+			language,
+		);
+		return false;
+	}
+}
+
+function goalIdSyncFailedNotice(error: string, language: Language) {
+	return language === "en"
+		? formatUserNotice("❌", "Flow runtime state sync failed", [error])
+		: formatUserNotice("❌", "Flow 运行状态同步失败", [error]);
 }
 
 export function flowCommandLanguage(ctx: ExtensionContext): Language {
@@ -177,7 +245,7 @@ export function verifyCurrentSnapshot(
 	const error = planSnapshotError(dir, plan, current.language);
 	if (error) {
 		const saved = writeFlow(dir, { ...current, errors: [error] });
-		writeFlowHtml(dir, saved);
+		refreshFlowHtmlProjection(ctx, dir, saved);
 		notifyUser(
 			ctx,
 			planSnapshotErrorNotice(error, current.language),
@@ -188,7 +256,7 @@ export function verifyCurrentSnapshot(
 	}
 	if (current.errors.length === 0) return current;
 	const saved = writeFlow(dir, { ...current, errors: [] });
-	writeFlowHtml(dir, saved);
+	refreshFlowHtmlProjection(ctx, dir, saved);
 	return saved;
 }
 
@@ -207,6 +275,7 @@ export function flowStatusLabel(status: string, language: Language = "zh") {
 export function goalStatusLabel(status: string, language: Language = "zh") {
 	if (status === "pending") return language === "en" ? "Ready" : "待执行";
 	if (status === "running") return language === "en" ? "Running" : "执行中";
+	if (status === "paused") return language === "en" ? "Paused" : "已暂停";
 	if (status === "complete") return language === "en" ? "Complete" : "已完成";
 	return status;
 }
@@ -249,8 +318,8 @@ function currentStepStatusNotice(status: string, language: Language) {
 
 function planSnapshotErrorNotice(error: string, language: Language) {
 	return language === "en"
-		? formatUserNotice("❌", "Flow plan snapshot mismatch", [error])
-		: formatUserNotice("❌", "Flow 计划快照不一致", [error]);
+		? formatUserNotice("❌", "Flow cannot recover", [error])
+		: formatUserNotice("❌", "Flow 无法恢复", [error]);
 }
 
 export function flowValidationFailedNotice(

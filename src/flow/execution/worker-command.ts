@@ -1,10 +1,4 @@
-import {
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { readFileSync } from "node:fs";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import type {
@@ -12,17 +6,27 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import {
-	artifactChecks,
-	writeStepRuntimeState,
-} from "../../goal/persistence.js";
 import { objectiveFromPlan } from "../../goal/validator.js";
-import { startGoalFromFlow } from "../../goal.js";
+import {
+	continueActiveGoalFromCheckpoint,
+	startGoalFromFlow,
+} from "../../goal.js";
 import { formatError } from "../../shared/guards.js";
 import { runtimeLanguage } from "../../shared/language.js";
 import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
 import { onFlowGoalCompleted } from "../completion.js";
+import {
+	type FlowGoalBlockedHandoff,
+	onFlowGoalBlocked,
+} from "../goal-events.js";
 import { currentSessionFile } from "../ownership.js";
+import {
+	initWorkerArtifact,
+	readWorkerArtifact,
+	resumableWorkerCursor,
+	workerArtifactPath,
+	writeWorkerCompletion,
+} from "../parallel/worker-artifact.js";
 import { planGoalPrompt } from "../prompt.js";
 import type { FlowGoal, FlowState, GoalCompletionFact } from "../types.js";
 import { flowSessionName } from "../util.js";
@@ -38,8 +42,9 @@ import {
 } from "./worker-protocol.js";
 
 interface WorkerJob {
-	resultPath: string;
-	completed: boolean;
+	flowDir: string;
+	goalIndex: number;
+	settled: boolean;
 	parallelRunId?: string;
 	finishPrivateWorker?: () => void;
 }
@@ -55,6 +60,7 @@ export function registerWorkerRuntime(pi: ExtensionAPI) {
 	if (completionListenerRegistered) return;
 	completionListenerRegistered = true;
 	onFlowGoalCompleted((fact, ctx) => writeWorkerResult(ctx, fact));
+	onFlowGoalBlocked((handoff, ctx) => finishBlockedWorker(ctx, handoff));
 }
 
 export function isWorkerContext(ctx: unknown) {
@@ -68,6 +74,7 @@ export async function startPrivateWorkerFromEnv(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 ) {
+	void pi;
 	let control: PrivateWorkerControl | undefined;
 	try {
 		control = privateWorkerControlFromEnv();
@@ -98,7 +105,6 @@ export async function startPrivateWorkerFromEnv(
 		if (validation.flow.id !== control.flowId)
 			throw new Error(`Private worker flow mismatch: ${validation.flow.id}.`);
 		const started = await startWorkerGoal(
-			pi,
 			ctx as ExtensionCommandContext,
 			control.flowDir,
 			validation.flow,
@@ -119,7 +125,6 @@ export async function startPrivateWorkerFromEnv(
 }
 
 async function startWorkerGoal(
-	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
 	flowDir: string,
 	flow: FlowState,
@@ -149,19 +154,16 @@ async function startWorkerGoal(
 			"info",
 			flow.language,
 		);
-	const workerId = `G${goalIndex}`;
-	const workerDir = join(flowDir, "workers", workerId);
-	mkdirSync(workerDir, { recursive: true });
-	const sessionPath = join(workerDir, "session.jsonl");
-	if (privateJob)
-		validatePrivateWorkerJob(privateJob, flow, flowDir, sessionPath);
+	const workerId = `G${goalIndex + 1}`;
+	const sessionPath = privateJob?.sessionPath ?? goal.sessionFile;
+	if (!sessionPath) throw new Error("Private worker session path is missing.");
+	if (privateJob) validatePrivateWorkerJob(privateJob, flow, flowDir);
 	if (currentSessionFile(ctx) !== sessionPath) {
 		let started = false;
 		const result = await ctx.switchSession(sessionPath, {
 			withSession: async (sessionCtx) => {
 				started = Boolean(
 					await startWorkerGoal(
-						pi,
 						sessionCtx,
 						flowDir,
 						flow,
@@ -174,63 +176,87 @@ async function startWorkerGoal(
 		});
 		return started && !result.cancelled;
 	}
-	const resultPath = join(workerDir, "result.json");
-	const planPath = join(workerDir, "plan.md");
+	const parallelRunId =
+		privateJob?.parallelRunId ?? workerParallelRunId(flow, goalIndex);
+	if (!parallelRunId)
+		throw new Error("Private worker parallel run is missing.");
 	const input = workerGoalInput(flowDir, flow, goalIndex);
-	writeFileSync(planPath, input.markdown);
-	rmSync(resultPath, { force: true });
 	const sessionName = flowSessionName(flow, goal);
-	setSessionName(pi, ctx, sessionName);
-	writeWorkerGoalArtifact(ctx, workerDir, goal, sessionName);
+	const resumeCheck =
+		privateJob !== undefined &&
+		workerUsesInitialPrompt() &&
+		resumableWorkerCursor(
+			readWorkerArtifact(flowDir, goalIndex),
+			parallelRunId,
+		) !== null;
+	setSessionName(ctx, sessionName);
+	initWorkerArtifact(flowDir, flow, goalIndex, {
+		parallelRunId,
+		sessionFile: sessionPath,
+		sessionName,
+	});
 	setWorkerJob(ctx, {
-		resultPath,
-		completed: false,
-		parallelRunId:
-			privateJob?.parallelRunId ?? workerParallelRunId(flow, goalIndex),
+		flowDir,
+		goalIndex,
+		settled: false,
+		parallelRunId,
 		finishPrivateWorker,
 	});
 	const started = await startGoalFromFlow(
 		{ objective: input.objective, prompt: input.prompt },
 		ctx,
 		{
-			artifact: { artifactDir: workerDir, artifactId: workerId },
+			artifact: {
+				artifactId: workerId,
+				artifactPlanPath: join(flowDir, goal.file),
+				artifactPlanDisplayPath: `.flow/${flow.id}/${goal.file}`,
+				artifactStatePath: workerArtifactPath(flowDir, goalIndex),
+				artifactStateDisplayPath: `${workerId}-worker.json`,
+			},
 			rememberFlowContext: false,
 			sendPrompt: !workerUsesInitialPrompt(),
 		},
 	);
 	if (!started) clearWorkerJob(ctx);
+	else if (
+		resumeCheck &&
+		(await continueActiveGoalFromCheckpoint(ctx)) !== "continued"
+	)
+		throw new Error("Worker check checkpoint is not resumable.");
 	return started;
 }
 
-function writeWorkerGoalArtifact(
-	ctx: ExtensionCommandContext,
-	workerDir: string,
-	goal: FlowGoal,
-	sessionName: string,
+/**
+ * respawn 时的 CLI 初始 prompt：检查/收口阶段禁止重新投递执行 prompt
+ * （会导致重复执行），改发 hold 指令；检查本身由 worker bootstrap 按 cursor 续跑。
+ */
+export function workerInitialPrompt(
+	flowDir: string,
+	flow: FlowState,
+	goalIndex: number,
+	options: { forkedFromPlanSession?: boolean } = {},
 ) {
-	const now = Date.now();
-	writeStepRuntimeState(workerDir, {
-		status: "running",
-		completionCursor: null,
-		runtimeGoalId: null,
-		sessionFile: currentSessionFile(ctx) ?? null,
-		sessionName,
-		result: { summary: null, outcome: null },
-		checks: artifactChecks([], [], goal.checks),
-		updatedAt: now,
-	});
+	const cursor = resumableWorkerCursor(
+		readWorkerArtifact(flowDir, goalIndex),
+		flow.parallelRun?.id ?? "",
+	);
+	if (cursor === null)
+		return workerGoalInput(flowDir, flow, goalIndex, options).prompt;
+	return flow.language === "en"
+		? "The orchestration system is resuming this step's checks from a durable checkpoint. Do not perform any actions or modify any files. Reply exactly: waiting for settlement."
+		: "编排系统正在从断点恢复本步骤的检查收口。不要执行任何操作、不要修改任何文件，直接回复：等待收口。";
 }
 
 export function workerGoalInput(
 	flowDir: string,
 	flow: FlowState,
 	goalIndex: number,
+	options: { forkedFromPlanSession?: boolean } = {},
 ) {
 	const goal = flow.goals[goalIndex];
-	if (!goal) throw new Error(`Worker goal not found: G${goalIndex}`);
-	const workerId = `G${goalIndex}`;
+	if (!goal) throw new Error(`Worker goal not found: G${goalIndex + 1}`);
 	const markdown = readFileSync(join(flowDir, goal.file), "utf8");
-	const promptGoal = { ...goal, file: `workers/${workerId}/plan.md` };
+	const promptGoal = { ...goal, file: goal.file };
 	return {
 		markdown,
 		objective: objectiveFromPlan(markdown) || goal.title,
@@ -238,6 +264,7 @@ export function workerGoalInput(
 			workerPromptFlow(flow, promptGoal),
 			promptGoal,
 			markdown,
+			options,
 		),
 	};
 }
@@ -265,14 +292,11 @@ function validatePrivateWorkerJob(
 	job: PrivateWorkerJob,
 	flow: FlowState,
 	flowDir: string,
-	sessionPath: string,
 ) {
 	if (job.flowId !== flow.id)
 		throw new Error("Private worker flow id mismatch.");
 	if (job.flowDir !== flowDir)
 		throw new Error("Private worker flow dir mismatch.");
-	if (job.sessionPath !== sessionPath)
-		throw new Error("Private worker session path mismatch.");
 	if (job.parallelRunId !== workerParallelRunId(flow, job.goalIndex))
 		throw new Error("Private worker parallel run mismatch.");
 }
@@ -280,14 +304,30 @@ function validatePrivateWorkerJob(
 function writeWorkerResult(ctx: object | undefined, fact: GoalCompletionFact) {
 	if (!ctx || !isWorkerContext(ctx)) return;
 	const job = workerJob(ctx);
-	if (!job || job.completed) return;
-	const result = job.parallelRunId
-		? { ...fact, parallelRunId: job.parallelRunId }
-		: fact;
-	const tmpPath = `${job.resultPath}.tmp`;
-	writeFileSync(tmpPath, `${JSON.stringify(result, null, 2)}\n`);
-	renameSync(tmpPath, job.resultPath);
-	setWorkerJob(ctx, { ...job, completed: true });
+	if (!job || job.settled || !job.parallelRunId) return;
+	writeWorkerCompletion(job.flowDir, job.goalIndex, fact, job.parallelRunId);
+	finishWorker(ctx, job);
+}
+
+function finishBlockedWorker(
+	ctx: object | undefined,
+	handoff: FlowGoalBlockedHandoff,
+) {
+	if (!ctx || !isWorkerContext(ctx)) return;
+	const job = workerJob(ctx);
+	if (!job || job.settled || !job.parallelRunId) return;
+	const artifact = readWorkerArtifact(job.flowDir, job.goalIndex);
+	if (
+		artifact?.parallelRunId !== job.parallelRunId ||
+		artifact.runtimeGoalId !== handoff.goalId ||
+		artifact.handoff?.message !== handoff.message
+	)
+		return;
+	finishWorker(ctx, job);
+}
+
+function finishWorker(ctx: object, job: WorkerJob) {
+	setWorkerJob(ctx, { ...job, settled: true });
 	job.finishPrivateWorker?.();
 	if (job.finishPrivateWorker) setImmediate(() => process.exit(0));
 }
@@ -320,17 +360,7 @@ function workerSessionFile(ctx: object) {
 	return currentSessionFile(ctx as { sessionManager?: unknown });
 }
 
-function setSessionName(
-	pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
-	name: string,
-) {
-	try {
-		pi.setSessionName?.(name);
-		return;
-	} catch (error) {
-		if (!formatError(error).includes("stale")) throw error;
-	}
+function setSessionName(ctx: ExtensionCommandContext, name: string) {
 	const sessionManager = ctx.sessionManager as
 		| { appendSessionInfo?: (name: string) => unknown }
 		| undefined;

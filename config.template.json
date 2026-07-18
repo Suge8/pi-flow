@@ -3,31 +3,32 @@
 	"generation": {
 		"align": "ask"
 	},
-	"runner": {
+	"background": {
 		"command": "pi",
-		"tools": ["read", "grep", "find", "ls", "bash"],
-		"excludeTools": ["write", "edit"],
-		"timeoutMs": 1200000,
-		"serviceTier": "default",
 		"extensions": []
 	},
+	"checks": {
+		"tools": ["read", "grep", "find", "ls", "bash"],
+		"timeoutMinutes": 20,
+		"openaiFast": false
+	},
 	"modelRoles": {
-		"planner": {
+		"advisor": {
 			"model": "anthropic/claude-fable-5",
 			"thinking": "high"
 		},
 		"executor": {
-			"model": "openai-codex/gpt-5.5",
-			"thinking": "xhigh"
+			"model": "openai-codex/gpt-5.6-sol",
+			"thinking": "max"
 		},
 		"reviewers": [
 			{
-				"model": "openai-codex/gpt-5.4",
+				"model": "openai-codex/gpt-5.6-sol",
 				"thinking": "high"
 			},
 			{
-				"model": "openai-codex/gpt-5.4-mini",
-				"thinking": "xhigh"
+				"model": "anthropic/claude-sonnet-5",
+				"thinking": "high"
 			},
 			{
 				"model": "deepseek/deepseek-v4-flash",
@@ -35,10 +36,11 @@
 			}
 		]
 	},
-	"transcript": {
-		"maxUser": 6000,
-		"maxAssistant": 3000,
-		"maxTranscript": 75000
+	"advisor": {
+		"enabled": true
+	},
+	"prewalk": {
+		"enabled": true
 	},
 	"acceptance": {
 		"enabled": true
@@ -47,5 +49,10 @@
 		"enabled": true,
 		"mode": "autoFix",
 		"runAfterCompletion": true
+	},
+	"report": {
+		"bind": "127.0.0.1",
+		"port": 49327,
+		"publicBaseUrl": null
 	}
 }

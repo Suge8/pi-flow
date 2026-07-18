@@ -4,11 +4,10 @@ const LANGUAGES = new Set(["zh", "en"]);
 
 const EXACT_EN = new Map<string, string>([
 	[
-		"用法：node scripts/validate-draft.mjs <.flow/F1>",
-		"Usage: node scripts/validate-draft.mjs <.flow/F1>",
+		"用法：node dist/validate-draft.js <.flow/F1>",
+		"Usage: node dist/validate-draft.js <.flow/F1>",
 	],
 	["缺少 flow.json", "Missing flow.json"],
-	["schemaVersion 必须为 9", "schemaVersion must be 9"],
 	["language 必须是 zh 或 en", "language must be zh or en"],
 	["id 必须匹配 F1", "id must match F1"],
 	["title 必须是非空字符串", "title must be a non-empty string"],
@@ -32,21 +31,24 @@ const EXACT_EN = new Map<string, string>([
 		"startedAt must be null or a timestamp when paused",
 	],
 	[
-		"paused Flow parallelRun 必须为 null",
-		"paused Flow parallelRun must be null",
+		"parallelRun.consoleSessionFile 必须是非空字符串",
+		"parallelRun.consoleSessionFile must be a non-empty string",
 	],
-	["pausedFrom 不是合法 Flow 字段", "pausedFrom is not a valid Flow field"],
-	["stopped 不是合法 Flow 字段", "stopped is not a valid Flow field"],
+	[
+		"parallelRun.consoleSessionName 必须是非空字符串",
+		"parallelRun.consoleSessionName must be a non-empty string",
+	],
 	["source 必须是对象", "source must be an object"],
 	[
 		"source.type 必须是 conversation、prompt 或 file",
 		"source.type must be conversation, prompt, or file",
 	],
+	["source.text 必须是字符串", "source.text must be a string"],
+	["source.path 必须是非空字符串", "source.path must be a non-empty string"],
 	[
-		"source.originalRequest 必须是字符串",
-		"source.originalRequest must be a string",
+		"source.transcript 必须是非空数组",
+		"source.transcript must be a non-empty array",
 	],
-	["source.path 必须是字符串或 null", "source.path must be a string or null"],
 	["errors 必须是数组", "errors must be an array"],
 	["errors 必须是字符串数组", "errors must be a string array"],
 	["goals 必须是数组", "goals must be an array"],
@@ -65,16 +67,8 @@ const EXACT_EN = new Map<string, string>([
 		"Execution step count exceeds 10; final acceptance does not count toward the execution-step limit; split it into multiple flows",
 	],
 	[
-		"单步 Flow 不使用最终验收步骤",
-		"Single-step Flow must not use a final acceptance step",
-	],
-	[
-		"多步 Flow 必须有 1 个最终验收步骤（role: final_acceptance）",
-		"Multi-step Flow must have exactly 1 final acceptance step (role: final_acceptance)",
-	],
-	[
-		"最后一个步骤必须是最终验收（role: final_acceptance）",
-		"The last step must be final acceptance (role: final_acceptance)",
+		"最终验收步骤最多 1 个（role: final_acceptance）",
+		"At most 1 final acceptance step (role: final_acceptance)",
 	],
 	["Objective 不能为空", "Objective cannot be empty"],
 	["Steps 至少需要 1 项 checkbox", "Steps needs at least 1 checkbox item"],
@@ -92,10 +86,6 @@ const EXACT_EN = new Map<string, string>([
 		"config.json field language must be auto, zh, or en",
 	],
 	[
-		"config.json 字段 serviceTier 必须是 default 或 priority",
-		"config.json field serviceTier must be default or priority",
-	],
-	[
 		"config.json 字段 quality.mode 必须是 manual 或 autoFix",
 		"config.json field quality.mode must be manual or autoFix",
 	],
@@ -104,8 +94,8 @@ const EXACT_EN = new Map<string, string>([
 		"config.json field generation must be an object",
 	],
 	[
-		"config.json 字段 generation.align 必须是 ask、yes 或 no",
-		"config.json field generation.align must be ask, yes, or no",
+		"config.json 字段 generation.align 必须是 ask、no、coarse、standard 或 deep",
+		"config.json field generation.align must be ask, no, coarse, standard, or deep",
 	],
 ]);
 
@@ -130,7 +120,7 @@ export function localizeErrorText(
 	return text.split("\n").map(localizeErrorLine).join("\n");
 }
 
-function localizeErrorLine(text: string) {
+function localizeErrorLine(text: string): string {
 	const exact = EXACT_EN.get(text);
 	if (exact) return exact;
 	return (
@@ -151,14 +141,8 @@ function englishPunctuation(text: string) {
 function configErrorLine(text: string) {
 	let match = /^config\.json 不是合法 JSON: (.+)$/u.exec(text);
 	if (match) return `config.json is not valid JSON: ${match[1]}`;
-	match = /^config\.json 字段 (.+) 已废弃，请改用顶层 models$/u.exec(text);
-	if (match)
-		return `config.json field ${match[1]} is deprecated; use top-level models instead`;
-	match = /^config\.json 字段 (.+)\.models 已废弃，请改用顶层 models$/u.exec(
-		text,
-	);
-	if (match)
-		return `config.json field ${match[1]}.models is deprecated; use top-level models instead`;
+	match = /^config\.json 字段 (.+) 不受支持$/u.exec(text);
+	if (match) return `config.json field ${match[1]} is not supported`;
 	match = /^config\.json 字段 (.+) 必须是(.+)$/u.exec(text);
 	if (match)
 		return `config.json field ${match[1]} must be ${configTypeText(match[2].trim())}`;
@@ -173,15 +157,12 @@ function configErrorLine(text: string) {
 	match = /^config\.json 字段 (.+) 最多 (\d+) 个模型$/u.exec(text);
 	if (match)
 		return `config.json field ${match[1]} can include at most ${match[2]} models`;
-	match = /^config\.json 工具名无效: (.+)$/u.exec(text);
-	if (match) return `config.json tool name is invalid: ${match[1]}`;
-	match = /^config\.json tools 与 excludeTools 冲突: (.+)$/u.exec(text);
-	if (match)
-		return `config.json tools conflicts with excludeTools: ${match[1]}`;
+	match = /^config\.json 检查工具名无效: (.+)$/u.exec(text);
+	if (match) return `config.json check tool name is invalid: ${match[1]}`;
 	return undefined;
 }
 
-function validationErrorLine(text: string) {
+function validationErrorLine(text: string): string | undefined {
 	let match = /^目标目录名必须等于 id：(.+)$/u.exec(text);
 	if (match) return `Goal directory name must equal id: ${match[1]}`;
 	match = /^flow 目录名必须等于 id：(.+)$/u.exec(text);
@@ -205,7 +186,7 @@ function validationErrorLine(text: string) {
 	match = /^步骤文件检查失败：(.+)$/u.exec(text);
 	if (match) return `Step file check failed: ${match[1]}`;
 	match = /^(.+) 读取失败：(.+)$/u.exec(text);
-	if (match) return `${match[1]} read failed: ${match[2]}`;
+	if (match) return `${match[1]} read failed: ${localizeErrorLine(match[2])}`;
 	match = /^(.+) 文件不存在$/u.exec(text);
 	if (match) return `${match[1]} file does not exist`;
 	match = /^(.+) 必须匹配 (.+)$/u.exec(text);
@@ -216,12 +197,17 @@ function validationErrorLine(text: string) {
 	if (match) return `${match[1]} must point to an earlier goals index`;
 	match = /^(.+) 必须指向 goals 下标$/u.exec(text);
 	if (match) return `${match[1]} must point to a goals index`;
+	match = /^(.+) 必须是 \*\* 或以 \/\*\* 结尾的相对目录 glob$/u.exec(text);
+	if (match)
+		return `${match[1]} must be ** or a relative directory glob ending in /**`;
 	match = /^(.+) 必须是\s*(.+)$/u.exec(text);
 	if (match) return `${match[1]} must be ${validationTypeText(match[2])}`;
 	match = /^(.+) 必须为 (.+)$/u.exec(text);
 	if (match) return `${match[1]} must be ${validationTypeText(match[2])}`;
-	match = /^status 非法：.+$/u.exec(text);
-	if (match) return "Flow status is not supported";
+	match = /^(.+) 不适用于 (.+)$/u.exec(text);
+	if (match) return `${match[1]} is not valid for ${match[2]}`;
+	match = /^(.+) 不是合法 Flow 字段$/u.exec(text);
+	if (match) return `${match[1]} is not a valid Flow field`;
 	match = /^(.+) 非法：(.+)$/u.exec(text);
 	if (match) return `${match[1]} is invalid: ${match[2]}`;
 	match = /^(.+) 非法$/u.exec(text);
@@ -248,6 +234,10 @@ function validationErrorLine(text: string) {
 function validationTypeText(text: string) {
 	return typeText(text)
 		.replace("conversation、prompt 或 file", "conversation, prompt, or file")
+		.replace(
+			"user、visible_supplement 或 assistant_final",
+			"user, visible_supplement, or assistant_final",
+		)
 		.replace("passed、failed 或 error", "passed, failed, or error")
 		.replace("auto、zh 或 en", "auto, zh, or en")
 		.replace("zh 或 en", "zh or en");
@@ -260,10 +250,9 @@ function configTypeText(text: string) {
 			"current or an object with model and thinking",
 		),
 	)
-		.replace("ask、yes 或 no", "ask, yes, or no")
 		.replace(
-			"off、minimal、low、medium、high 或 xhigh",
-			"off, minimal, low, medium, high, or xhigh",
+			"off、minimal、low、medium、high、xhigh 或 max",
+			"off, minimal, low, medium, high, xhigh, or max",
 		)
 		.replace("manual 或 autoFix", "manual or autoFix")
 		.replace("default 或 priority", "default or priority")
@@ -276,6 +265,9 @@ function configListText(text: string) {
 
 function typeText(text: string) {
 	return text
+		.replace("正整数", "a positive integer")
+		.replace("非负毫秒数", "non-negative milliseconds")
+		.replace("null 或时间戳", "null or a timestamp")
 		.replace("非空字符串数组", "a non-empty string array")
 		.replace("字符串数组", "a string array")
 		.replace("非空字符串", "a non-empty string")

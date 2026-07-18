@@ -1,6 +1,6 @@
 import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +24,7 @@ export interface WorkerSpawnOptions {
 	parallelRunId: string;
 	cwd: string;
 	initialPrompt: string;
+	sessionFile: string;
 	signal?: AbortSignal;
 }
 
@@ -41,10 +42,8 @@ export interface WorkerHandle {
 }
 
 export function spawnWorker(options: WorkerSpawnOptions): WorkerHandle {
-	const workerDir = join(options.flowDir, "workers", `G${options.goalIndex}`);
-	const sessionPath = join(workerDir, "session.jsonl");
-	mkdirSync(workerDir, { recursive: true });
-	const runner = readFlowConfig().runner;
+	const sessionPath = options.sessionFile;
+	const background = readFlowConfig().background;
 	const job = {
 		flowId: options.flowId,
 		flowDir: options.flowDir,
@@ -125,19 +124,22 @@ export function spawnWorker(options: WorkerSpawnOptions): WorkerHandle {
 		killed = true;
 		control.close();
 		if (!child) return finishExit(null, "SIGTERM");
-		child.kill("SIGTERM");
-		forceKill = setTimeout(() => child?.kill("SIGKILL"), 5000);
+		killProcessTree(child, "SIGTERM");
+		forceKill = setTimeout(
+			() => child && killProcessTree(child, "SIGKILL"),
+			5000,
+		);
 		forceKill.unref?.();
 	};
 	const abort = () => kill();
 	const spawnChild = () => {
 		if (killed) return finishExit(null, "SIGTERM");
 		child = spawn(
-			runner.command,
+			background.command,
 			[
 				"--mode",
 				"json",
-				...flowMainExtensionArgs(runner.extensions),
+				...flowMainExtensionArgs(background.extensions),
 				"--session",
 				sessionPath,
 				"-p",
@@ -145,6 +147,7 @@ export function spawnWorker(options: WorkerSpawnOptions): WorkerHandle {
 			],
 			{
 				cwd: options.cwd,
+				detached: process.platform !== "win32",
 				stdio: ["ignore", "pipe", "pipe"],
 				env: {
 					...process.env,
@@ -248,6 +251,23 @@ function workerSocketPath(goalIndex: number) {
 
 function removeSocketFile(path: string) {
 	if (process.platform !== "win32") rmSync(path, { force: true });
+}
+
+function killProcessTree(child: WorkerProcess, signal: NodeJS.Signals) {
+	const pid = child.pid;
+	if (!pid) return child.kill(signal);
+	if (process.platform === "win32") {
+		const args = ["/pid", String(pid), "/T"];
+		if (signal === "SIGKILL") args.push("/F");
+		const killer = spawn("taskkill", args, { stdio: "ignore" });
+		killer.unref();
+		return;
+	}
+	try {
+		process.kill(-pid, signal);
+	} catch {
+		child.kill(signal);
+	}
 }
 
 function trimErrorTail(message: string) {

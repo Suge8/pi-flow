@@ -10,7 +10,7 @@ const ALIGNMENT_START_COPY = {
 	flow: {
 		icon: "🌊",
 		title: "开始对齐 Flow",
-		lines: ["先确认范围和拆分方式，再生成计划。", "等待 AI 提问。"],
+		scopeLine: "先确认范围和拆分方式，再生成计划",
 	},
 } as const;
 
@@ -18,13 +18,15 @@ export function sendAlignmentStartCard(
 	pi: ExtensionAPI,
 	ctx: Pick<ExtensionContext, "ui">,
 	kind: GenerationKind,
+	id: string,
 ) {
 	const copy = ALIGNMENT_START_COPY[kind];
-	sendResultCard(pi, ctx, [`[${copy.title}]`, ...copy.lines].join("\n"), {
+	const lines = [`编号：${id}`, copy.scopeLine];
+	sendResultCard(pi, ctx, [`[${copy.title}]`, ...lines].join("\n"), {
 		tone: "neutral",
 		result: "启动",
 		title: copy.title,
-		lines: [...copy.lines],
+		lines,
 		icon: copy.icon,
 	});
 }

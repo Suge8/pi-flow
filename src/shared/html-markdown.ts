@@ -3,7 +3,7 @@ import { cleanReportCopy } from "./report-copy.js";
 
 export function renderMarkdownBlock(markdown: string, className = "") {
 	const html = markdownToHtml(cleanReportCopy(markdown).trim() || "未填写");
-	return `<div class="${className || "space-y-3 text-sm leading-6 text-stone-700"}">${html}</div>`;
+	return `<div class="${className || "space-y-3 text-sm leading-6 text-stone-700 dark:text-stone-300"}">${html}</div>`;
 }
 
 export { clipText };
@@ -36,7 +36,7 @@ function markdownToHtml(markdown: string) {
 		if (heading) {
 			flushText(html, state);
 			html.push(
-				`<p class="text-sm font-semibold text-stone-800">${inline(heading[1])}</p>`,
+				`<p class="text-sm font-semibold text-stone-800 dark:text-stone-200">${inline(heading[1])}</p>`,
 			);
 			continue;
 		}
@@ -109,24 +109,24 @@ function checkboxStatus(mark: string) {
 		return {
 			icon: "…",
 			label: "进行中",
-			tone: "border-sky-300 bg-sky-100 text-sky-800",
+			tone: "border-sky-300 bg-[var(--tone-blue-surface)] text-sky-800 dark:border-sky-700 dark:text-sky-300",
 		};
 	if (mark === "!")
 		return {
 			icon: "!",
 			label: "阻塞",
-			tone: "border-amber-300 bg-amber-100 text-amber-800",
+			tone: "border-amber-300 bg-[var(--tone-amber-surface)] text-amber-800 dark:border-amber-700 dark:text-amber-300",
 		};
 	if (mark.trim())
 		return {
 			icon: "✓",
 			label: "完成",
-			tone: "border-emerald-300 bg-emerald-100 text-emerald-800",
+			tone: "border-emerald-300 bg-[var(--tone-green-surface)] text-emerald-800 dark:border-emerald-700 dark:text-emerald-300",
 		};
 	return {
 		icon: "",
 		label: "待做",
-		tone: "border-stone-300 bg-white text-transparent",
+		tone: "border-stone-300 bg-[var(--report-surface)] text-transparent dark:border-stone-600",
 	};
 }
 
@@ -137,12 +137,12 @@ function checkboxItem(
 	const label =
 		status.label === "待做"
 			? ""
-			: `<span class="ml-2 text-xs text-stone-400">${status.label}</span>`;
+			: `<span class="ml-2 text-xs text-stone-400 dark:text-stone-500">${status.label}</span>`;
 	return `<li class="flex gap-2"><span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border text-xs font-bold ${status.tone}">${status.icon}</span><span>${inline(text)}${label}</span></li>`;
 }
 
 function codeBlock(text: string) {
-	return `<pre class="overflow-auto bg-stone-900 p-4 text-xs leading-5 text-stone-100"><code>${escapeHtml(text)}</code></pre>`;
+	return `<pre class="overflow-auto bg-[var(--report-code)] p-4 text-xs leading-5 text-[var(--report-code-text)]"><code>${escapeHtml(text)}</code></pre>`;
 }
 
 export function inline(text: string) {
@@ -150,7 +150,7 @@ export function inline(text: string) {
 		.split(/(`[^`]+`)/gu)
 		.map((part) =>
 			part.startsWith("`") && part.endsWith("`")
-				? `<code class="bg-stone-200/70 px-1.5 py-0.5 font-mono text-[0.85em] text-stone-800">${escapeHtml(part.slice(1, -1))}</code>`
+				? `<code class="bg-[var(--report-surface-muted)] px-1.5 py-0.5 font-mono text-[0.85em] text-stone-800 dark:text-stone-200">${escapeHtml(part.slice(1, -1))}</code>`
 				: inlineEmphasis(part),
 		)
 		.join("");
@@ -161,7 +161,7 @@ function inlineEmphasis(text: string) {
 		.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/gu)
 		.map((part) => {
 			if (part.startsWith("**") && part.endsWith("**") && part.length > 4)
-				return `<strong class="font-semibold text-stone-900">${escapeHtml(part.slice(2, -2))}</strong>`;
+				return `<strong class="font-semibold text-stone-900 dark:text-stone-100">${escapeHtml(part.slice(2, -2))}</strong>`;
 			if (part.startsWith("*") && part.endsWith("*") && part.length > 2)
 				return `<em>${escapeHtml(part.slice(1, -1))}</em>`;
 			return escapeHtml(part);

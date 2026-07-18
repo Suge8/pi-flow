@@ -1,8 +1,9 @@
 import { join } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { tryReadAlignmentState } from "../shared/generation-state.js";
-import { liveReportUrl } from "../shared/report-server.js";
-import { notifyUser } from "../shared/ui-language.js";
+import { readAlignmentStateIfExists } from "../shared/generation-state.js";
+import { formatError } from "../shared/guards.js";
+import { liveReportUrl } from "../shared/report-client.js";
+import { formatUserNotice, notifyUser } from "../shared/ui-language.js";
 import { flowTargetOrNotify } from "./execution/shared.js";
 import { statusText } from "./execution.js";
 import { writeFlowHtml } from "./html.js";
@@ -23,7 +24,7 @@ export async function showStatus(
 	if (isPreDraftStatus(location.flow)) {
 		notifyUser(
 			ctx,
-			statusText(location.flow, tryReadAlignmentState(location.dir)),
+			statusText(location.flow, readAlignmentStateIfExists(location.dir)),
 			"info",
 			location.flow.language,
 		);
@@ -36,8 +37,26 @@ export async function showStatus(
 			activeBatch.flow,
 			join(activeBatch.dir, "flow.html"),
 		);
-	const htmlPath = writeFlowHtml(location.dir, location.flow);
-	return notifyStatus(ctx, location.flow, htmlPath);
+	try {
+		const htmlPath = writeFlowHtml(location.dir, location.flow);
+		return notifyStatus(ctx, location.flow, htmlPath);
+	} catch (error) {
+		notifyUser(
+			ctx,
+			flowReportOpenFailedNotice(formatError(error), location.flow.language),
+			"info",
+			location.flow.language,
+		);
+	}
+}
+
+function flowReportOpenFailedNotice(
+	error: string,
+	language: FlowState["language"],
+) {
+	return language === "en"
+		? formatUserNotice("⚠️", "Flow report could not open", [error])
+		: formatUserNotice("⚠️", "Flow 报告打开失败", [error]);
 }
 
 function isPreDraftStatus(flow: FlowState) {
@@ -54,9 +73,13 @@ async function notifyStatus(
 	flow: FlowState,
 	htmlPath: string,
 ) {
-	const report = await liveReportUrl(ctx, htmlPath, flow.language).catch(
-		() => undefined,
-	);
+	let report: string | undefined;
+	let reportError: string | undefined;
+	try {
+		report = await liveReportUrl(ctx, htmlPath, flow.language);
+	} catch (error) {
+		reportError = formatError(error);
+	}
 	notifyUser(
 		ctx,
 		[
@@ -65,10 +88,10 @@ async function notifyStatus(
 				? flow.language === "en"
 					? `🌐 Web report: ${report}`
 					: `🌐 网页报告: ${report}`
-				: undefined,
-		]
-			.filter(Boolean)
-			.join("\n"),
+				: flow.language === "en"
+					? `⚠️ Web report unavailable: ${reportError}`
+					: `⚠️ 网页报告不可用：${reportError}`,
+		].join("\n"),
 		"info",
 		flow.language,
 	);

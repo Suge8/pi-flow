@@ -2,8 +2,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EXTENSION_DIR = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-const FLOW_CHILD_EXTENSION = join(EXTENSION_DIR, "src", "child.ts");
-const FLOW_MAIN_EXTENSION = join(EXTENSION_DIR, "src", "index.ts");
+const FLOW_CHILD_EXTENSION = join(EXTENSION_DIR, "dist", "child.js");
+const FLOW_MAIN_EXTENSION = join(EXTENSION_DIR, "dist", "index.js");
 
 export function childExtensionArgs(extensions: string[] = []) {
 	const externalExtensions = extensions.filter(

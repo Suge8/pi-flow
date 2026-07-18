@@ -5,55 +5,59 @@ import { validateDraftCommand } from "../shared/validate-command.js";
 import type { FlowGoal, FlowSourceType, FlowState } from "./types.js";
 
 export function generationPrompt(input: {
-	originalRequest: string;
+	requestText: string;
 	sourceType: FlowSourceType;
 	sourcePath?: string;
 	language: Language;
 	flowPath: string;
 	restoredAlignmentContext?: { question: string; answer: string }[];
 }) {
-	return readPrompt("flow-plan", input.language)
-		.replace(
-			"{{originalRequest}}",
-			input.originalRequest || defaultOriginalRequest(input.language),
-		)
-		.replace(
-			"{{source}}",
-			input.sourcePath
-				? `${input.sourceType}: ${input.sourcePath}`
-				: input.sourceType,
-		)
-		.replace(
-			"{{restoredAlignmentContext}}",
-			restoredAlignmentContext(
-				input.restoredAlignmentContext ?? [],
-				input.language,
-			),
-		)
-		.replaceAll("{{validateCommand}}", validateDraftCommand())
-		.replaceAll("{{flowPath}}", input.flowPath)
-		.replaceAll("{{language}}", input.language);
+	return renderPrompt(withDraftContract("flow-plan", input.language), {
+		requestText: input.requestText || defaultRequestText(input.language),
+		source: input.sourcePath
+			? `${input.sourceType}: ${input.sourcePath}`
+			: input.sourceType,
+		restoredAlignmentContext: restoredAlignmentContext(
+			input.restoredAlignmentContext ?? [],
+			input.language,
+		),
+		validateCommand: validateDraftCommand(),
+		flowPath: input.flowPath,
+		language: input.language,
+	});
 }
 
 export function repairPrompt(input: {
 	errors: string[];
-	originalRequest: string;
+	requestText: string;
 	flowPath: string;
 	language: Language;
 }) {
-	return readPrompt("flow-repair", input.language)
-		.replaceAll(
-			"{{errors}}",
+	return renderPrompt(withDraftContract("flow-repair", input.language), {
+		errors:
 			localizeErrors(input.errors, input.language).join("\n") ||
-				noValidFlow(input.language),
-		)
-		.replaceAll(
-			"{{originalRequest}}",
-			input.originalRequest || none(input.language),
-		)
-		.replaceAll("{{flowPath}}", input.flowPath)
-		.replaceAll("{{validateCommand}}", validateDraftCommand())
-		.replaceAll("{{language}}", input.language);
+			noValidFlow(input.language),
+		requestText: input.requestText || none(input.language),
+		flowPath: input.flowPath,
+		validateCommand: validateDraftCommand(),
+		language: input.language,
+	});
+}
+
+function renderPrompt(
+	template: string,
+	values: Readonly<Record<string, string>>,
+) {
+	return template.replace(/\{\{([A-Za-z][A-Za-z0-9]*)\}\}/gu, (token, key) =>
+		Object.hasOwn(values, key) ? values[key] : token,
+	);
+}
+
+function withDraftContract(
+	name: "flow-plan" | "flow-repair",
+	language: Language,
+) {
+	return `${readPrompt(name, language)}\n\n${readPrompt("flow-draft-contract", language)}`;
 }
 
 function restoredAlignmentContext(
@@ -70,7 +74,7 @@ function restoredAlignmentContext(
 	return `恢复的对齐问答（仅用于跨会话恢复；不要逐字复制进每个 Goal）：\n${lines.join("\n")}`;
 }
 
-function defaultOriginalRequest(language: Language) {
+function defaultRequestText(language: Language) {
 	return language === "en"
 		? "(no explicit argument; generate from the current conversation context)"
 		: "（无显式参数；根据当前会话上下文生成）";
@@ -88,6 +92,7 @@ export function planGoalPrompt(
 	flow: FlowState,
 	goal: FlowGoal,
 	snapshot: string,
+	options: { forkedFromPlanSession?: boolean } = {},
 ) {
 	const previous = flow.goals
 		.filter((item) => item.index < goal.index)
@@ -103,9 +108,12 @@ export function planGoalPrompt(
 				`Goal ${item.index + 1} ${item.title}: ${item.result.handoff ?? item.result.summary ?? markedDeviation(flow.language)}`,
 		)
 		.join("\n\n");
+	const forkedNote = options.forkedFromPlanSession
+		? forkedFromPlanSessionNote(flow.language)
+		: "";
 	if (flow.language === "en")
 		return `Flow Goal session started.
-
+${forkedNote}
 Flow id: ${flow.id}
 Goal: ${goal.index + 1}/${flow.goals.length} — ${goal.title}
 Current plan markdown: .flow/${flow.id}/${goal.file}
@@ -126,7 +134,7 @@ Current step boundary and state reminder:
 - Follow the Flow step rules injected in the system prompt for checkbox progress, Verification, Handoff, and completion.
 ${finalAcceptanceBlock(goal, deviations, flow.language)}`;
 	return `Flow Goal session 已启动。
-
+${forkedNote}
 Flow id: ${flow.id}
 Goal: ${goal.index + 1}/${flow.goals.length} — ${goal.title}
 当前计划 markdown: .flow/${flow.id}/${goal.file}
@@ -146,6 +154,16 @@ ${previous || "（无）"}
 - 不要手写或修改 flow.json；Flow 状态和检查状态由插件维护。
 - checkbox 进度、Verification、Handoff 和完成判断遵循 system prompt 注入的 Flow 步骤规则。
 ${finalAcceptanceBlock(goal, deviations, flow.language)}`;
+}
+
+function forkedFromPlanSessionNote(language: FlowState["language"]) {
+	if (language === "en")
+		return `
+This session continues from the planning session: reuse the code exploration and conclusions from planning instead of re-reading unchanged files. The generation-phase restriction (only writing \`.flow\` files, no product code changes) no longer applies — from now on, modify product code normally per the plan below.
+`;
+	return `
+本会话延续自计划会话：计划期的代码探索与结论可直接复用，未变更的文件不必重读。生成阶段「只写 .flow、不改业务代码」的限制已解除，从现在起按下方计划正常修改业务代码。
+`;
 }
 
 function finalAcceptanceBlock(

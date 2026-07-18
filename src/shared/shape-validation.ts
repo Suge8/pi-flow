@@ -3,6 +3,17 @@ import { isLanguage } from "./config.js";
 import { formatError, isRecord, nonEmpty } from "./guards.js";
 
 const SOURCE_TYPES = new Set(["conversation", "prompt", "file"]);
+const CONVERSATION_TURN_KINDS = new Set([
+	"user",
+	"visible_supplement",
+	"assistant_final",
+]);
+const SOURCE_FIELDS = {
+	conversation: new Set(["type", "transcript"]),
+	prompt: new Set(["type", "text"]),
+	file: new Set(["type", "path", "text"]),
+};
+const CONVERSATION_TURN_FIELDS = new Set(["kind", "at", "text"]);
 const MODEL_STATUSES = new Set(["running", "passed", "failed", "error"]);
 const CHECK_RESULTS = new Set(["passed", "failed", "error"]);
 const COMPLETION_CURSORS = new Set([
@@ -35,17 +46,55 @@ export function readRequiredArtifact<Artifact>(
 }
 
 export function validateSource(source: unknown, errors: string[]) {
-	if (!source || typeof source !== "object" || Array.isArray(source)) {
+	if (!isRecord(source)) {
 		errors.push("source 必须是对象");
 		return;
 	}
-	const value = source as Record<string, unknown>;
-	if (!SOURCE_TYPES.has(String(value.type)))
+	if (!SOURCE_TYPES.has(String(source.type))) {
 		errors.push("source.type 必须是 conversation、prompt 或 file");
-	if (typeof value.originalRequest !== "string")
-		errors.push("source.originalRequest 必须是字符串");
-	if (value.path !== null && typeof value.path !== "string")
-		errors.push("source.path 必须是字符串或 null");
+		return;
+	}
+	const type = source.type as keyof typeof SOURCE_FIELDS;
+	validateShapeFields(source, SOURCE_FIELDS[type], "source", errors);
+	if (type === "conversation") {
+		validateTranscript(source.transcript, errors);
+		return;
+	}
+	if (typeof source.text !== "string") errors.push("source.text 必须是字符串");
+	if (type === "file" && !nonEmpty(source.path))
+		errors.push("source.path 必须是非空字符串");
+}
+
+function validateTranscript(value: unknown, errors: string[]) {
+	if (!Array.isArray(value) || value.length === 0) {
+		errors.push("source.transcript 必须是非空数组");
+		return;
+	}
+	for (const [index, turn] of value.entries()) {
+		const path = `source.transcript[${index}]`;
+		if (!isRecord(turn)) {
+			errors.push(`${path} 必须是对象`);
+			continue;
+		}
+		validateShapeFields(turn, CONVERSATION_TURN_FIELDS, path, errors);
+		if (!CONVERSATION_TURN_KINDS.has(String(turn.kind)))
+			errors.push(
+				`${path}.kind 必须是 user、visible_supplement 或 assistant_final`,
+			);
+		if (!nonEmpty(turn.at)) errors.push(`${path}.at 必须是非空字符串`);
+		if (!nonEmpty(turn.text)) errors.push(`${path}.text 必须是非空字符串`);
+	}
+}
+
+function validateShapeFields(
+	value: Record<string, unknown>,
+	allowed: ReadonlySet<string>,
+	path: string,
+	errors: string[],
+) {
+	for (const field of Object.keys(value)) {
+		if (!allowed.has(field)) errors.push(`${path}.${field} 不是合法 Flow 字段`);
+	}
 }
 
 export function validateErrorsArray(value: unknown, errors: string[]) {
@@ -123,12 +172,52 @@ function validateCheckPhase(phase: unknown, path: string, errors: string[]) {
 		for (const [index, round] of phase.rounds.entries())
 			validateCheckRound(round, `${path}.rounds[${index}]`, errors);
 	if (phase.active === null) return;
-	if (!Array.isArray(phase.active)) {
-		errors.push(`${path}.active 必须是数组或 null`);
+	validateActiveCheckRun(phase.active, `${path}.active`, errors);
+}
+
+function validateActiveCheckRun(
+	active: unknown,
+	path: string,
+	errors: string[],
+) {
+	if (!isRecord(active)) {
+		errors.push(`${path} 必须是对象或 null`);
 		return;
 	}
-	for (const [index, model] of phase.active.entries())
-		validateModel(model, `${path}.active[${index}]`, errors);
+	if (!Number.isInteger(active.round)) errors.push(`${path}.round 必须是整数`);
+	if (!nonEmpty(active.generation))
+		errors.push(`${path}.generation 必须是非空字符串`);
+	if (!nonEmpty(active.runId)) errors.push(`${path}.runId 必须是非空字符串`);
+	if (active.startedAt !== undefined && !Number.isFinite(active.startedAt))
+		errors.push(`${path}.startedAt 必须是时间戳`);
+	if (!nonEmpty(active.inputHash))
+		errors.push(`${path}.inputHash 必须是非空字符串`);
+	if (!Array.isArray(active.models) || active.models.length === 0) {
+		errors.push(`${path}.models 必须是非空数组`);
+		return;
+	}
+	for (const [index, model] of active.models.entries())
+		validateActiveModel(model, `${path}.models[${index}]`, errors);
+}
+
+function validateActiveModel(model: unknown, path: string, errors: string[]) {
+	if (!isRecord(model)) {
+		errors.push(`${path} 必须是对象`);
+		return;
+	}
+	if (!nonEmpty(model.key)) errors.push(`${path}.key 必须是非空字符串`);
+	if (!nonEmpty(model.label)) errors.push(`${path}.label 必须是非空字符串`);
+	if (model.outcome === null) return;
+	if (!isRecord(model.outcome)) {
+		errors.push(`${path}.outcome 必须是对象或 null`);
+		return;
+	}
+	if (!CHECK_RESULTS.has(String(model.outcome.result)))
+		errors.push(`${path}.outcome.result 必须是 passed、failed 或 error`);
+	if (typeof model.outcome.summary !== "string")
+		errors.push(`${path}.outcome.summary 必须是字符串`);
+	if (typeof model.outcome.details !== "string")
+		errors.push(`${path}.outcome.details 必须是字符串`);
 }
 
 function validateCheckRound(round: unknown, path: string, errors: string[]) {
@@ -143,12 +232,30 @@ function validateCheckRound(round: unknown, path: string, errors: string[]) {
 		errors.push(`${path}.summary 必须是字符串`);
 	if (round.details !== undefined && typeof round.details !== "string")
 		errors.push(`${path}.details 必须是字符串`);
+	if (
+		round.elapsedMs !== undefined &&
+		(!Number.isFinite(round.elapsedMs) || Number(round.elapsedMs) < 0)
+	)
+		errors.push(`${path}.elapsedMs 必须是非负毫秒数`);
 	if (round.models !== undefined) {
 		if (!Array.isArray(round.models)) errors.push(`${path}.models 必须是数组`);
 		else
 			for (const [index, model] of round.models.entries())
 				validateModel(model, `${path}.models[${index}]`, errors);
 	}
+	if (round.advisor !== undefined)
+		validateAdvisor(round.advisor, `${path}.advisor`, errors);
+}
+
+function validateAdvisor(value: unknown, path: string, errors: string[]) {
+	if (!isRecord(value)) {
+		errors.push(`${path} 必须是对象`);
+		return;
+	}
+	if (!nonEmpty(value.model)) errors.push(`${path}.model 必须是非空字符串`);
+	if (!nonEmpty(value.thinking))
+		errors.push(`${path}.thinking 必须是非空字符串`);
+	if (!nonEmpty(value.advice)) errors.push(`${path}.advice 必须是非空字符串`);
 }
 
 function validateModel(model: unknown, path: string, errors: string[]) {

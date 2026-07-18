@@ -77,6 +77,93 @@ function matchesAny(text: string, patterns: readonly RegExp[]) {
 	return patterns.some((pattern) => pattern.test(text));
 }
 
+const CHECKED_LINE_PATTERN = /^\s*[-*+]\s*\[x\]\s*(.*)$/iu;
+const HEADING_PATTERN = /^#{1,6}\s+(.+)$/u;
+
+export interface PlanCheckboxState {
+	section: string;
+	text: string;
+	status: string;
+	start: number;
+	end: number;
+	key?: string;
+}
+
+/** checkbox 的文本范围、状态与展示 key；文本范围只用于同一次精确 edit 的前后配对。 */
+export function planCheckboxStates(planText: string): PlanCheckboxState[] {
+	const states: PlanCheckboxState[] = [];
+	const occurrences = new Map<string, number>();
+	let section = "";
+	let offset = 0;
+	for (const raw of planText.split(/\r?\n/)) {
+		const start = offset;
+		const end = start + raw.length;
+		offset = end + lineBreakLength(planText, end);
+		const heading = HEADING_PATTERN.exec(raw.trim());
+		if (heading) {
+			section = heading[1].trim();
+			continue;
+		}
+		const task = TASK_LIST_LINE.exec(raw);
+		if (!task) continue;
+		const key = checkedLineKey(raw, section, occurrences);
+		states.push({
+			section: section.toLowerCase(),
+			text: task[3].trim(),
+			status: task[2].toLowerCase(),
+			start,
+			end,
+			...(key ? { key } : {}),
+		});
+	}
+	return states;
+}
+
+function lineBreakLength(text: string, offset: number) {
+	if (text.startsWith("\r\n", offset)) return 2;
+	return offset < text.length ? 1 : 0;
+}
+
+/**
+ * 指定区块内每个 checkbox（含未勾）的归因，下标与 parseSteps 结果对齐；
+ * 未勾或无归因记录的条目为 undefined。
+ */
+export function sectionCheckboxAttributions<T>(
+	markdown: string,
+	section: string,
+	attribution: Record<string, T> | undefined,
+): (T | undefined)[] {
+	const result: (T | undefined)[] = [];
+	const occurrences = new Map<string, number>();
+	let current = "";
+	for (const raw of markdown.split(/\r?\n/)) {
+		const heading = HEADING_PATTERN.exec(raw.trim());
+		if (heading) {
+			current = heading[1].trim();
+			continue;
+		}
+		const key = checkedLineKey(raw, current, occurrences);
+		if (current.toLowerCase() !== section.toLowerCase()) continue;
+		if (TASK_LIST_LINE.test(raw))
+			result.push(key && attribution ? attribution[key] : undefined);
+	}
+	return result;
+}
+
+/** 已勾行的 key；非已勾行返回 undefined（occurrence 只数已勾行，与 diff 口径一致）。 */
+function checkedLineKey(
+	raw: string,
+	section: string,
+	occurrences: Map<string, number>,
+) {
+	const checked = CHECKED_LINE_PATTERN.exec(raw);
+	if (!checked) return undefined;
+	const base = `${section}\u0000${checked[1].trim()}`;
+	const occurrence = (occurrences.get(base) ?? 0) + 1;
+	occurrences.set(base, occurrence);
+	return `${base}\u0000${occurrence}`;
+}
+
 export const TASK_LIST_ITEM = /^\s*[-*+]\s*\[[ xX~!]\]/mu;
 export const TASK_LIST_LINE = /^(\s*[-*+]\s*)\[([ xX~!])\](.*)$/u;
 

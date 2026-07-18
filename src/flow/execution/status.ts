@@ -1,6 +1,7 @@
 import { generationAlignmentSummary } from "../../shared/generation-alignment.js";
 import type { AlignmentState } from "../../shared/generation-state.js";
 import { flowStepLabel } from "../../shared/progress-labels.js";
+import { quoteCommand } from "../parallel/console.js";
 import type { FlowState } from "../types.js";
 import { clip, flowCommandId } from "../util.js";
 import { flowStatusLabel, goalStatusLabel } from "./shared.js";
@@ -73,7 +74,8 @@ function preDraftCurrentStatus(
 		alignment.stage,
 		flow.language,
 		alignment.alignmentTurns.length + 1,
-		`/flow go ${flowCommandId(flow.id)}`,
+		quoteCommand(`/flow go ${flowCommandId(flow.id)}`),
+		alignment.depth,
 	);
 }
 
@@ -123,16 +125,16 @@ function statusLabels(language: FlowState["language"]) {
 
 function nextHint(flow: FlowState) {
 	const id = flowCommandId(flow.id);
-	if (flow.status === "draft") return `/flow go ${id}`;
-	if (flow.status === "paused") return `/flow go ${id}`;
-	if (flow.status === "running") return `/flow go ${id}`;
+	if (flow.status === "draft") return quoteCommand(`/flow go ${id}`);
+	if (flow.status === "paused") return quoteCommand(`/flow go ${id}`);
+	if (flow.status === "running") return quoteCommand(`/flow go ${id}`);
 	if (flow.status === "aligning" || flow.status === "generating")
 		return preDraftNextHint(id);
-	return `/flow go ${id}`;
+	return quoteCommand(`/flow go ${id}`);
 }
 
 function preDraftNextHint(id: string) {
-	return `/flow go ${id}`;
+	return quoteCommand(`/flow go ${id}`);
 }
 
 function isPreDraftFlow(flow: FlowState) {

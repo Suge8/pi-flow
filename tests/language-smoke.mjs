@@ -1,21 +1,19 @@
-import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareTestDist } from "./prepare-dist.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const runId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const out = join(root, `.tmp-language-test-${runId}`);
-const srcOut = join(out, "src");
+const out = join(tmpdir(), `pi-flow-language-test-${runId}`);
+const srcOut = join(out, "dist");
 
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
+symlinkSync(join(root, "node_modules"), join(out, "node_modules"), "dir");
 cpSync(join(root, "prompts"), join(out, "prompts"), { recursive: true });
-execFileSync(
-	join(root, "node_modules/.bin/tsc"),
-	["--outDir", srcOut, "--rootDir", "src", "--noEmit", "false"],
-	{ cwd: root, stdio: "inherit" },
-);
+prepareTestDist(root, srcOut);
 
 try {
 	const language = await import(
@@ -45,10 +43,71 @@ try {
 	const uiLanguage = await import(
 		`file://${join(srcOut, "shared/ui-language.js")}?t=${Date.now()}`
 	);
-	const errorLanguage = await import(
-		`file://${join(srcOut, "shared/error-language.js")}?t=${Date.now()}`
-	);
 	const originalEnv = { ...process.env };
+
+	writeConfig({});
+	assert(
+		JSON.stringify(config.readFlowConfig().report) ===
+			JSON.stringify({
+				bind: "127.0.0.1",
+				port: 49327,
+				publicBaseUrl: null,
+			}),
+		"default report config is incorrect",
+	);
+	for (const bind of [
+		"localhost",
+		"127.0.0.1",
+		"0.0.0.0",
+		"::",
+		"100.64.0.1",
+	]) {
+		writeConfig({
+			report: {
+				bind,
+				port: 49327,
+				publicBaseUrl: "https://host.tailnet.ts.net",
+			},
+		});
+		const report = config.readFlowConfig().report;
+		assert(
+			report.bind === bind &&
+				report.port === 49327 &&
+				report.publicBaseUrl === "https://host.tailnet.ts.net",
+			`valid report config failed: ${bind}`,
+		);
+	}
+	process.env.PI_FLOW_LANGUAGE = "en";
+	for (const [report, expected] of [
+		[{ bind: "host.local" }, "report.bind must match localhost/IP"],
+		[{ port: 0 }, "report.port must be an integer"],
+		[{ port: 65536 }, "report.port must be an integer"],
+		[
+			{ publicBaseUrl: "ftp://host" },
+			"report.publicBaseUrl must match http(s) origin",
+		],
+		[
+			{ publicBaseUrl: "https://user:pass@host" },
+			"report.publicBaseUrl must match http(s) origin",
+		],
+		[
+			{ publicBaseUrl: "https://host/path" },
+			"report.publicBaseUrl must match http(s) origin",
+		],
+		[
+			{ publicBaseUrl: "https://host?query=1" },
+			"report.publicBaseUrl must match http(s) origin",
+		],
+		[
+			{ publicBaseUrl: "https://host#hash" },
+			"report.publicBaseUrl must match http(s) origin",
+		],
+		[{ extra: true }, "report.extra is not supported"],
+	]) {
+		writeConfig({ report });
+		const message = throwMessage(() => config.readFlowConfig());
+		assert(message.includes(expected) && !hasChinese(message), message);
+	}
 
 	writeConfig({ language: "zh" });
 	process.env.PI_FLOW_LANGUAGE = "en";
@@ -88,8 +147,20 @@ try {
 	process.env.PI_FLOW_LANGUAGE = "en";
 	language.resetRuntimeLanguageForTests();
 	const englishUiCopy = [
-		["运行质量检查", "Run quality checks"],
-		["等待 AI 提问。", "Waiting for AI to ask."],
+		[
+			"运行质检或执行后自动质检",
+			"Run quality checks now or automatically after execution",
+		],
+		["咨询顾问模型", "Consult the advisor model"],
+		[
+			"先确认范围和拆分方式，再生成计划",
+			"Confirm scope and split before generating the plan",
+		],
+		["编号：F1", "ID: F1"],
+		[
+			"Flow F1 计划生成中\n\n完成后自动启动",
+			"Flow F1 plan generating\n\nStarts automatically when done",
+		],
 		[
 			"⏳ 已有运行中的 Flow\n\n编号：F1",
 			"⏳ A Flow is already running\n\nID: F1",
@@ -105,11 +176,18 @@ try {
 			`English UI copy missing for ${source}`,
 		);
 	}
+	assert(
+		uiLanguage.laneThinkingText("zh") === "思考中" &&
+			uiLanguage.laneThinkingText("en") === "Thinking" &&
+			uiLanguage.laneSilentWarningText(3, "zh") === "⚠ 3 分钟无活动" &&
+			uiLanguage.laneSilentWarningText(3, "en") === "⚠ No activity for 3 min",
+		"lane progress copy is incomplete",
+	);
 	const englishTerminalSamples = [
 		"⚠️ 会话名同步失败\n\nboom",
-		"⚠️ 生成配置已回退\n\nconfig.json 字段 generation.align 必须是 ask、yes 或 no\n已按 ask 处理",
-		"❌ 质量检查失败\n\nboom",
-		"⚠️ 质量检查自动循环已停止\n\nAI 中断或失败",
+		"⚠️ 生成配置已回退\n\nconfig.json 字段 generation.align 必须是 ask、no、coarse、standard 或 deep\n已按 ask 处理",
+		"❌ 质检失败\n\nboom",
+		"⚠️ 质检自动循环已停止\n\nAI 中断或失败",
 		"❌ Flow 计划提示发送失败\n\nboom",
 		"❌ Flow 计划修复提示发送失败\n\nboom",
 		"❌ Flow 计划澄清提示发送失败\n\nboom",
@@ -117,11 +195,10 @@ try {
 		"❌ 目标完成事实写入失败\n\nboom",
 		"❌ 目标状态保存失败\n\nboom",
 		"❌ 目标取消保存失败\n\nboom",
-		"❌ 完成验收启动失败\n\nboom",
+		"❌ 验收启动失败\n\nboom",
 		"子进程启动失败：boom",
 		"子进程失败，退出码 1。err",
 		"ℹ️ 当前步骤状态\n\n状态：执行中",
-		"⚠️ Flow 已更新\n\n运行 /flow go F1 推进下一步",
 		"⚠️ Flow 推进结果未知\n\n结果：weird",
 		"❌ .flow 目录不可用\n\nboom",
 		"❌ AI 未生成有效 Flow 计划\n\n请重试 /flow",
@@ -145,15 +222,15 @@ try {
 	};
 	uiLanguage.installLocalizedUi(ctx);
 	const selected = await ctx.ui.select("生成计划前先对齐思路？", [
-		"先进行多轮问答对齐想法",
+		"粗对齐：约 10 问内，高杠杆问题优先",
 		"跳过对齐，直接根据上下文生成计划",
 	]);
 	const localizedValidationNotice = uiLanguage.localizeUserText(
-		"❌ Flow 校验失败\n\nschemaVersion 必须为 9\nlanguage 必须是 zh 或 en",
+		"❌ Flow 校验失败\n\nschemaVersion 必须为 17\nlanguage 必须是 zh 或 en",
 	);
 	assert(
 		localizedValidationNotice.includes("Flow validation failed") &&
-			localizedValidationNotice.includes("schemaVersion must be 9") &&
+			localizedValidationNotice.includes("schemaVersion must be 17") &&
 			localizedValidationNotice.includes("language must be zh or en") &&
 			!localizedValidationNotice.includes("必须"),
 		"English validation notice leaked Chinese",
@@ -167,16 +244,13 @@ try {
 		"English unsupported Flow status notice leaked Chinese",
 	);
 	assert(
-		errorLanguage.localizeErrorText("status 非法：cancelled", "en") ===
-			"Flow status is not supported",
-		"legacy cancelled status error leaked its internal enum in English",
-	);
-	assert(
 		selectState.title === "Align before generating the plan?",
 		"select title not localized",
 	);
 	assert(
-		selectState.options[1] === "Skip alignment and generate from context",
+		selectState.options[0] ===
+			"Coarse alignment: ~10 questions, prioritize high-leverage decisions" &&
+			selectState.options[1] === "Skip alignment and generate from context",
 		"select option not localized",
 	);
 	assert(
@@ -185,13 +259,13 @@ try {
 	);
 	assertAlignmentCopy(generationAlignment, generationState);
 	const flowGenerationPrompt = flowPrompt.generationPrompt({
-		originalRequest: "Ship flow",
+		requestText: "Ship flow",
 		sourceType: "prompt",
 		language: "en",
 		flowPath: "/tmp/F1",
 	});
 	const restoredFlowGenerationPrompt = flowPrompt.generationPrompt({
-		originalRequest: "Ship flow",
+		requestText: "Ship flow",
 		sourceType: "prompt",
 		language: "en",
 		flowPath: "/tmp/F1",
@@ -225,7 +299,7 @@ try {
 	);
 	const flowRepairPrompt = flowPrompt.repairPrompt({
 		errors: ["bad draft"],
-		originalRequest: "Ship flow",
+		requestText: "Ship flow",
 		flowPath: "/tmp/F1",
 		language: "en",
 	});
@@ -236,6 +310,19 @@ try {
 		"English repair prompt missing milestone step rules",
 	);
 	assertFlowControlCopy(flowRepairPrompt, "English repair prompt");
+	for (const [label, prompt] of [
+		["English flow prompt", flowGenerationPrompt],
+		["English repair prompt", flowRepairPrompt],
+	]) {
+		assert(
+			prompt.includes("## Draft format contract"),
+			`${label} missing appended draft contract`,
+		);
+		assert(
+			!/\{\{(?:flowPath|language|validateCommand)\}\}/u.test(prompt),
+			`${label} left contract placeholders unreplaced`,
+		);
+	}
 	const badFlowDir = join(out, "F10");
 	mkdirSync(badFlowDir, { recursive: true });
 	writeFileSync(
@@ -244,9 +331,30 @@ try {
 	);
 	const badFlow = flowValidator.validateFlowDir(badFlowDir);
 	assert(
-		badFlow.errors.includes("schemaVersion must be 9") &&
-			!badFlow.errors.some((error) => error.includes("必须")),
+		badFlow.errors.some((error) =>
+			error.includes("schemaVersion must be 17"),
+		) && !badFlow.errors.some((error) => error.includes("必须")),
 		"English Flow validator error leaked Chinese",
+	);
+	const badAlignmentDir = join(out, "F12");
+	mkdirSync(badAlignmentDir, { recursive: true });
+	writeFileSync(
+		join(badAlignmentDir, "flow.json"),
+		`${JSON.stringify({
+			...sampleFlow(),
+			id: "F12",
+			meta: {
+				plannedBy: null,
+				alignment: { kind: "invalid", turns: [] },
+			},
+		})}\n`,
+	);
+	const badAlignment = flowValidator.validateFlowDir(badAlignmentDir);
+	assert(
+		badAlignment.errors.some((error) =>
+			error.includes("meta.alignment.kind must be recorded"),
+		) && !badAlignment.errors.some(hasChinese),
+		"English alignment validation error leaked Chinese",
 	);
 	const badParallelFlowDir = join(out, "F11");
 	mkdirSync(badParallelFlowDir, { recursive: true });
@@ -277,6 +385,22 @@ try {
 			!badParallelFlowResult.errors.some(hasChinese),
 		"English parallel Flow validator error leaked Chinese",
 	);
+	const badWriteScopeDir = join(out, "F13");
+	mkdirSync(badWriteScopeDir, { recursive: true });
+	const badWriteScopeFlow = sampleFlow();
+	badWriteScopeFlow.id = "F13";
+	badWriteScopeFlow.goals[0].writeScope = ["src/foo*"];
+	writeFileSync(
+		join(badWriteScopeDir, "flow.json"),
+		`${JSON.stringify(badWriteScopeFlow)}\n`,
+	);
+	const badWriteScopeResult = flowValidator.validateFlowDir(badWriteScopeDir);
+	assert(
+		badWriteScopeResult.errors.includes(
+			"goals[0].writeScope[0] must be ** or a relative directory glob ending in /**",
+		) && !badWriteScopeResult.errors.some(hasChinese),
+		"English writeScope validator error leaked Chinese",
+	);
 	const badFinalRoleDir = join(out, "F12");
 	mkdirSync(badFinalRoleDir, { recursive: true });
 	const badFinalRoleFlow = sampleFlow();
@@ -295,7 +419,7 @@ try {
 	const badFinalRoleResult = flowValidator.validateFlowDir(badFinalRoleDir);
 	assert(
 		badFinalRoleResult.errors.includes(
-			"Multi-step Flow must have exactly 1 final acceptance step (role: final_acceptance)",
+			"At most 1 final acceptance step (role: final_acceptance)",
 		) &&
 			badFinalRoleResult.errors.includes(
 				"goals[0] non-final step must be normal",
@@ -321,6 +445,11 @@ try {
 		"English Flow HTML should only show go with bare id",
 	);
 	assert(
+		html.includes('data-copy-success="Copied"') &&
+			html.includes('data-copy-failure="Copy failed"'),
+		"English command copy feedback missing",
+	);
+	assert(
 		!html.includes("Step 1 · Build"),
 		"English Flow goal card should not repeat the step label as an eyebrow",
 	);
@@ -328,7 +457,7 @@ try {
 		!html.includes("Multi-step plan"),
 		"English Flow HTML should be neutral",
 	);
-	assert(html.includes("Completion acceptance"), "English check label missing");
+	assert(html.includes("Acceptance"), "English check label missing");
 	assert(!html.includes("多步骤计划"), "Chinese Flow HTML chrome leaked");
 	const status = flowStatus.statusText(flow);
 	assert(
@@ -340,7 +469,7 @@ try {
 		"English Flow status step label missing",
 	);
 	assert(
-		status.includes("Next: /flow go F1"),
+		status.includes("Next: 「/flow go F1」"),
 		"English Flow status next command did not use bare id",
 	);
 	const preDraftStatus = flowStatus.statusText(
@@ -350,6 +479,7 @@ try {
 			stage: "awaiting_alignment_input",
 			sessionFile: null,
 			autoStart: true,
+			depth: "standard",
 			alignmentTurns: [],
 			lastAlignmentQuestion: "Question 1: Scope?",
 			createdAt: 0,
@@ -358,7 +488,7 @@ try {
 	);
 	assert(
 		preDraftStatus.includes("Status: Waiting for reply") &&
-			preDraftStatus.includes("Next: /flow go F1") &&
+			preDraftStatus.includes("Next: 「/flow go F1」") &&
 			!preDraftStatus.includes("reply with answer"),
 		"English pre-draft Flow status did not use stage copy and go next hint",
 	);
@@ -385,7 +515,7 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 	const zhPrompt = generationAlignment.buildAlignmentPrompt({
 		kind: "flow",
 		language: "zh",
-		originalRequest: "修登录",
+		requestText: "修登录",
 		source: "prompt",
 	});
 	assert(
@@ -394,20 +524,49 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 			zhPrompt.includes("一次只问一个问题") &&
 			zhPrompt.includes("2-4 个具体选项") &&
 			zhPrompt.includes("基于项目具体情况，需求以及最佳实践") &&
-			zhPrompt.includes("先探索事实源后再提出基于事实的问题") &&
 			zhPrompt.includes(
-				"所有会影响实现范围、实现细节、需求、提示词语义、状态事实源、测试验证",
+				"提出问题前，先探索相关代码库、文档、测试、调用链或现有 .flow 文件",
 			) &&
+			zhPrompt.includes("能从事实源确认的内容不要询问用户") &&
+			zhPrompt.includes("高杠杆问题优先") &&
+			zhPrompt.includes("计划结构、实现范围、验收标准、技术选型或不可逆决策") &&
+			zhPrompt.includes("假设默认制") &&
+			zhPrompt.includes("已有项目遵循现有技术栈") &&
+			zhPrompt.includes("问题预算：约 20-30 问") &&
+			zhPrompt.includes("用户回复「按推荐」时") &&
+			zhPrompt.includes("输出假设清单") &&
+			zhPrompt.includes("验收面过大") &&
+			!zhPrompt.includes("{{questionBudget}}") &&
 			!zhPrompt.includes("<aligned-request>") &&
-			!zhPrompt.includes("最高杠杆") &&
 			!zhPrompt.includes("阻塞哪个未确认决策") &&
 			!zhPrompt.includes("每轮先列出未确认决策树"),
-		"Chinese alignment prompt missing concise decision contract",
+		"Chinese alignment prompt missing high-leverage grilling contract",
+	);
+	const zhCoarsePrompt = generationAlignment.buildAlignmentPrompt({
+		kind: "flow",
+		language: "zh",
+		requestText: "修登录",
+		source: "prompt",
+		depth: "coarse",
+	});
+	const zhDeepPrompt = generationAlignment.buildAlignmentPrompt({
+		kind: "flow",
+		language: "zh",
+		requestText: "修登录",
+		source: "prompt",
+		depth: "deep",
+	});
+	assert(
+		zhCoarsePrompt.includes("问题预算：约 10 问以内") &&
+			zhDeepPrompt.includes("问题预算：不设硬上限") &&
+			!zhCoarsePrompt.includes("约 20-30 问") &&
+			!zhDeepPrompt.includes("约 20-30 问"),
+		"Chinese depth budgets were not injected into the alignment prompt",
 	);
 	const enPrompt = generationAlignment.buildAlignmentPrompt({
 		kind: "flow",
 		language: "en",
-		originalRequest: "Ship login",
+		requestText: "Ship login",
 		source: "prompt",
 	});
 	assert(
@@ -419,25 +578,61 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 			enPrompt.includes("2-4 concrete options") &&
 			enPrompt.includes("the project's specific situation") &&
 			enPrompt.includes(
-				"inspect the source of truth first and then ask a fact-based question",
+				"Before asking a question, inspect the relevant codebase, documentation, tests, call chains, or existing .flow files",
 			) &&
 			enPrompt.includes(
-				"all decisions that affect implementation scope, implementation details, requirements, prompt semantics, state source of truth, and test verification",
+				"Do not ask the user about anything the sources of truth can confirm",
 			) &&
+			enPrompt.includes("High-leverage questions first") &&
+			enPrompt.includes(
+				"plan structure, implementation scope, acceptance criteria, tech choices, or an irreversible decision",
+			) &&
+			enPrompt.includes("Assume defaults") &&
+			enPrompt.includes("follow the current stack") &&
+			enPrompt.includes("continue asking beyond the budget") &&
+			enPrompt.includes("Question budget: about 20-30 questions") &&
+			enPrompt.includes('replies "use recommendations"') &&
+			enPrompt.includes("assumption list") &&
+			enPrompt.includes("oversized acceptance surface") &&
+			!enPrompt.includes("{{questionBudget}}") &&
 			!enPrompt.includes("<aligned-request>") &&
-			!enPrompt.includes("highest-leverage") &&
 			!enPrompt.includes("which unconfirmed decision it blocks") &&
 			!enPrompt.includes("list the unconfirmed decision tree") &&
 			!hasChinese(enPrompt),
-		"English alignment prompt missing concise decision contract",
+		"English alignment prompt missing high-leverage grilling contract",
+	);
+	const enCoarsePrompt = generationAlignment.buildAlignmentPrompt({
+		kind: "flow",
+		language: "en",
+		requestText: "Ship login",
+		source: "prompt",
+		depth: "coarse",
+	});
+	const enDeepPrompt = generationAlignment.buildAlignmentPrompt({
+		kind: "flow",
+		language: "en",
+		requestText: "Ship login",
+		source: "prompt",
+		depth: "deep",
+	});
+	assert(
+		enCoarsePrompt.includes("Question budget: about 10 questions at most") &&
+			enDeepPrompt.includes("Question budget: no hard cap") &&
+			!enCoarsePrompt.includes("about 20-30 questions") &&
+			!enDeepPrompt.includes("about 20-30 questions"),
+		"English depth budgets were not injected into the alignment prompt",
 	);
 	const zhFollowUp = generationAlignment.buildAlignmentFollowUpPrompt({
 		language: "zh",
 	});
 	assert(
 		zhFollowUp.includes("继续 Flow 生成前对齐") &&
-			zhFollowUp.includes("先探索事实源") &&
-			zhFollowUp.includes("一次只问一个简洁问题") &&
+			zhFollowUp.includes("问题预算：约 20-30 问") &&
+			zhFollowUp.includes("遵循首次拷问协议") &&
+			zhFollowUp.includes("先查事实") &&
+			zhFollowUp.includes("高杠杆问题优先") &&
+			zhFollowUp.includes("可合理默认的次要决策不要问") &&
+			zhFollowUp.includes("满足收敛条件后") &&
 			!zhFollowUp.includes("# 拷问我") &&
 			!zhFollowUp.includes("原始需求") &&
 			!zhFollowUp.includes("已对齐问答") &&
@@ -445,15 +640,25 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 			!zhFollowUp.includes("<aligned-request>"),
 		"Chinese follow-up alignment prompt should stay lightweight",
 	);
+	const zhDeepFollowUp = generationAlignment.buildAlignmentFollowUpPrompt({
+		language: "zh",
+		depth: "deep",
+	});
+	assert(
+		zhDeepFollowUp.includes("问题预算：不设硬上限") &&
+			!zhDeepFollowUp.includes("约 20-30 问"),
+		"Chinese follow-up prompt did not carry the deep budget",
+	);
 	const enFollowUp = generationAlignment.buildAlignmentFollowUpPrompt({
 		language: "en",
 	});
 	assert(
 		enFollowUp.includes("Continue Flow alignment") &&
-			enFollowUp.includes(
-				"inspect the codebase, docs, or existing .flow files",
-			) &&
-			enFollowUp.includes("Ask exactly one concise question") &&
+			enFollowUp.includes("Question budget: about 20-30 questions") &&
+			enFollowUp.includes("Follow the initial questioning protocol") &&
+			enFollowUp.includes("inspect facts first") &&
+			enFollowUp.includes("prioritize high-leverage questions") &&
+			enFollowUp.includes("After convergence") &&
 			!enFollowUp.includes("# Question me") &&
 			!enFollowUp.includes("Original request") &&
 			!enFollowUp.includes("Aligned Q&A") &&
@@ -513,10 +718,10 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 	);
 	assert(
 		zhAskQ1.phase === "Q1" &&
-			zhAskQ1.rows === "思考中" &&
+			zhAskQ1.rows === "准备问题中" &&
 			zhAskQ2.phase === "Q2" &&
-			zhAskQ2.rows === "思考中",
-		"Chinese Q1/Q2 ask copy missing",
+			zhAskQ2.rows === "准备问题中",
+		"Chinese Q1/Q2 preparation copy missing or still has a spinner",
 	);
 	const zhWaitingQ2 = generationAlignment.generationAlignmentActivityCopy(
 		"awaiting_alignment_input",
@@ -524,9 +729,28 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 		2,
 	);
 	assert(
-		zhWaitingQ2.phase === "Q2" &&
-			zhWaitingQ2.rows === "回复对齐需求 ｜「/flow go」 直接生成计划",
+		zhWaitingQ2.phase === "Q2 / ~30" &&
+			zhWaitingQ2.rows ===
+				"回复对齐需求 ｜「按推荐」委托剩余决策 ｜「/flow go」直接生成计划",
 		"Chinese waiting-reply copy missing",
+	);
+	const zhWaitingCoarse = generationAlignment.generationAlignmentActivityCopy(
+		"awaiting_alignment_input",
+		"zh",
+		3,
+		"/flow go F1",
+		"coarse",
+	);
+	const zhWaitingDeep = generationAlignment.generationAlignmentActivityCopy(
+		"awaiting_alignment_input",
+		"zh",
+		3,
+		"/flow go F1",
+		"deep",
+	);
+	assert(
+		zhWaitingCoarse.phase === "Q3 / ~10" && zhWaitingDeep.phase === "Q3",
+		"Chinese waiting-reply progress should follow the depth budget",
 	);
 	const zhFinal = generationAlignment.generationAlignmentActivityCopy(
 		"awaiting_final_confirm",
@@ -544,9 +768,16 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 		"zh",
 		3,
 	);
+	const zhDraftZero = generationAlignment.generationAlignmentActivityCopy(
+		"generating",
+		"zh",
+		1,
+	);
 	assert(
-		zhDraft.phase === "撰写中" && zhDraft.rows === "基于 2 轮问答生成全面计划",
-		"Chinese drafting copy should show completed Q&A turns",
+		zhDraft.phase === "生成中" &&
+			zhDraft.rows === "基于 2 轮问答生成全面计划" &&
+			zhDraftZero.rows === "洞察全部上下文，生成全面计划",
+		"Chinese drafting copy should show context without a spinner",
 	);
 	const enAskQ1 = generationAlignment.generationAlignmentActivityCopy(
 		"aligning",
@@ -560,9 +791,9 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 	);
 	assert(
 		enAskQ1.phase === "Aligning" &&
-			enAskQ1.rows === "Waiting for AI to ask Q1" &&
-			enAskQ2.rows === "Waiting for AI to ask Q2",
-		"English Q1/Q2 ask copy missing",
+			enAskQ1.rows === "Preparing Q1" &&
+			enAskQ2.rows === "Preparing Q2",
+		"English Q1/Q2 preparation copy missing or still has a spinner",
 	);
 	const enWaitingQ1 = generationAlignment.generationAlignmentActivityCopy(
 		"awaiting_alignment_input",
@@ -571,8 +802,21 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 	);
 	assert(
 		enWaitingQ1.phase === "Waiting for reply" &&
-			enWaitingQ1.rows === "Answer Q1 to continue alignment",
+			enWaitingQ1.rows ===
+				'Answer Q1 of ~30 · "use recommendations" delegates the rest',
 		"English waiting-reply rows missing",
+	);
+	const enWaitingDeep = generationAlignment.generationAlignmentActivityCopy(
+		"awaiting_alignment_input",
+		"en",
+		4,
+		"/flow go F1",
+		"deep",
+	);
+	assert(
+		enWaitingDeep.rows ===
+			'Answer Q4 · "use recommendations" delegates the rest',
+		"English deep waiting-reply should hide the budget denominator",
 	);
 	const enFinal = generationAlignment.generationAlignmentActivityCopy(
 		"awaiting_final_confirm",
@@ -583,7 +827,7 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 	assert(
 		enFinal.phase === "Ready to draft" &&
 			enFinal.rows[0] === "Alignment is ready" &&
-			enFinal.rows[1] === "Run /flow go F1 to generate the plan" &&
+			enFinal.rows[1] === "Run 「/flow go F1」 to generate the plan" &&
 			enFinal.rows[2] === "Any other input continues alignment",
 		"English ready-confirmation rows missing",
 	);
@@ -592,18 +836,70 @@ function assertAlignmentCopy(generationAlignment, generationState) {
 		"en",
 		3,
 	);
+	const enDraftZero = generationAlignment.generationAlignmentActivityCopy(
+		"generating",
+		"en",
+		1,
+	);
 	assert(
-		enDraft.phase === "Drafting plan" && enDraft.rows.length === 0,
-		"English drafting copy should not depend on Q&A turns",
+		enDraft.phase === "Drafting plan" &&
+			enDraft.rows ===
+				"Drafting a comprehensive plan from 2 alignment rounds" &&
+			enDraftZero.rows === "Drafting a comprehensive plan from full context",
+		"English drafting copy should show context without a spinner",
+	);
+	const summaryCases = [
+		["aligning", "zh", "Q1 准备问题中"],
+		[
+			"awaiting_alignment_input",
+			"zh",
+			"回复对齐需求（Q1 / ~30）；「按推荐」委托剩余决策；「/flow go」直接生成计划",
+		],
+		[
+			"awaiting_final_confirm",
+			"zh",
+			"已对齐，「/flow go」生成计划；继续回复则补充信息",
+		],
+		["awaiting_blocking_input", "zh", "生成被阻塞，回答当前问题后继续生成"],
+		["generating", "zh", "洞察全部上下文，生成全面计划"],
+		["aligning", "en", "Aligning; preparing Q1"],
+		[
+			"awaiting_alignment_input",
+			"en",
+			'Answer Q1 of ~30 to continue alignment. Reply "use recommendations" to delegate the rest',
+		],
+		[
+			"awaiting_final_confirm",
+			"en",
+			"Alignment is ready. Run 「/flow go <id>」 to generate the plan; any other input continues alignment",
+		],
+		[
+			"awaiting_blocking_input",
+			"en",
+			"Generation is blocked. Answer the current question to continue generation",
+		],
+		["generating", "en", "Drafting a comprehensive plan from full context"],
+	];
+	assert(
+		summaryCases.every(
+			([stage, language, expected]) =>
+				generationAlignment.generationAlignmentSummary(stage, language) ===
+				expected,
+		),
+		"alignment summaries should use aligned copy without trailing periods",
 	);
 	assert(
 		generationAlignment.generationAlignmentSummary(
 			"awaiting_alignment_input",
-			"en",
-		) === "Answer Q1 to continue alignment." &&
+			"zh",
+			2,
+			"/flow go F1",
+			"coarse",
+		) ===
+			"回复对齐需求（Q2 / ~10）；「按推荐」委托剩余决策；「/flow go」直接生成计划" &&
 			generationAlignment.generationAlignmentSummary("generating", "zh", 8) ===
-				"基于 7 轮问答生成全面计划。",
-		"alignment summary copy missing",
+				"基于 7 轮问答生成全面计划",
+		"alignment summary variants should not end with punctuation",
 	);
 	const draftBox = generationState.generationDraftBox(
 		"🌊 Flow · Drafting plan",
@@ -630,16 +926,19 @@ function assertFlowControlCopy(text, label) {
 
 function sampleFlow() {
 	return {
-		schemaVersion: 9,
+		schemaVersion: 17,
 		language: "en",
 		id: "F1",
 		title: "Ship feature",
 		status: "draft",
-		source: { type: "prompt", path: null, originalRequest: "Ship feature" },
+		source: { type: "prompt", text: "Ship feature" },
 		createdAt: 0,
 		updatedAt: 0,
 		startedAt: null,
+		completedAt: null,
 		currentGoal: 0,
+		meta: null,
+		attention: null,
 		parallelRun: null,
 		repairAttempts: 0,
 		errors: [],
@@ -650,11 +949,12 @@ function sampleFlow() {
 				role: "normal",
 				file: "goal-1.md",
 				status: "pending",
+				startedAt: null,
+				completedAt: null,
 				completionCursor: null,
 				sessionFile: null,
 				sessionName: null,
 				snapshot: null,
-				snapshotHash: null,
 				goalId: null,
 				result: {
 					summary: null,

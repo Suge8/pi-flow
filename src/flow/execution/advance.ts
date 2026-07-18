@@ -1,21 +1,27 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { objectiveFromPlan } from "../../goal/validator.js";
 import { clearCompletedGoalFromFlow } from "../../goal.js";
-import {
-	flowGoalDisplayLabel,
-	flowStepLabel,
-} from "../../shared/progress-labels.js";
-import { liveReportUrl } from "../../shared/report-server.js";
+import { requestPiAttention } from "../../shared/activity-signal.js";
+import { clipText } from "../../shared/clip.js";
+import { formatError } from "../../shared/guards.js";
+import { flowStepLabel } from "../../shared/progress-labels.js";
+import { bindLiveReport } from "../../shared/report-client.js";
 import {
 	composeResultCardLines,
 	finalReplyInstruction,
 	resultCardElapsedLine,
 	sendResultCard,
 } from "../../shared/result-card.js";
+import {
+	collectSuggestions,
+	completionChecksLines,
+} from "../../shared/review-history.js";
 import { formatDuration } from "../../shared/status.js";
 import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
 import {
@@ -23,17 +29,25 @@ import {
 	latestGoalCompletion,
 } from "../completion.js";
 import { completeGoalWithFact } from "../goal-completion.js";
-import { writeFlowHtml } from "../html.js";
+import { refreshFlowHtmlProjection } from "../html.js";
 import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { currentSessionFile } from "../ownership.js";
-import { activeParallelBatchForDir } from "../parallel/batch-runner.js";
+import {
+	activeParallelBatchForDir,
+	settleParallelBlockedRun,
+} from "../parallel/batch-runner.js";
+import { quoteCommand } from "../parallel/console.js";
 import { settleParallelRun } from "../parallel/fan-in.js";
+import { firstWorkerHandoff } from "../parallel/worker-artifact.js";
 import {
 	completionFact,
 	deleteCompletionFact,
+	releaseFlowContext,
 	rememberedFlowContext,
 	rememberFlowContext,
 } from "../runtime.js";
+import { computeReadyBatch } from "../scheduler.js";
+import { requestSessionTransition } from "../session-transition.js";
 import {
 	currentGoal,
 	flowOwningSession,
@@ -75,6 +89,7 @@ export async function advanceFlowExecution(
 	}
 	const activeBatch = activeParallelBatchForDir(location.dir);
 	if (location.flow.parallelRun && activeBatch) {
+		if (await switchToParallelConsoleIfNeeded(ctx, location.flow)) return;
 		notifyUser(
 			ctx,
 			parallelRunStillRunningMessage(location.flow),
@@ -139,7 +154,11 @@ export async function handleGoalCompletionEnd(
 	const location =
 		completionFlowLocation(ctx, sessionFile, fact) ??
 		invalidCompletionFlowLocation(ctx);
-	if (!location) return false;
+	if (!location) {
+		deleteCompletionFact(fact.sessionFile);
+		releaseFlowContext(fact.sessionFile);
+		return false;
+	}
 	const completed = await withFlowLock(
 		location.dir,
 		`complete ${location.flow.id}`,
@@ -154,46 +173,52 @@ export async function handleGoalCompletionEnd(
 		);
 		return true;
 	}
-	if (!completed.value) return false;
+	if (completed.value.kind === "retry") return false;
+	if (completed.value.kind === "rejected") {
+		deleteCompletionFact(fact.sessionFile);
+		releaseFlowContext(fact.sessionFile);
+		return false;
+	}
+	deleteCompletionFact(fact.sessionFile);
 	const { plan, saved } = completed.value;
-	await liveReportUrl(
-		ctx,
-		join(location.dir, "flow.html"),
-		saved.language,
-	).catch(() => undefined);
+	const completedSessionFile =
+		plan.sessionFile ?? fact.sessionFile ?? sessionFile;
+	bindLiveReport(ctx, join(location.dir, "flow.html"), saved.language);
 	clearCompletedGoalFromFlow(ctx, fact.goalId);
-	notifyUser(
-		ctx,
-		flowGoalCompleteNotice(plan.index, plan.title, saved),
-		"info",
-		saved.language,
-	);
 	if (saved.status === "complete") {
 		closeFlowGoalWatcher(location.dir);
+		releaseFlowContext(completedSessionFile);
 		await sendFlowCompleteCard(pi, ctx, location.dir, saved);
 		return true;
 	}
 	const flowContext =
 		commandContextForAutoStart(ctx) ??
-		rememberedFlowContext(plan.sessionFile ?? fact.sessionFile ?? sessionFile);
+		rememberedFlowContext(completedSessionFile);
 	if (!flowContext) {
-		const command = `/flow go ${flowCommandId(saved.id)}`;
+		releaseFlowContext(completedSessionFile);
 		sendFlowResumeRequiredCard(pi, ctx, saved);
-		notifyUser(
-			ctx,
-			flowResumeRequiredNotice(saved, command),
-			"info",
-			saved.language,
-		);
 		return true;
 	}
-	await startGoalInNewSession(
-		pi,
-		flowContext,
-		location.dir,
-		saved,
-		saved.currentGoal,
-	);
+	const scheduled = requestSessionTransition({
+		key: `flow:${saved.id}`,
+		ctx: flowContext,
+		run: async () => {
+			const started = await startGoalInNewSession(
+				pi,
+				flowContext,
+				location.dir,
+				saved,
+				saved.currentGoal,
+			);
+			if (started) releaseFlowContext(completedSessionFile);
+		},
+		onError: (error) =>
+			notifyFlowAdvanceFailed(flowContext, saved, formatError(error)),
+	});
+	if (!scheduled) {
+		releaseFlowContext(completedSessionFile);
+		sendFlowResumeRequiredCard(pi, ctx, saved);
+	}
 	return true;
 }
 
@@ -219,7 +244,10 @@ function completeGoalEndTransaction(
 	dir: string,
 	flow: FlowState,
 	fact: GoalCompletionFact,
-) {
+):
+	| { kind: "completed"; plan: FlowState["goals"][number]; saved: FlowState }
+	| { kind: "rejected" }
+	| { kind: "retry" } {
 	const validation = validateFlowDir(dir, flow.language);
 	if (!validation.ok || !validation.flow) {
 		notifyUser(
@@ -228,20 +256,46 @@ function completeGoalEndTransaction(
 			"info",
 			flow.language,
 		);
-		return undefined;
+		return { kind: "retry" };
 	}
 	const verifiedFlow = verifyCurrentSnapshot(ctx, dir, validation.flow);
-	if (!verifiedFlow || verifiedFlow.status !== "running") return undefined;
+	if (!verifiedFlow) return { kind: "retry" };
+	if (verifiedFlow.status !== "running") return { kind: "rejected" };
 	const plan = currentGoal(verifiedFlow);
-	if (!plan || plan.status !== "running") return undefined;
+	if (!plan || plan.status !== "running") return { kind: "rejected" };
 	if (
 		plan.sessionFile &&
 		fact.sessionFile &&
 		plan.sessionFile !== fact.sessionFile
 	)
-		return undefined;
-	deleteCompletionFact(fact.sessionFile);
-	return { plan, saved: completeCurrentGoal(dir, verifiedFlow, fact) };
+		return { kind: "rejected" };
+	return {
+		kind: "completed",
+		plan,
+		saved: completeCurrentGoal(ctx, dir, verifiedFlow, fact),
+	};
+}
+
+async function switchToParallelConsoleIfNeeded(
+	ctx: ExtensionCommandContext,
+	flow: FlowState,
+) {
+	const consoleSessionFile = flow.parallelRun?.consoleSessionFile;
+	if (!consoleSessionFile || consoleSessionFile === currentSessionFile(ctx))
+		return false;
+	if (!existsSync(consoleSessionFile)) return false;
+	await ctx.switchSession(consoleSessionFile, {
+		withSession: async (sessionCtx) => {
+			rememberFlowContext(sessionCtx);
+			notifyUser(
+				sessionCtx,
+				parallelRunStillRunningMessage(flow),
+				"info",
+				flow.language,
+			);
+		},
+	});
+	return true;
 }
 
 async function recoverParallelRun(
@@ -250,11 +304,21 @@ async function recoverParallelRun(
 	dir: string,
 	flow: FlowState,
 ) {
+	const consoleSessionFile = flow.parallelRun?.consoleSessionFile;
+	const blocked = firstWorkerHandoff(dir, flow);
+	if (blocked) {
+		const handoff = await settleParallelBlockedRun(ctx, dir, flow, blocked);
+		if (handoff.applied || handoff.flow.status !== "running") {
+			releaseFlowContext(consoleSessionFile);
+			return;
+		}
+		flow = handoff.flow;
+	}
 	const settled = await withFlowLock(dir, `recover parallel ${flow.id}`, () => {
 		const validation = validateFlowDir(dir, flow.language);
 		const current = validation.flow ?? flow;
 		if (!current.parallelRun) return undefined;
-		return settleParallelRun(dir, current, [], {
+		return settleParallelRun(ctx, dir, current, [], {
 			requireSuccessfulExit: false,
 			recovery: true,
 		});
@@ -280,15 +344,21 @@ async function recoverParallelRun(
 		"info",
 		fanIn.flow.language,
 	);
-	await liveReportUrl(ctx, join(dir, "flow.html"), fanIn.flow.language).catch(
-		() => undefined,
-	);
+	bindLiveReport(ctx, join(dir, "flow.html"), fanIn.flow.language);
 	if (fanIn.flow.status === "complete") {
 		closeFlowGoalWatcher(dir);
+		releaseFlowContext(consoleSessionFile);
 		await sendFlowCompleteCard(pi, ctx, dir, fanIn.flow);
 		return;
 	}
-	await startGoalInNewSession(pi, ctx, dir, fanIn.flow, fanIn.flow.currentGoal);
+	const started = await startGoalInNewSession(
+		pi,
+		ctx,
+		dir,
+		fanIn.flow,
+		fanIn.flow.currentGoal,
+	);
+	if (started) releaseFlowContext(consoleSessionFile);
 }
 
 function canStartFromBeginning(flow: FlowState) {
@@ -296,30 +366,6 @@ function canStartFromBeginning(flow: FlowState) {
 		flow.status === "draft" ||
 		(flow.status === "paused" && flow.startedAt === null)
 	);
-}
-
-function flowGoalCompleteNotice(index: number, title: string, flow: FlowState) {
-	const label = flowGoalDisplayLabel(
-		index,
-		title,
-		flow.goals.length,
-		flow.language,
-	);
-	return flow.language === "en"
-		? formatUserNotice("✅", `Flow ${label} complete`, [
-				`ID: ${flowCommandId(flow.id)}`,
-			])
-		: formatUserNotice("✅", `Flow ${label} 已完成`, [
-				`编号：${flowCommandId(flow.id)}`,
-			]);
-}
-
-function flowResumeRequiredNotice(flow: FlowState, command: string) {
-	return flow.language === "en"
-		? formatUserNotice("⚠️", "Flow updated", [
-				`Run ${command} to advance to the next step`,
-			])
-		: formatUserNotice("⚠️", "Flow 已更新", [`运行 ${command} 推进下一步`]);
 }
 
 function flowCannotAdvanceMessage(flow: FlowState) {
@@ -371,6 +417,25 @@ function goalLabel(flow: FlowState, goalIndex: number) {
 		: `G${goalIndex}`;
 }
 
+function notifyFlowAdvanceFailed(
+	ctx: ExtensionCommandContext,
+	flow: FlowState,
+	error: string,
+) {
+	const command = `/flow go ${flowCommandId(flow.id)}`;
+	const message =
+		flow.language === "en"
+			? formatUserNotice("❌", "Flow could not advance", [
+					error,
+					`Run ${quoteCommand(command)} to retry`,
+				])
+			: formatUserNotice("❌", "Flow 无法推进", [
+					error,
+					`运行 ${quoteCommand(command)} 重试`,
+				]);
+	notifyUser(ctx, message, "info", flow.language);
+}
+
 function sendFlowResumeRequiredCard(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
@@ -384,8 +449,8 @@ function sendFlowResumeRequiredCard(
 		flow.language === "en" ? `Flow ${label} ready` : `Flow ${label} 已就绪`;
 	const lines =
 		flow.language === "en"
-			? [`Goal: ${next.title}`, `Next: ${command}`]
-			: [`目标：${next.title}`, `下一步：${command}`];
+			? [`Next: ${quoteCommand(command)}`]
+			: [`下一步：${quoteCommand(command)}`];
 	sendResultCard(pi, ctx, [`[${title}]`, ...lines].join("\n"), {
 		tone: "neutral",
 		result: "启动",
@@ -393,6 +458,7 @@ function sendFlowResumeRequiredCard(
 		lines,
 		language: flow.language,
 	});
+	requestPiAttention(`pi-flow:flow:${flow.id}`);
 }
 
 export async function sendFlowCompleteCard(
@@ -402,7 +468,7 @@ export async function sendFlowCompleteCard(
 	flow: FlowState,
 ) {
 	const htmlPath = join(dir, "flow.html");
-	await liveReportUrl(ctx, htmlPath, flow.language).catch(() => undefined);
+	bindLiveReport(ctx, htmlPath, flow.language);
 	const complete = flow.goals.filter(
 		(goal) => goal.status === "complete",
 	).length;
@@ -410,12 +476,46 @@ export async function sendFlowCompleteCard(
 	const totalTime = formatDuration(
 		Math.max(0, Math.floor((Date.now() - requireFlowStartedAt(flow)) / 1000)),
 	);
-	const title = flow.language === "en" ? "Flow complete" : "Flow 已完成";
-	const summaryLines = flowCompleteSummaryLines(flow, complete, total);
-	const lines = composeResultCardLines(
-		[summaryLines],
-		[resultCardElapsedLine(totalTime, flow.language, "totalElapsed")],
+	const elapsedLine = resultCardElapsedLine(
+		totalTime,
+		flow.language,
+		"totalElapsed",
 	);
+	const goal = flow.goals.length === 1 ? flow.goals[0] : undefined;
+	const title = goal
+		? flow.language === "en"
+			? `Flow ${goal.title} complete`
+			: `Flow ${goal.title} 已完成`
+		: flow.language === "en"
+			? "Flow complete"
+			: "Flow 已完成";
+	const suggestionCount = flow.goals.reduce(
+		(count, item) => count + collectSuggestions(item.checks).length,
+		0,
+	);
+	const suggestionLine =
+		suggestionCount > 0
+			? flow.language === "en"
+				? `💡 ${suggestionCount} non-blocking suggestion${suggestionCount > 1 ? "s" : ""} · see report`
+				: `💡 ${suggestionCount} 条非阻塞建议 · 见报告`
+			: undefined;
+	const summaryLines = [
+		...(goal
+			? singleFlowCompleteLines(flow, goal, elapsedLine)
+			: flowCompleteSummaryLines(flow, complete, total, elapsedLine)),
+	];
+	const lines = goal
+		? composeResultCardLines(
+				[
+					summaryLines.slice(0, 2),
+					[
+						...summaryLines.slice(2, -1),
+						...(suggestionLine ? [suggestionLine] : []),
+					],
+				],
+				[elapsedLine],
+			)
+		: [...summaryLines, ...(suggestionLine ? [suggestionLine] : [])];
 	const content = [
 		`[${title}]`,
 		...summaryLines,
@@ -432,34 +532,57 @@ export async function sendFlowCompleteCard(
 	);
 }
 
+function singleFlowCompleteLines(
+	flow: FlowState,
+	goal: FlowState["goals"][number],
+	elapsedLine: string,
+) {
+	const objective = objectiveFromPlan(goal.snapshot ?? "") || goal.title;
+	const head =
+		flow.language === "en"
+			? [`ID: ${flowCommandId(flow.id)}`, `Goal: ${clipText(objective, 120)}`]
+			: [
+					`编号：${flowCommandId(flow.id)}`,
+					`目标：${clipText(objective, 120)}`,
+				];
+	return [
+		...head,
+		...completionChecksLines(goal.checks, flow.language),
+		elapsedLine,
+	];
+}
+
 function flowCompleteSummaryLines(
 	flow: FlowState,
 	complete: number,
 	total: number,
+	elapsedLine: string,
 ) {
-	if (total === 1)
-		return flow.language === "en"
-			? [`Flow: ${flow.title}`, `Status: ${flowStatusLabel(flow.status, "en")}`]
-			: [`Flow：${flow.title}`, `状态：${flowStatusLabel(flow.status, "zh")}`];
-	return flow.language === "en"
-		? [`Flow: ${flow.title}`, `Completed: ${complete}/${total} steps`]
-		: [`Flow：${flow.title}`, `已完成：${complete}/${total} 步`];
+	const summary =
+		flow.language === "en"
+			? [`Flow: ${flow.title}`, `Completed: ${complete}/${total} steps`]
+			: [`Flow：${flow.title}`, `已完成：${complete}/${total} 步`];
+	return composeResultCardLines([summary], [elapsedLine]);
 }
 
 function completeCurrentGoal(
+	ctx: ExtensionContext,
 	dir: string,
 	flow: FlowState,
 	fact: GoalCompletionFact,
 ) {
-	const goalIndex = flow.currentGoal;
-	const completed = completeGoalWithFact(dir, flow, goalIndex, fact);
-	const final = goalIndex === flow.goals.length - 1;
+	const completed = completeGoalWithFact(dir, flow, flow.currentGoal, fact);
+	const final = completed.goals.every((goal) => goal.status === "complete");
+	const ready = final ? null : computeReadyBatch(completed);
 	const saved = writeFlow(dir, {
 		...completed,
 		status: final ? "complete" : "running",
-		currentGoal: final ? goalIndex : goalIndex + 1,
+		completedAt: final ? Date.now() : null,
+		currentGoal: final
+			? completed.goals.length - 1
+			: (ready?.indices[0] ?? completed.currentGoal),
 	});
-	writeFlowHtml(dir, saved);
+	refreshFlowHtmlProjection(ctx, dir, saved);
 	return saved;
 }
 

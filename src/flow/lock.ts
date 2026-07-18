@@ -1,9 +1,12 @@
 import { randomBytes } from "node:crypto";
 import {
+	existsSync,
+	type FSWatcher,
 	linkSync,
 	readFileSync,
 	rmSync,
 	unlinkSync,
+	watch,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -22,6 +25,14 @@ export type FlowLockResult =
 	| { ok: false; owner: FlowLockOwner | undefined };
 
 const LOCK_NAME = ".flow.lock";
+type FlowLockReleaseListener = () => void;
+const lockGlobal = globalThis as typeof globalThis & {
+	__piFlowLockReleaseListeners?: Map<string, Set<FlowLockReleaseListener>>;
+};
+const flowLockReleaseListeners =
+	lockGlobal.__piFlowLockReleaseListeners ??
+	new Map<string, Set<FlowLockReleaseListener>>();
+lockGlobal.__piFlowLockReleaseListeners = flowLockReleaseListeners;
 
 export function acquireFlowLock(dir: string, action: string): FlowLockResult {
 	const owner = { action, pid: process.pid, startedAt: Date.now() };
@@ -38,7 +49,10 @@ export function acquireFlowLock(dir: string, action: string): FlowLockResult {
 				return {
 					ok: true,
 					owner,
-					release: () => unlinkIfExists(lockPath),
+					release: () => {
+						unlinkIfExists(lockPath);
+						emitFlowLockRelease(dir);
+					},
 				};
 			} catch (error) {
 				if (!isAlreadyExists(error)) throw error;
@@ -82,6 +96,55 @@ export async function withFlowLock<T>(
 	} finally {
 		lock.release();
 	}
+}
+
+/** 一次性订阅锁文件消失；先监听再检查，避免释放发生在注册窗口。 */
+export function watchFlowLockRelease(dir: string, onRelease: () => void) {
+	const path = flowLockPath(dir);
+	let watcher: FSWatcher | undefined;
+	let unsubscribe = () => {};
+	let closed = false;
+	const close = () => {
+		if (closed) return;
+		closed = true;
+		unsubscribe();
+		watcher?.close();
+	};
+	const emitIfReleased = () => {
+		if (closed || existsSync(path)) return;
+		close();
+		queueMicrotask(onRelease);
+	};
+	unsubscribe = subscribeFlowLockRelease(dir, emitIfReleased);
+	try {
+		watcher = watch(dir, (_event, name) => {
+			if (name !== null && String(name) !== LOCK_NAME) return;
+			emitIfReleased();
+		});
+	} catch (error) {
+		close();
+		throw error;
+	}
+	emitIfReleased();
+	return close;
+}
+
+function subscribeFlowLockRelease(
+	dir: string,
+	listener: FlowLockReleaseListener,
+) {
+	const listeners = flowLockReleaseListeners.get(dir) ?? new Set();
+	listeners.add(listener);
+	flowLockReleaseListeners.set(dir, listeners);
+	return () => {
+		listeners.delete(listener);
+		if (listeners.size === 0) flowLockReleaseListeners.delete(dir);
+	};
+}
+
+function emitFlowLockRelease(dir: string) {
+	for (const listener of [...(flowLockReleaseListeners.get(dir) ?? [])])
+		listener();
 }
 
 export function flowLockBusyMessage(

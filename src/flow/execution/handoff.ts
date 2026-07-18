@@ -16,10 +16,7 @@ export function readOrGenerateHandoff(
 	const markdown = readFileSync(path, "utf8");
 	const existing = handoffText(markdown).trim();
 	if (existing) return { text: existing, generated: false };
-	const generated = [
-		`完成摘要：${fact.summary}`,
-		`完成验收：${fact.acceptance}`,
-	]
+	const generated = [`完成摘要：${fact.summary}`, `验收：${fact.acceptance}`]
 		.filter((line) => !line.endsWith("："))
 		.join("\n");
 	writeFileSync(path, replaceHandoff(markdown, generated));

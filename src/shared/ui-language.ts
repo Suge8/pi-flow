@@ -27,30 +27,33 @@ const EN_REPLACEMENTS: [string, string][] = [
 		"生成并执行单步或多步任务：/flow [需求|path.md]",
 		"Plan and run a single- or multi-step task: /flow [request|path.md]",
 	],
-	["运行质量检查", "Run quality checks"],
+	[
+		"运行质检或执行后自动质检",
+		"Run quality checks now or automatically after execution",
+	],
+	["咨询顾问模型", "Consult the advisor model"],
 	["⏳ 已有运行中的 Flow\n\n编号：", "⏳ A Flow is already running\n\nID: "],
 	["❌ Flow 步骤会话启动失败", "❌ Flow step session start failed"],
 	["已有活动目标：", "Active Goal already exists: "],
-	["目标计划已生成并启动", "Goal plan generated and started"],
 	["⚠️ 会话名同步失败", "⚠️ Session name sync failed"],
 	["会话名同步失败", "Session name sync failed"],
 	["；已按 ask 处理。", "; handled as ask."],
 	["已按 ask 处理", "Handled as ask"],
 	["⚠️ 生成配置已回退", "⚠️ Generation config fallback"],
 	[
-		"⏳ 质量检查自动循环仍在等待\n\n等待 Pi 自动重试\n未停止",
+		"⏳ 质检自动循环仍在等待\n\n等待 Pi 自动重试\n未停止",
 		"⏳ Quality check auto loop is still waiting\n\nWaiting for Pi to retry automatically\nNot stopped",
 	],
 	[
-		"⚠️ 质量检查自动循环已停止\n\nAI 中断或失败",
+		"⚠️ 质检自动循环已停止\n\nAI 中断或失败",
 		"⚠️ Quality check auto loop stopped\n\nAI interrupted or failed",
 	],
 	[
-		"⚠️ 质量检查自动循环已停止\n\nPi 自动重试耗尽",
+		"⚠️ 质检自动循环已停止\n\nPi 自动重试耗尽",
 		"⚠️ Quality check auto loop stopped\n\nPi automatic retries are exhausted",
 	],
-	["❌ 质量检查失败", "❌ Quality check failed"],
-	["质量检查失败", "Quality check failed"],
+	["❌ 质检失败", "❌ Quality check failed"],
+	["质检失败", "Quality check failed"],
 	["❌ 目标完成事实写入失败", "❌ Goal completion fact write failed"],
 	["目标完成事实写入失败", "Goal completion fact write failed"],
 	["❌ 目标状态保存失败", "❌ Goal state save failed"],
@@ -59,8 +62,8 @@ const EN_REPLACEMENTS: [string, string][] = [
 	["目标取消保存失败", "Goal cancellation save failed"],
 	["⚠️ 目标检查进度同步失败", "⚠️ Goal review sync failed"],
 	["目标校验失败", "Goal validation failed"],
-	["❌ 完成验收启动失败", "❌ Acceptance start failed"],
-	["完成验收启动失败", "Acceptance start failed"],
+	["❌ 验收启动失败", "❌ Acceptance start failed"],
+	["验收启动失败", "Acceptance start failed"],
 	["子进程启动失败", "Child process start failed"],
 	["子进程失败，退出码 ", "Child process failed, exit code "],
 	["目标状态为 ", "Goal status is "],
@@ -81,8 +84,6 @@ const EN_REPLACEMENTS: [string, string][] = [
 	["🛠️ Flow 计划修复中", "🛠️ Flow plan repair in progress"],
 	["完成后会自动校验", "It will be validated automatically when done"],
 	["ℹ️ 当前步骤状态\n\n状态：", "ℹ️ Current step status\n\nStatus: "],
-	["⚠️ Flow 已更新\n\n运行 ", "⚠️ Flow updated\n\nRun "],
-	[" 推进下一步", " to advance to the next step"],
 	[
 		"⚠️ Flow 推进结果未知\n\n结果：",
 		"⚠️ Flow advance result unknown\n\nResult: ",
@@ -102,7 +103,18 @@ const EN_REPLACEMENTS: [string, string][] = [
 	],
 	["当前没有目标。", "No Goal."],
 	["生成计划前先对齐思路？", "Align before generating the plan?"],
-	["先进行多轮问答对齐想法", "Ask alignment questions first"],
+	[
+		"粗对齐：约 10 问内，高杠杆问题优先",
+		"Coarse alignment: ~10 questions, prioritize high-leverage decisions",
+	],
+	[
+		"标准对齐：约 20-30 问，高杠杆 + 关键实现决策",
+		"Standard alignment: ~20-30 questions, high-leverage + key implementation decisions",
+	],
+	[
+		"深度对齐：不设硬上限，高杠杆问题优先",
+		"Deep alignment: no hard cap, prioritize high-leverage questions",
+	],
 	[
 		"跳过对齐，直接根据上下文生成计划",
 		"Skip alignment and generate from context",
@@ -115,12 +127,13 @@ const EN_REPLACEMENTS: [string, string][] = [
 		"Ask key questions before generating the plan.",
 	],
 	[
-		"先确认范围和拆分方式，再生成计划。",
-		"Confirm scope and split before generating the plan.",
+		"先确认范围和拆分方式，再生成计划",
+		"Confirm scope and split before generating the plan",
 	],
-	["等待 AI 提问。", "Waiting for AI to ask."],
+	["计划生成中", "plan generating"],
+	["完成后自动启动", "Starts automatically when done"],
 	[
-		"请基于上面的完成验收和质量检查，给用户一个简洁最终回复：说明完成了什么、验证了什么、剩余风险。不要继续改代码，除非发现检查结果与当前事实冲突。",
+		"请基于上面的验收和质检，给用户一个简洁最终回复：说明完成了什么、验证了什么、剩余风险。不要继续改代码，除非发现检查结果与当前事实冲突。",
 		"Based on the acceptance and quality checks above, give the user a concise final reply: explain what was completed, what was verified, and any remaining risks. Do not continue changing code unless the check results conflict with current facts.",
 	],
 	["用法：", "Usage: "],
@@ -133,47 +146,36 @@ const EN_REPLACEMENTS: [string, string][] = [
 		"This directory already has a Flow plan being generated; wait for it to finish before running /flow again.",
 	],
 	["Flow 计划已生成", "Flow plan generated"],
-	[
-		"计划已开始生成；完成后会自动校验。",
-		"Plan generation started; it will be validated automatically when done.",
-	],
-	[
-		"Flow 计划已开始生成；完成后会自动校验。",
-		"Flow plan generation started; it will be validated automatically when done.",
-	],
 	["目标计划生成已取消。", "Goal plan generation cancelled."],
 	["Flow 计划生成已暂停。", "Flow plan generation paused."],
-	["质量检查通过。", "Quality check passed."],
+	["质检通过。", "Quality check passed."],
 	["非修复项：模型系统错误", "Non-fix item: model system error"],
-	["卡点：质量检查未完成", "Blocker: quality check did not complete"],
+	["卡点：质检未完成", "Blocker: quality check did not complete"],
 	[
-		"将质量检查反馈视为待核实假设，而非事实；先基于当前文件、测试/检查输出和会话约束核实。反馈属实时，修根因并做最小充分修复，避免无关重构、抽象、依赖或风格改动；反馈不成立时，不应用该反馈，并说明依据（文件、命令输出或约束）。处理完反馈后继续完成原目标；不要只处理检查反馈。",
-		"Treat the quality-check feedback as hypotheses to verify, not facts. Verify it against current files, test/check output, and conversation constraints. When feedback is valid, fix the root cause with the smallest sufficient change; avoid unrelated refactors, abstractions, dependencies, or style changes. When feedback is invalid, do not apply it and state the basis (file, command output, or constraint). After handling the feedback, continue completing the original Goal; do not only handle the review feedback.",
+		"将质检反馈视为待核实假设，而非事实；先基于当前文件、测试/检查输出和会话约束核实。反馈属实时，逐条修复全部属实发现，修根因而非表象，同一根因的其他出现点一并修复，修完端到端验证问题已彻底解决再结束，避免无关重构、抽象、依赖或风格改动；反馈不成立时，不应用该反馈，并说明依据（文件、命令输出或约束）。处理完反馈后继续完成原目标；不要只处理检查反馈。",
+		"Treat the quality-check feedback as hypotheses to verify, not facts. Verify it against current files, test/check output, and conversation constraints. When feedback is valid, fix every valid finding at the root cause rather than the symptom, fix other occurrences of the same root cause, and verify end to end that the problems are fully resolved before finishing; avoid unrelated refactors, abstractions, dependencies, or style changes. When feedback is invalid, do not apply it and state the basis (file, command output, or constraint). After handling the feedback, continue completing the original Goal; do not only handle the review feedback.",
 	],
 	[
-		"将质量检查反馈视为待核实假设，而非事实；先基于当前文件、测试/检查输出和会话约束核实。反馈属实时，修根因并做最小充分修复，避免无关重构、抽象、依赖或风格改动；反馈不成立时，不应用该反馈，并说明依据（文件、命令输出或约束）。",
-		"Treat the quality-check feedback as hypotheses to verify, not facts. Verify it against current files, test/check output, and conversation constraints. When feedback is valid, fix the root cause with the smallest sufficient change; avoid unrelated refactors, abstractions, dependencies, or style changes. When feedback is invalid, do not apply it and state the basis (file, command output, or constraint).",
+		"将质检反馈视为待核实假设，而非事实；先基于当前文件、测试/检查输出和会话约束核实。反馈属实时，逐条修复全部属实发现，修根因而非表象，同一根因的其他出现点一并修复，修完端到端验证问题已彻底解决再结束，避免无关重构、抽象、依赖或风格改动；反馈不成立时，不应用该反馈，并说明依据（文件、命令输出或约束）。",
+		"Treat the quality-check feedback as hypotheses to verify, not facts. Verify it against current files, test/check output, and conversation constraints. When feedback is valid, fix every valid finding at the root cause rather than the symptom, fix other occurrences of the same root cause, and verify end to end that the problems are fully resolved before finishing; avoid unrelated refactors, abstractions, dependencies, or style changes. When feedback is invalid, do not apply it and state the basis (file, command output, or constraint).",
 	],
-	["质量检查需要交互模式。", "Quality check requires interactive mode."],
+	["质检需要交互模式。", "Quality check requires interactive mode."],
 	[
-		"请等当前轮次结束后再运行 /review。",
-		"Wait for the current turn to finish before running /review.",
-	],
-	[
-		"质量检查循环已在运行，请等待结果",
+		"质检循环已在运行，请等待结果",
 		"A quality-check loop is already running; wait for the result",
 	],
-	["质量检查已禁用", "Quality check is disabled"],
-	["质量检查中", "Quality check in progress"],
-	["质量检查通过", "Quality check passed"],
-	["质量检查未通过", "Quality check failed"],
-	["质量检查错误", "Quality check error"],
-	["质量修复中", "Quality fix in progress"],
-	["完成验收中", "Acceptance in progress"],
-	["完成验收通过", "Acceptance passed"],
-	["完成验收未通过", "Acceptance failed"],
-	["质量检查", "quality check"],
-	["完成验收", "acceptance"],
+	["质检已禁用", "Quality check is disabled"],
+	["质检中", "Quality check in progress"],
+	["质检通过", "Quality check passed"],
+	["质检未通过", "Quality check failed"],
+	["质检未完成", "Quality check incomplete"],
+	["优化中", "Quality fix in progress"],
+	["验收中", "Acceptance in progress"],
+	["验收通过", "Acceptance passed"],
+	["验收未通过", "Acceptance failed"],
+	["验收未完成", "Acceptance incomplete"],
+	["质检", "quality check"],
+	["验收", "acceptance"],
 	["没有活动目标。", "No active Goal."],
 	["当前目录没有目标。", "No Goal in the current directory."],
 	["当前目录没有 Flow。", "No Flow in the current directory."],
@@ -208,9 +210,9 @@ const EN_REPLACEMENTS: [string, string][] = [
 	["目标已暂停", "Goal paused"],
 	["目标已恢复", "Goal resumed"],
 	["目标已取消", "Goal cancelled"],
+	["编号：", "ID: "],
 	["编号", "ID"],
 	["Flow 已完成", "Flow complete"],
-	["Flow 已更新", "Flow updated"],
 	["Flow 已暂停", "Flow paused"],
 	["网页报告", "Web report"],
 	["结果卡片发送失败", "Result card send failed"],
@@ -310,6 +312,57 @@ export function notifyUser(
 ) {
 	const notify = originalForLanguage(ctx.ui, originalNotify, language);
 	(notify ?? ctx.ui.notify.bind(ctx.ui))(message, type);
+}
+
+export function laneThinkingText(language: Language) {
+	return language === "en" ? "Thinking" : "思考中";
+}
+
+export function laneSilentWarningText(minutes: number, language: Language) {
+	return language === "en"
+		? `⚠ No activity for ${minutes} min`
+		: `⚠ ${minutes} 分钟无活动`;
+}
+
+export function toolDisplayLabel(tool: string, language: Language) {
+	if (language === "en") return tool;
+	if (tool === "read") return "读取";
+	if (tool === "bash") return "操作";
+	if (tool === "edit") return "修改";
+	if (tool === "write") return "写入";
+	return tool;
+}
+
+export function monitorThinkingText(language: Language) {
+	return language === "en" ? "Thinking" : "思考中";
+}
+
+export function monitorCloseHint(language: Language) {
+	return language === "en" ? "esc close" : "esc 关闭";
+}
+
+export const MONITOR_SHORTCUT = { key: "alt+s", label: "Alt+S" } as const;
+
+export function monitorDetailsHint(language: Language) {
+	return language === "en"
+		? `${MONITOR_SHORTCUT.label} details`
+		: `${MONITOR_SHORTCUT.label} 详情`;
+}
+
+export function monitorNoActiveAgentsText(language: Language) {
+	return language === "en"
+		? "No subagents are currently running"
+		: "当前没有运行中的子代理";
+}
+
+export function monitorOpenFailedText(message: string, language: Language) {
+	return language === "en"
+		? `Subagent monitor failed to open: ${message}`
+		: `子代理监控打开失败：${message}`;
+}
+
+export function monitorShortcutDescription(language = runtimeLanguage()) {
+	return language === "en" ? "Open subagent monitor" : "打开子代理监控";
 }
 
 export function formatUserNotice(

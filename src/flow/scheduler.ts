@@ -1,5 +1,7 @@
 import type { FlowState } from "./types.js";
 
+const WRITE_SCOPE_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/u;
+
 export interface ReadyBatch {
 	mode: "serial" | "parallel";
 	indices: number[];
@@ -10,12 +12,15 @@ export function computeReadyBatch(flow: FlowState): ReadyBatch | null {
 	return readyBatch(flow, readyGoalIndices(flow));
 }
 
-export function scopesOverlap(a: string[], b: string[]) {
-	return a.some((left) =>
-		b.some((right) =>
-			scopePrefixOverlaps(scopePrefix(left), scopePrefix(right)),
-		),
-	);
+export function scopesOverlap(a: unknown, b: unknown) {
+	if (!hasScopes(a) || !hasScopes(b)) return true;
+	for (const left of a) {
+		for (const right of b) {
+			if (scopePrefixOverlaps(scopePrefix(left), scopePrefix(right)))
+				return true;
+		}
+	}
+	return false;
 }
 
 function hasActiveBatch(flow: FlowState) {
@@ -94,18 +99,38 @@ function isComplete(flow: FlowState, index: number) {
 }
 
 function hasWriteScope(flow: FlowState, index: number) {
-	return (flow.goals[index]?.writeScope?.length ?? 0) > 0;
+	return hasScopes(flow.goals[index]?.writeScope);
 }
 
-function scopePrefix(scope: string) {
-	const normalized = scope.trim().replaceAll("\\", "/");
-	const wildcard = normalized.indexOf("*");
-	const prefix = wildcard === -1 ? normalized : normalized.slice(0, wildcard);
-	return prefix.replace(/\/+$/u, "");
+function hasScopes(value: unknown): value is unknown[] {
+	return Array.isArray(value) && value.length > 0;
 }
 
-function scopePrefixOverlaps(left: string, right: string) {
-	return containsScope(left, right) || containsScope(right, left);
+function scopePrefix(scope: unknown) {
+	if (scope === "**") return "";
+	if (typeof scope !== "string" || !scope.endsWith("/**")) return undefined;
+	const prefix = scope.slice(0, -3);
+	return prefix.split("/").every(isWriteScopeSegment) ? prefix : undefined;
+}
+
+function isWriteScopeSegment(segment: string) {
+	return (
+		segment !== "." &&
+		segment !== ".." &&
+		WRITE_SCOPE_SEGMENT_PATTERN.test(segment)
+	);
+}
+
+function scopePrefixOverlaps(
+	left: string | undefined,
+	right: string | undefined,
+) {
+	return (
+		left === undefined ||
+		right === undefined ||
+		containsScope(left, right) ||
+		containsScope(right, left)
+	);
 }
 
 function containsScope(parent: string, child: string) {

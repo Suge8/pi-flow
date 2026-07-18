@@ -14,20 +14,41 @@ import {
 import { goFlow, handleGoalCompletionEnd, stopFlow } from "./flow/execution.js";
 import {
 	consumeFlowClarificationInput,
-	ensureFlowGenerationPromptModel,
+	deliverFlowGenerationPrompt,
 	goFlowGeneration,
 	handleGenerationEnd,
-	recordFlowPromptSendFailure,
-	rememberFlowGenerationPromptContext,
+	releaseFlowGenerationSession,
+	resetFlowGenerationRuntime,
 	startFromFile,
 	startGeneration,
 	stripGenerationPromptMarkerFromMessage,
 } from "./flow/generation.js";
-import { flowOwnerForSession } from "./flow/ownership.js";
+import { currentSessionFile, flowOwnerForSession } from "./flow/ownership.js";
 import {
+	activeParallelBatchForDir,
+	cancelParallelBatch,
+} from "./flow/parallel/batch-runner.js";
+import {
+	isAllowedParallelConsoleInput,
+	parallelConsoleInputNotice,
+	quoteCommand,
+} from "./flow/parallel/console.js";
+import {
+	closeParallelLaneBoard,
+	showParallelLaneBoard,
+} from "./flow/parallel/lane-ui.js";
+import { resetPrewalkRuntime } from "./flow/prewalk.js";
+import {
+	releaseFlowContext,
 	rememberCompletionFact,
 	rememberedFlowContext,
+	rememberFlowContext,
+	resetFlowRuntime,
 } from "./flow/runtime.js";
+import {
+	cancelSessionTransition,
+	requestSessionTransition,
+} from "./flow/session-transition.js";
 import { showStatus } from "./flow/status-command.js";
 import { isFlowId } from "./flow/store.js";
 import { tokenize } from "./flow/util.js";
@@ -35,11 +56,13 @@ import { closeFlowGoalWatcher } from "./flow/watcher.js";
 import { cancelGoalRecoveryAfterUserAction } from "./goal/runtime.js";
 import { setGoalActivityBox } from "./shared/activity-frame.js";
 import { generationStartOptions } from "./shared/generation-alignment.js";
+import { formatError } from "./shared/guards.js";
+import { appendVisibleUserInput } from "./shared/internal-prompt.js";
 import {
-	appendVisibleUserInput,
-	sendOrchestrationPrompt,
-} from "./shared/internal-prompt.js";
-import { liveReportUrl } from "./shared/report-server.js";
+	bindLiveReport,
+	releaseReportStatusContext,
+} from "./shared/report-client.js";
+import { registerRuntimePart } from "./shared/runtime-registration.js";
 import {
 	formatUserNotice,
 	installLocalizedUi,
@@ -51,9 +74,7 @@ let currentApi: ExtensionAPI | undefined;
 let completionListenerRegistered = false;
 
 export default function flowExtension(pi: ExtensionAPI) {
-	currentApi = pi;
-	registerWorkerRuntime(pi);
-	registerFlowCompletionListener();
+	registerFlowRuntime(pi);
 	pi.registerCommand("flow", {
 		description:
 			localizeUserText("生成并执行单步或多步任务：/flow [需求|path.md]") ??
@@ -61,47 +82,94 @@ export default function flowExtension(pi: ExtensionAPI) {
 		handler: (args, ctx) =>
 			Promise.resolve(handleFlowCommand(pi, args, ctx)).then(() => undefined),
 	});
-	pi.on("session_start", async (_event, ctx) => {
-		await bindOwnedFlowReportStatus(ctx);
-		await startPrivateWorkerFromEnv(pi, ctx);
+	pi.on("session_start", (_event, ctx) => handleFlowSessionStart(pi, ctx));
+}
+
+export function registerFlowRuntime(pi: ExtensionAPI) {
+	registerRuntimePart(pi, "flow:initialize", () => {
+		resetFlowGenerationRuntime();
+		resetFlowRuntime();
+		resetPrewalkRuntime();
+		currentApi = pi;
+		registerWorkerRuntime(pi);
+		registerFlowCompletionListener();
 	});
-	pi.on("message_end", (event, ctx) =>
-		stripGenerationPromptMarkerFromMessage(event, ctx),
-	);
-	pi.on("agent_end", async (event, ctx) => {
-		const generated = await handleGenerationEnd(pi, ctx, event);
-		if (generated?.autoStart) {
-			if (canAutoStartFlow(generated.startContext))
-				await goFlow(pi, generated.startContext, generated.id);
-			else notifyAutoStartUnavailable(ctx, generated);
-			return;
-		}
-		if (!isWorkerContext(ctx)) await handleGoalCompletionEnd(pi, ctx);
+	registerRuntimePart(pi, "flow:message_end", () => {
+		pi.on("message_end", (event, ctx) =>
+			stripGenerationPromptMarkerFromMessage(event, ctx),
+		);
 	});
-	pi.on("input", async (event, ctx) => {
-		if (event.source === "extension") return;
-		const action = consumeFlowClarificationInput(event.text, ctx);
-		if (!action) return;
-		setGoalActivityBox(ctx, action.activityBox);
-		if (action.kind === "handled") return { action: "handled" as const };
-		if (action.showUserInput)
-			appendVisibleUserInput(pi, event.text, {
-				streamingBehavior: event.streamingBehavior,
-			});
-		if (!(await ensureFlowGenerationPromptModel(pi, ctx, action)))
-			return { action: "handled" as const };
-		const sent = await sendOrchestrationPrompt(pi, ctx, action.prompt, {
-			followUp: true,
-			errorPrefix: "Flow 计划澄清提示发送失败",
+	registerRuntimePart(pi, "flow:agent_end", () => {
+		pi.on("agent_end", async (event, ctx) => {
+			const generated = await handleGenerationEnd(pi, ctx, event);
+			if (generated?.autoStart) {
+				requestGeneratedFlowStart(pi, ctx, generated);
+				return;
+			}
+			if (!isWorkerContext(ctx)) await handleGoalCompletionEnd(pi, ctx);
 		});
-		if (sent) rememberFlowGenerationPromptContext(action, ctx);
-		else recordFlowPromptSendFailure(action, ctx);
-		return { action: "handled" as const };
 	});
-	pi.on("session_shutdown", (_event, ctx) => {
-		const owner = flowOwnerForSession(ctx);
-		if (owner) closeFlowGoalWatcher(owner.dir);
+	registerRuntimePart(pi, "flow:input", () => {
+		pi.on("input", async (event, ctx) => {
+			if (event.source === "extension") return;
+			const consoleFlow = parallelConsoleFlowForInput(ctx);
+			if (consoleFlow) {
+				if (isAllowedParallelConsoleInput(event.text, consoleFlow)) return;
+				notifyUser(
+					ctx,
+					parallelConsoleInputNotice(consoleFlow),
+					"info",
+					consoleFlow.language,
+				);
+				return { action: "handled" as const };
+			}
+			const action = consumeFlowClarificationInput(event.text, ctx);
+			if (!action) return;
+			setGoalActivityBox(ctx, action.activityBox);
+			if (action.kind === "handled") return { action: "handled" as const };
+			const promptAction =
+				action.kind === "pending" ? await action.continuation : action;
+			if (!promptAction) return { action: "handled" as const };
+			setGoalActivityBox(ctx, promptAction.activityBox);
+			if (promptAction.showUserInput)
+				appendVisibleUserInput(pi, event.text, {
+					streamingBehavior: event.streamingBehavior,
+				});
+			await deliverFlowGenerationPrompt(
+				pi,
+				ctx,
+				promptAction,
+				"Flow 计划澄清提示发送失败",
+			);
+			return { action: "handled" as const };
+		});
 	});
+	registerRuntimePart(pi, "flow:session_shutdown", () => {
+		pi.on("session_shutdown", (_event, ctx) => {
+			const sessionFile = currentSessionFile(ctx);
+			cancelSessionTransition(sessionFile);
+			releaseFlowContext(sessionFile);
+			releaseFlowGenerationSession(ctx);
+			releaseReportStatusContext(ctx);
+			closeParallelLaneBoard(ctx);
+			const owner = flowOwnerForSession(ctx);
+			if (!owner) return;
+			if (
+				owner.flow.parallelRun?.consoleSessionFile === currentSessionFile(ctx)
+			)
+				cancelParallelBatch(owner.dir);
+			closeFlowGoalWatcher(owner.dir);
+		});
+	});
+}
+
+export async function handleFlowSessionStart(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+) {
+	await bindOwnedFlowReportStatus(ctx);
+	await startPrivateWorkerFromEnv(pi, ctx);
+	showOwnedParallelConsole(ctx);
 }
 
 function registerFlowCompletionListener() {
@@ -117,24 +185,46 @@ function registerFlowCompletionListener() {
 	});
 }
 
-async function bindOwnedFlowReportStatus(ctx: ExtensionContext) {
+function bindOwnedFlowReportStatus(ctx: ExtensionContext) {
 	try {
 		const owner = flowOwnerForSession(ctx);
 		if (owner)
-			await liveReportUrl(
-				ctx,
-				join(owner.dir, "flow.html"),
-				owner.flow.language,
-			);
+			bindLiveReport(ctx, join(owner.dir, "flow.html"), owner.flow.language);
 	} catch {}
 }
 
-async function handleFlowCommand(
+function showOwnedParallelConsole(ctx: ExtensionContext) {
+	try {
+		if (isWorkerContext(ctx)) return;
+		const owner = flowOwnerForSession(ctx);
+		const run = owner?.flow.parallelRun;
+		if (!owner || !run || run.consoleSessionFile !== currentSessionFile(ctx))
+			return;
+		if (activeParallelBatchForDir(owner.dir)) return;
+		showParallelLaneBoard(ctx, owner.dir, owner.flow, run.goalIndexes);
+	} catch {}
+}
+
+function parallelConsoleFlowForInput(ctx: ExtensionContext) {
+	try {
+		if (isWorkerContext(ctx)) return undefined;
+		const owner = flowOwnerForSession(ctx);
+		const run = owner?.flow.parallelRun;
+		if (!owner || !run || run.consoleSessionFile !== currentSessionFile(ctx))
+			return undefined;
+		return owner.flow;
+	} catch {
+		return undefined;
+	}
+}
+
+export async function handleFlowCommand(
 	pi: ExtensionAPI,
 	args: string,
 	ctx: ExtensionCommandContext,
 ) {
 	installLocalizedUi(ctx);
+	rememberFlowContext(ctx);
 	cancelGoalRecoveryAfterUserAction(ctx);
 	const tokens = tokenize(args.trim());
 	const [command, ...rest] = tokens;
@@ -178,10 +268,44 @@ function isUnsafePathArgument(arg: string) {
 	);
 }
 
-function canAutoStartFlow(
-	ctx: ExtensionCommandContext | undefined,
-): ctx is ExtensionCommandContext {
-	return typeof ctx?.newSession === "function";
+function requestGeneratedFlowStart(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	flow: { id: string; language: "zh" | "en" },
+) {
+	const flowContext = rememberedFlowContext(currentSessionFile(ctx));
+	if (
+		!flowContext ||
+		!requestSessionTransition({
+			key: `flow:${flow.id}`,
+			ctx: flowContext,
+			run: async () => {
+				await goFlow(pi, flowContext, flow.id);
+			},
+			onError: (error) =>
+				notifyAutoStartFailed(flowContext, flow, formatError(error)),
+		})
+	)
+		notifyAutoStartUnavailable(ctx, flow);
+}
+
+function notifyAutoStartFailed(
+	ctx: ExtensionCommandContext,
+	flow: { id: string; language: "zh" | "en" },
+	error: string,
+) {
+	const command = `/flow go ${flow.id}`;
+	const message =
+		flow.language === "en"
+			? formatUserNotice("❌", `Flow ${flow.id} could not auto-start`, [
+					error,
+					`Run ${quoteCommand(command)} to retry`,
+				])
+			: formatUserNotice("❌", `Flow ${flow.id} 自动启动失败`, [
+					error,
+					`运行 ${quoteCommand(command)} 重试`,
+				]);
+	notifyUser(ctx, message, "info", flow.language);
 }
 
 function notifyAutoStartUnavailable(
@@ -205,11 +329,11 @@ function autoStartUnavailableNotice(
 	return language === "en"
 		? formatUserNotice("⚠️", `Flow ${id} plan generated`, [
 				"Pi cannot auto-start it from here",
-				`Run ${command} to start`,
+				`Run ${quoteCommand(command)} to start`,
 			])
 		: formatUserNotice("⚠️", `Flow ${id} 计划已生成`, [
 				"当前会话不能自动启动",
-				`运行 ${command} 启动`,
+				`运行 ${quoteCommand(command)} 启动`,
 			]);
 }
 
