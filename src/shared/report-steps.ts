@@ -1,18 +1,22 @@
+import type { CheckboxAttribution } from "../flow/types.js";
 import type { PlanStep } from "../plan/view.js";
 import type { Language } from "./config.js";
 import { copy } from "./copy.js";
 import { inline } from "./html-markdown.js";
-import { TONE_TEXT, type Tone } from "./report-blocks.js";
+import {
+	escapeHtml,
+	modelWithThinking,
+	TONE,
+	type Tone,
+	TYPE,
+} from "./report-blocks.js";
 import { reportIcon } from "./report-icons.js";
+import { shortModel } from "./reviewer-pool.js";
 
 export interface StepListOptions {
-	/** details data-key 前缀，跨卡片唯一（如 "step" / "g0-step"）。 */
-	keyPrefix: string;
-	/** 是否自动展开第一个未完成步骤的细节（仅当前执行中的清单开）。 */
-	expandCurrent: boolean;
-	/** 追加在清单末尾的 li（如审查终点节点）；存在时末步连线继续向下。 */
-	tail?: string;
 	language?: Language;
+	/** 勾级归因（与 steps 下标对齐）：谁在何时把该步勾成完成；无归因不渲染。 */
+	attributions?: (CheckboxAttribution | undefined)[];
 }
 
 export function stepList(steps: PlanStep[], options: StepListOptions) {
@@ -20,32 +24,51 @@ export function stepList(steps: PlanStep[], options: StepListOptions) {
 	const activeIndex = steps.findIndex((step) => step.status === "active");
 	const currentIndex =
 		activeIndex === -1 ? steps.findIndex((step) => !step.done) : activeIndex;
-	const rows = steps
-		.map((step, index) => stepRow(step, index, steps, currentIndex, options))
+	return `<div data-step-flow-container class="relative">
+<ol data-step-flow>${stepRows(steps, 0, currentIndex, options)}</ol>
+</div>`;
+}
+
+function stepRows(
+	steps: PlanStep[],
+	offset: number,
+	currentIndex: number,
+	options: StepListOptions,
+) {
+	return steps
+		.map((step, index) =>
+			stepRow(
+				step,
+				offset + index,
+				index === steps.length - 1,
+				currentIndex,
+				options,
+			),
+		)
 		.join("");
-	return `<ol class="mt-5">${rows}${options.tail ?? ""}</ol>`;
 }
 
 function stepRow(
 	step: PlanStep,
 	index: number,
-	steps: PlanStep[],
+	isLast: boolean,
 	currentIndex: number,
 	options: StepListOptions,
 ) {
-	const isLast = index === steps.length - 1 && !options.tail;
 	const isCurrent = index === currentIndex;
 	const state = stepState(step, index, options.language ?? "zh");
 	const connector = isLast
 		? ""
 		: `<span data-rough-line data-vertical data-tone="${step.done ? "green" : "gray"}" class="absolute bottom-0 left-[17px] top-11 w-1"></span>`;
 	const detail = step.detail ? stepDetailText(step.detail) : "";
-	return `<li class="relative flex gap-4 ${isLast ? "" : "pb-6"}">
+	return `<li class="relative ${isLast ? "" : "pb-6"}">
 ${connector}
-<span data-rough-node data-tone="${state.tone}" class="grid h-9 w-9 shrink-0 place-items-center text-xs font-bold ${TONE_TEXT[state.tone]}">${stepGlyph(state.glyph)}</span>
-<div class="min-w-0 flex-1 pt-1.5">
-<p class="flex flex-wrap items-center gap-2 text-sm font-semibold leading-5 ${isCurrent ? "text-stone-900" : "text-stone-700"}"><span>${inline(step.title)}</span>${stateBadge(state.label, state.tone)}</p>
+<div data-step-row data-step-index="${index}" class="flex min-w-0 gap-4">
+<span data-rough-node data-tone="${state.tone}" class="grid h-9 w-9 shrink-0 place-items-center text-xs font-bold ${TONE[state.tone].text}">${stepGlyph(state.glyph)}</span>
+<div data-step-copy class="min-w-0 flex-1 pt-1.5">
+<p class="flex flex-wrap items-center gap-2 text-sm font-semibold leading-5 ${isCurrent ? "text-stone-900 dark:text-stone-100" : "text-stone-700 dark:text-stone-300"}"><span>${inline(step.title)}</span>${stateBadge(state.label, state.tone)}${attributionText(options.attributions?.[index])}</p>
 ${detail}
+</div>
 </div>
 </li>`;
 }
@@ -70,9 +93,22 @@ function stepGlyph(glyph: string) {
 
 function stateBadge(label: string, tone: Tone) {
 	if (tone === "green" || tone === "gray") return "";
-	return `<span class="text-[11px] font-medium ${TONE_TEXT[tone]}">${label}</span>`;
+	return `<span class="${TYPE.meta} font-medium ${TONE[tone].text}">${label}</span>`;
+}
+
+/** 勾级归因行内文字：🧠 模型 强度：时间；轻于标题两个层级。 */
+function attributionText(attribution: CheckboxAttribution | undefined) {
+	if (!attribution) return "";
+	const time = new Date(attribution.at);
+	const body = `${modelWithThinking(shortModel(attribution.model), attribution.thinking)}<span class="text-stone-300 dark:text-stone-600">：</span><time datetime="${escapeHtml(time.toISOString())}" class="tabular-nums">${escapeHtml(attributionTime(time))}</time>`;
+	return `<span class="inline-flex shrink-0 items-center gap-1 text-[10.5px] font-normal leading-none text-stone-400 dark:text-stone-500"><span class="text-indigo-400/70 dark:text-indigo-300/50">${reportIcon("brain", "h-3 w-3")}</span>${body}</span>`;
+}
+
+function attributionTime(date: Date) {
+	const pad = (value: number) => String(value).padStart(2, "0");
+	return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function stepDetailText(detail: string) {
-	return `<p class="mt-1 max-w-[46ch] text-xs leading-5 text-stone-500">${inline(detail)}</p>`;
+	return `<p data-step-detail class="mt-1 max-w-[46ch] text-xs leading-5 text-stone-500 dark:text-stone-400">${inline(detail)}</p>`;
 }
