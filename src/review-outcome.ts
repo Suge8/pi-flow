@@ -1,29 +1,25 @@
+import {
+	APPLY_INSTRUCTION,
+	APPLY_INSTRUCTION_EN,
+} from "./shared/check-feedback.js";
 import type { Language } from "./shared/config.js";
-import { parseCheckVerdictLine } from "./shared/review-verdict.js";
+import {
+	type PassOutputIssue,
+	parseCheckVerdictLine,
+	passOutputIssue,
+} from "./shared/review-verdict.js";
 
-export const APPLY_INSTRUCTION =
-	"将质量检查反馈视为待核实假设，而非事实；先基于当前文件、测试/检查输出和会话约束核实。反馈属实时，修根因并做最小充分修复，避免无关重构、抽象、依赖或风格改动；反馈不成立时，不应用该反馈，并说明依据（文件、命令输出或约束）。";
-const APPLY_INSTRUCTION_EN =
-	"Treat the quality-check feedback as hypotheses to verify, not facts. Verify it against current files, test/check output, and conversation constraints. When feedback is valid, fix the root cause with the smallest sufficient change; avoid unrelated refactors, abstractions, dependencies, or style changes. When feedback is invalid, do not apply it and state the basis (file, command output, or constraint).";
-
-export function applyInstruction(language: Language = "zh") {
-	return language === "en" ? APPLY_INSTRUCTION_EN : APPLY_INSTRUCTION;
-}
-
-export function reviewFeedbackInstruction(
-	language: Language = "zh",
-	goalScoped = false,
-) {
-	const base = applyInstruction(language);
-	if (!goalScoped) return base;
-	return language === "en"
-		? `${base} After handling the feedback, continue completing the original Goal; do not only handle the review feedback.`
-		: `${base} 处理完反馈后继续完成原目标；不要只处理检查反馈。`;
-}
+export { reviewFeedbackInstruction } from "./shared/check-feedback.js";
 
 export type ReviewOutcome =
-	| { kind: "pass"; summary: string; infraErrors?: string }
-	| { kind: "needs_changes"; review: string; infraErrors?: string }
+	| { kind: "pass"; summary: string; details?: string; infraErrors?: string }
+	| {
+			kind: "needs_changes";
+			review: string;
+			/** 完整展示/落盘详情；review 只保留需要修复的失败反馈。 */
+			details?: string;
+			infraErrors?: string;
+	  }
 	| { kind: "system_error"; notification: string }
 	| { kind: "cancelled"; notification: string };
 
@@ -39,8 +35,12 @@ export function parseReviewOutcome(
 	}
 	const [firstLine = "", ...rest] = review.split(/\r?\n/);
 	const verdict = parseCheckVerdictLine(firstLine);
-	if (verdict === "PASS")
-		return { kind: "pass", summary: rest.join("\n").trim() };
+	if (verdict === "PASS") {
+		const summary = rest.join("\n").trim();
+		const issue = passOutputIssue(summary);
+		if (issue) return systemError(reviewCopy(language).missingEvidence(issue));
+		return { kind: "pass", summary };
+	}
 	if (verdict === "FAIL") return { kind: "needs_changes", review };
 	const actual = firstLine.trim() || reviewCopy(language).emptyLine;
 	return systemError(reviewCopy(language).invalidFormat(actual));
@@ -53,7 +53,7 @@ export function reviewTimeoutOutcome(language: Language = "zh"): ReviewOutcome {
 export function reviewAbortedOutcome(language: Language = "zh"): ReviewOutcome {
 	return {
 		kind: "cancelled",
-		notification: language === "en" ? "Review cancelled" : "质量检查已取消。",
+		notification: language === "en" ? "Review cancelled" : "质检已取消。",
 	};
 }
 
@@ -69,7 +69,8 @@ export function stripApplyInstruction(text: string) {
 function isReviewProcessFailure(review: string) {
 	return (
 		review.startsWith("Review failed to start:") ||
-		review.startsWith("Review failed with exit")
+		review.startsWith("Review failed with exit") ||
+		review.startsWith("Review terminated by signal")
 	);
 }
 
@@ -87,6 +88,8 @@ function reviewCopy(language: Language) {
 				emptyLine: "(empty)",
 				invalidFormat: (actual: string) =>
 					`review output format invalid: first line must be PASS or FAIL; actual: ${actual}`,
+				missingEvidence: (issue: PassOutputIssue) =>
+					`review output format invalid: ${REVIEW_PASS_ISSUE_EN[issue]}`,
 			}
 		: {
 				emptyOutput: "review 输出为空：stdout 为空。无检查结论。",
@@ -94,8 +97,28 @@ function reviewCopy(language: Language) {
 				emptyLine: "（空）",
 				invalidFormat: (actual: string) =>
 					`review 输出格式无效：第一行必须是 PASS 或 FAIL；实际是：${actual}`,
+				missingEvidence: (issue: PassOutputIssue) =>
+					`review 输出格式无效：${REVIEW_PASS_ISSUE_ZH[issue]}`,
 			};
 }
+
+const REVIEW_PASS_ISSUE_ZH: Record<PassOutputIssue, string> = {
+	missing_line: "PASS 缺少证据锚点行（证据：文件=…；命令=…）",
+	missing_summary: "PASS 缺少摘要行（证据行前必须有一行极简摘要）",
+	missing_file_anchor: "PASS 证据行缺少文件段（文件=至少一个带扩展名的路径）",
+	missing_command_anchor: "PASS 证据行缺少命令段（命令=实际运行的命令）",
+};
+
+const REVIEW_PASS_ISSUE_EN: Record<PassOutputIssue, string> = {
+	missing_line:
+		"PASS is missing the evidence anchor line (Evidence: files=...; commands=...)",
+	missing_summary:
+		"PASS is missing the summary line (one terse summary line must precede the evidence line)",
+	missing_file_anchor:
+		"the PASS evidence line has no files segment (files=at least one path with an extension)",
+	missing_command_anchor:
+		"the PASS evidence line has no commands segment (commands=commands actually run)",
+};
 
 function removeWhitespaceInsensitive(text: string, needle: string) {
 	let result = "";

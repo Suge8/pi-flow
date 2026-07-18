@@ -5,34 +5,30 @@ import {
 	renameSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
-import process from "node:process";
+import { dirname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { CheckboxAttribution } from "../flow/types.js";
 import { reviewToggles } from "../shared/config.js";
 import { formatError, isRecord } from "../shared/guards.js";
-import { settledChecks } from "../shared/report-review.js";
-import type { ReviewerProgress } from "../shared/reviewer-pool.js";
+import { discardActiveChecks } from "../shared/report-review.js";
 import { formatUserNotice, notifyUser } from "../shared/ui-language.js";
 import type {
 	ActiveGoal,
 	ReviewHistoryEntry,
 	StatusContext,
 } from "./runtime.js";
+import { GOAL_STATE_ENTRY_TYPE } from "./session-entry.js";
 import type {
-	CheckModelSnapshot,
+	ActiveCheckRun,
 	CheckRound,
 	CompletionCursor,
 	GoalArtifactStatus,
 	GoalChecks,
+	GoalHandoff,
 } from "./types.js";
 import { outcomeFromPlan } from "./validator.js";
 
-export const GOAL_STATE_ENTRY_TYPE = "goal-state";
-const STATE_FILE = join(
-	process.env.PI_CODING_AGENT_DIR ??
-		join(process.env.HOME ?? ".", ".pi", "agent"),
-	"pi-goal-state.json",
-);
+export { GOAL_STATE_ENTRY_TYPE } from "./session-entry.js";
 
 export interface GoalStateEntryData {
 	goal?: ActiveGoal | null;
@@ -47,14 +43,12 @@ export function persistGoal(
 }
 
 export function clearPersistedGoal(
-	cwd: string,
 	ctx: StatusContext | undefined,
 	pi: ExtensionAPI | undefined,
 ): void {
 	appendCustomEntry<GoalStateEntryData>(ctx, pi, GOAL_STATE_ENTRY_TYPE, {
 		goal: null,
 	});
-	clearLegacyPersistedGoal(cwd);
 }
 
 export function appendCustomEntry<T>(
@@ -73,28 +67,11 @@ export function appendCustomEntry<T>(
 	pi?.appendEntry<T>(customType, data);
 }
 
-function readState(): Record<string, unknown> {
-	if (!existsSync(STATE_FILE)) return {};
-	try {
-		const parsed = JSON.parse(readFileSync(STATE_FILE, "utf8")) as unknown;
-		return isRecord(parsed) ? parsed : {};
-	} catch {
-		return {};
-	}
-}
-
-function clearLegacyPersistedGoal(cwd: string): void {
-	if (!existsSync(STATE_FILE)) return;
-	const goals = readState();
-	delete goals[cwd];
-	mkdirSync(dirname(STATE_FILE), { recursive: true });
-	writeFileSync(STATE_FILE, `${JSON.stringify(goals, null, 2)}\n`);
-}
-
 interface GoalCheckLive {
 	phase: "acceptance" | "quality";
-	progress: ReviewerProgress[];
+	active: ActiveCheckRun | null;
 	rounds?: ReviewHistoryEntry[];
+	consulting?: boolean;
 }
 
 export interface StepRuntimeState {
@@ -105,7 +82,14 @@ export interface StepRuntimeState {
 	sessionName: string | null;
 	result: { summary: string | null; outcome: string | null };
 	checks: GoalChecks;
+	checkAttribution?: Record<string, CheckboxAttribution>;
+	handoff?: GoalHandoff | null;
 	updatedAt: number;
+}
+
+interface RuntimeArtifactRef {
+	artifactPlanPath?: string;
+	artifactStatePath?: string;
 }
 
 export function saveActiveGoal(input: {
@@ -123,28 +107,49 @@ export function syncStandaloneGoalArtifact(
 	ctx: StatusContext,
 	goal: ActiveGoal,
 	live: GoalCheckLive | undefined,
-	acceptance = "",
-): void {
-	if (!goal.artifactDir) return;
+	options: {
+		acceptance?: string;
+		expectedGeneration?: string | null;
+		preserveChecks?: boolean;
+		completionCursor?: CompletionCursor;
+		handoff?: GoalHandoff;
+	} = {},
+): boolean {
+	if (!hasRuntimeArtifact(goal)) return true;
 	try {
-		const state = readStepRuntimeState(goal.artifactDir);
-		const markdown = readFileSync(stepPlanPath(goal.artifactDir), "utf8");
+		const state = readGoalRuntimeState(goal);
+		if (
+			options.expectedGeneration !== undefined &&
+			checkpointGeneration(state.checks, live) !== options.expectedGeneration
+		)
+			return false;
+		const markdown = readFileSync(runtimePlanPath(goal), "utf8");
 		const outcome = outcomeFromPlan(markdown);
-		writeStepRuntimeState(goal.artifactDir, {
+		writeGoalRuntimeState(goal, {
 			...state,
 			status: artifactStatus(goal.status),
+			...(goal.checkAttribution !== undefined
+				? { checkAttribution: goal.checkAttribution }
+				: {}),
+			...(options.completionCursor !== undefined
+				? { completionCursor: options.completionCursor }
+				: {}),
+			...(options.handoff ? { handoff: options.handoff } : {}),
 			runtimeGoalId: goal.id,
 			result: {
-				summary: acceptance || state.result.summary,
+				summary: options.acceptance || state.result.summary,
 				outcome: outcome || state.result.outcome,
 			},
-			checks: artifactChecks(
-				goal.stateReviewHistory,
-				goal.qualityReviewHistory,
-				state.checks,
-				live,
-			),
+			checks: options.preserveChecks
+				? state.checks
+				: artifactChecks(
+						goal.stateReviewHistory,
+						goal.qualityReviewHistory,
+						state.checks,
+						live,
+					),
 		});
+		return true;
 	} catch (error) {
 		notifyUser(
 			ctx,
@@ -152,6 +157,7 @@ export function syncStandaloneGoalArtifact(
 			"info",
 			goal.language,
 		);
+		return false;
 	}
 }
 
@@ -159,13 +165,13 @@ export function cancelStandaloneGoalArtifact(
 	ctx: StatusContext,
 	goal: ActiveGoal,
 ): void {
-	if (!goal.artifactDir) return;
+	if (!hasRuntimeArtifact(goal)) return;
 	try {
-		const state = readStepRuntimeState(goal.artifactDir);
-		writeStepRuntimeState(goal.artifactDir, {
+		const state = readGoalRuntimeState(goal);
+		writeGoalRuntimeState(goal, {
 			...state,
 			status: "cancelled",
-			checks: settledChecks(state.checks),
+			checks: discardActiveChecks(state.checks),
 		});
 	} catch (error) {
 		notifyUser(
@@ -187,9 +193,13 @@ export function artifactChecks(
 	return {
 		acceptance: {
 			enabled: toggles.acceptance,
-			rounds: acceptanceRounds.map(checkRound),
-			active:
-				live?.phase === "acceptance" ? modelSnapshots(live.progress) : null,
+			rounds: acceptanceRounds.length
+				? acceptanceRounds.map(checkRound)
+				: (prior?.acceptance.rounds ?? []),
+			active: live?.phase === "acceptance" ? live.active : null,
+			...(live?.phase === "acceptance" && live.consulting
+				? { consulting: true }
+				: {}),
 		},
 		quality: {
 			enabled: toggles.quality,
@@ -199,34 +209,72 @@ export function artifactChecks(
 					: qualityRounds.length
 						? qualityRounds.map(checkRound)
 						: (prior?.quality.rounds ?? []),
-			active: live?.phase === "quality" ? modelSnapshots(live.progress) : null,
+			active: live?.phase === "quality" ? live.active : null,
+			...(live?.phase === "quality" && live.consulting
+				? { consulting: true }
+				: {}),
 		},
 	};
 }
 
-export function readStepRuntimeState(dir: string): StepRuntimeState {
-	const parsed = JSON.parse(
-		readFileSync(stepStatePath(dir), "utf8"),
-	) as unknown;
-	if (!isRecord(parsed)) throw new Error("state.json 必须是对象");
+export function readGoalRuntimeState(
+	ref: RuntimeArtifactRef,
+): StepRuntimeState {
+	return readRuntimeStatePath(runtimeStatePath(ref));
+}
+
+export function writeGoalRuntimeState(
+	ref: RuntimeArtifactRef,
+	state: StepRuntimeState,
+) {
+	return writeRuntimeStatePath(runtimeStatePath(ref), state);
+}
+
+function readRuntimeStatePath(path: string): StepRuntimeState {
+	const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+	if (!isRecord(parsed)) throw new Error(`${path} 必须是对象`);
 	return parsed as unknown as StepRuntimeState;
 }
 
-export function writeStepRuntimeState(dir: string, state: StepRuntimeState) {
-	mkdirSync(dir, { recursive: true });
-	const next = { ...state, updatedAt: Date.now() };
-	const tmp = join(dir, "state.json.tmp");
+function writeRuntimeStatePath(path: string, state: StepRuntimeState) {
+	mkdirSync(dirname(path), { recursive: true });
+	const previous = readJsonObject(path);
+	const next = { ...previous, ...state, updatedAt: Date.now() };
+	const tmp = `${path}.tmp`;
 	writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`);
-	renameSync(tmp, stepStatePath(dir));
+	renameSync(tmp, path);
 	return next;
 }
 
-export function stepStatePath(dir: string) {
-	return join(dir, "state.json");
+function readJsonObject(path: string) {
+	if (!existsSync(path)) return {};
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+		return isRecord(parsed) ? parsed : {};
+	} catch {
+		return {};
+	}
 }
 
-function stepPlanPath(dir: string) {
-	return join(dir, "plan.md");
+function checkpointGeneration(
+	checks: GoalChecks,
+	live: GoalCheckLive | undefined,
+) {
+	return live ? (checks[live.phase].active?.generation ?? null) : null;
+}
+
+function hasRuntimeArtifact(ref: RuntimeArtifactRef) {
+	return Boolean(ref.artifactStatePath);
+}
+
+function runtimeStatePath(ref: RuntimeArtifactRef) {
+	if (ref.artifactStatePath) return ref.artifactStatePath;
+	throw new Error("目标缺少 state artifact");
+}
+
+function runtimePlanPath(ref: RuntimeArtifactRef) {
+	if (ref.artifactPlanPath) return ref.artifactPlanPath;
+	throw new Error("目标缺少 plan artifact");
 }
 
 function artifactStatus(
@@ -243,15 +291,9 @@ function checkRound(entry: ReviewHistoryEntry): CheckRound {
 		summary: entry.summary,
 		...(entry.details ? { details: entry.details } : {}),
 		...(entry.models ? { models: entry.models } : {}),
+		...(entry.advisor ? { advisor: entry.advisor } : {}),
+		...(entry.elapsedMs !== undefined ? { elapsedMs: entry.elapsedMs } : {}),
 	};
-}
-
-function modelSnapshots(progress: ReviewerProgress[]): CheckModelSnapshot[] {
-	return progress.map((item) => ({
-		label: item.label,
-		status: item.status,
-		...(item.summary ? { summary: item.summary } : {}),
-	}));
 }
 
 function goalStateSaveFailedNotice(error: string, language: "zh" | "en") {

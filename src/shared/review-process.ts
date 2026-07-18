@@ -1,7 +1,8 @@
+import { collectAssistantEvents } from "./assistant-event-stream.js";
 import { childExtensionArgs } from "./child-extensions.js";
 import type { ReviewerConfig } from "./config.js";
-import { serviceTierArgs } from "./service-tier.js";
-import { runSpawnProcess } from "./spawn-runner.js";
+import { openaiFastArgs } from "./openai-fast.js";
+import { runSpawnProcess, type SpawnRunnerResult } from "./spawn-runner.js";
 
 export type ReviewProcessResult =
 	| { kind: "output"; text: string }
@@ -14,8 +15,15 @@ export async function runReviewProcess(
 	prompt: string,
 	cwd: string,
 	signal?: AbortSignal,
+	onEvent?: (event: unknown) => void,
 ): Promise<string | null> {
-	const result = await runReviewProcessResult(config, prompt, cwd, signal);
+	const result = await runReviewProcessResult(
+		config,
+		prompt,
+		cwd,
+		signal,
+		onEvent,
+	);
 	if (result.kind === "output") return result.text;
 	if (result.kind === "empty_output") return "";
 	return null;
@@ -26,13 +34,16 @@ export async function runReviewProcessResult(
 	prompt: string,
 	cwd: string,
 	signal?: AbortSignal,
+	onEvent?: (event: unknown) => void,
 ): Promise<ReviewProcessResult> {
+	const events = collectAssistantEvents(onEvent);
 	const result = await runSpawnProcess({
 		command: config.command,
 		args: reviewProcessArgs(config, prompt),
 		cwd,
 		timeoutMs: config.timeoutMs,
 		signal,
+		onLine: events.onLine,
 	});
 	if (result.kind === "aborted") return { kind: "aborted" };
 	if (result.kind === "timeout") return { kind: "timeout" };
@@ -42,20 +53,32 @@ export async function runReviewProcessResult(
 			text: `Review failed to start: ${result.error.message}`,
 		};
 	}
+	const text = events.text();
 	if (result.code === 0) {
-		return result.stdout.trim()
-			? { kind: "output", text: result.stdout }
+		return text.trim()
+			? { kind: "output", text }
 			: { kind: "empty_output", stderr: result.stderr.trim() };
 	}
+	const output = result.stderr.trim() || text.trim();
+	const reason = reviewFailureReason(result);
 	return {
 		kind: "output",
-		text: `Review failed with exit ${result.code}.\n${result.stderr.trim() || result.stdout.trim()}`,
+		text: output ? `${reason}\n${output}` : reason,
 	};
+}
+
+function reviewFailureReason(
+	result: Extract<SpawnRunnerResult, { kind: "close" }>,
+) {
+	if (result.code !== null) return `Review failed with exit ${result.code}.`;
+	return `Review terminated by signal ${result.signal ?? "unknown"}.`;
 }
 
 export function reviewProcessArgs(config: ReviewerConfig, prompt: string) {
 	return [
 		"--no-session",
+		"--mode",
+		"json",
 		...childExtensionArgs(config.extensions),
 		"--model",
 		config.model,
@@ -65,7 +88,7 @@ export function reviewProcessArgs(config: ReviewerConfig, prompt: string) {
 		config.tools.join(","),
 		"--exclude-tools",
 		config.excludeTools.join(","),
-		...serviceTierArgs(config.serviceTier),
+		...openaiFastArgs(config.openaiFast),
 		"-p",
 		prompt,
 	];

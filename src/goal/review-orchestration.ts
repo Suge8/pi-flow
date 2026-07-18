@@ -9,22 +9,30 @@ import {
 	FLOW_GOAL_COMPLETED_ENTRY,
 	latestGoalCompletion,
 } from "../flow/completion.js";
-import { writeFlowHtml } from "../flow/html.js";
-import { flowLockBusyMessage, withFlowLockSync } from "../flow/lock.js";
+import { isPrivateWorkerProcess } from "../flow/execution/worker-protocol.js";
+import { refreshFlowHtmlProjection } from "../flow/html.js";
+import {
+	type FlowLockOwner,
+	flowLockBusyMessage,
+	withFlowLockSync,
+} from "../flow/lock.js";
 import { currentSessionFile, flowOwnerForSession } from "../flow/ownership.js";
-import { currentGoal, readFlow, writeFlow } from "../flow/store.js";
-import type { GoalCompletionFact } from "../flow/types.js";
+import { currentGoal, findFlow, readFlow, writeFlow } from "../flow/store.js";
+import type {
+	CheckboxAttribution,
+	FlowAttention,
+	FlowState,
+	GoalCompletionFact,
+} from "../flow/types.js";
 import { requireFlowStartedAt } from "../flow/util.js";
 import type { ReviewLoopStats } from "../review.js";
 import { requestImmediateFlowRender } from "../shared/activity-frame.js";
-import { clipText } from "../shared/clip.js";
 import { reviewToggles } from "../shared/config.js";
 import {
 	flowGoalDisplayLabel,
 	flowStepLabel,
-	roundLabel,
 } from "../shared/progress-labels.js";
-import { liveReportUrl } from "../shared/report-server.js";
+import { bindLiveReport } from "../shared/report-client.js";
 import {
 	composeResultCardLines,
 	finalReplyInstruction,
@@ -32,6 +40,7 @@ import {
 	sendResultCard,
 } from "../shared/result-card.js";
 import { summarizeReviewText } from "../shared/review-format.js";
+import { completionPhaseLines } from "../shared/review-history.js";
 import {
 	clearStatus,
 	type ElapsedStatus,
@@ -50,8 +59,9 @@ import type {
 	ReviewHistoryEntry,
 	StatusContext,
 } from "./runtime.js";
-import type { CompletionCursor, GoalChecks } from "./types.js";
-import { objectiveFromPlan } from "./validator.js";
+import type { CompletionCursor, GoalChecks, GoalHandoff } from "./types.js";
+
+export { refreshFlowHtmlProjection };
 
 export interface GoalCompletionActions {
 	extensionApi: ExtensionAPI | undefined;
@@ -76,6 +86,14 @@ export function recordGoalReview(
 	round: number,
 	audit: GoalAuditResult,
 ): ActiveGoal {
+	const details = [audit.raw.trim(), audit.infraFeedback]
+		.filter(Boolean)
+		.join("\n\n---\n\n");
+	const keepDetails =
+		!audit.complete ||
+		audit.systemError ||
+		Boolean(audit.infraFeedback) ||
+		(audit.models?.length ?? 0) > 0;
 	return {
 		...goal,
 		stateReviewHistory: [
@@ -89,14 +107,13 @@ export function recordGoalReview(
 						: "failed",
 				summary: summarizeReviewText(
 					audit.raw,
-					goal.language === "en"
-						? "Completion acceptance passed."
-						: "完成验收通过。",
+					goal.language === "en" ? "Acceptance passed." : "验收通过。",
 				),
-				...(!audit.complete || audit.systemError
-					? { details: audit.raw.trim() }
-					: {}),
+				...(keepDetails && details ? { details } : {}),
 				...(audit.models ? { models: audit.models } : {}),
+				...(audit.elapsedMs !== undefined
+					? { elapsedMs: audit.elapsedMs }
+					: {}),
 			},
 		],
 	};
@@ -128,7 +145,12 @@ export function finalizeGoalCompletion(
 	qualitySummary: string,
 	actions: GoalCompletionActions,
 ): void {
-	if (!state.activeGoal || state.activeGoal.id !== goal.id) return;
+	if (
+		!state.activeGoal ||
+		state.activeGoal.id !== goal.id ||
+		state.activeGoal.status !== "active"
+	)
+		return;
 	state.goalReviewLive = undefined;
 	const reviewedGoal = recordGoalQualityReview(
 		goal,
@@ -150,12 +172,9 @@ export function finalizeGoalCompletion(
 	}
 	state.activeGoal = actions.transitionGoal(reviewedGoal, "complete");
 	actions.setCompletionCursor(ctx, state.activeGoal, null);
-	syncStandaloneGoalArtifact(
-		ctx,
-		state.activeGoal,
-		state.goalReviewLive,
-		audit,
-	);
+	syncStandaloneGoalArtifact(ctx, state.activeGoal, state.goalReviewLive, {
+		acceptance: audit,
+	});
 	actions.persistGoal(state.activeGoal, ctx);
 	actions.clearActiveGoal(ctx);
 	actions.showCompletionStatus(ctx);
@@ -234,16 +253,72 @@ export function isCurrentCompletionAudit(
 	);
 }
 
+export type GoalReviewSurfaceSyncResult =
+	| { kind: "saved" }
+	| { kind: "locked"; dir: string; owner: FlowLockOwner | undefined }
+	| { kind: "failed" };
+
+/** 暂停时随 canonical 事务原子落盘的接管事实：串行保留真实 kind 写 flow.attention；
+worker artifact handoff 校验只收 user_action_required，统一映射（消息携带具体原因）。 */
+type PauseAttention = Omit<FlowAttention, "at">;
+
 export function syncGoalReviewSurfaces(
 	state: GoalRuntimeState,
 	ctx: StatusContext,
 	goal: ActiveGoal,
-): void {
-	if (goal.artifactDir) {
-		syncStandaloneGoalArtifact(ctx, goal, state.goalReviewLive);
-		return;
+	options: {
+		expectedGeneration?: string | null;
+		completionCursor?: CompletionCursor;
+		attention?: PauseAttention;
+	} = {},
+): GoalReviewSurfaceSyncResult {
+	if (goal.artifactStatePath) {
+		const handoff: GoalHandoff | undefined = options.attention
+			? {
+					kind: "user_action_required",
+					message: options.attention.message,
+					at: Date.now(),
+				}
+			: undefined;
+		const synced = syncStandaloneGoalArtifact(ctx, goal, state.goalReviewLive, {
+			expectedGeneration: options.expectedGeneration,
+			completionCursor: options.completionCursor,
+			handoff,
+		});
+		return synced ? { kind: "saved" } : { kind: "failed" };
 	}
-	syncFlowGoalReviews(state, ctx, goal);
+	return syncFlowGoalReviews(state, ctx, goal, options);
+}
+
+export interface FlowCheckboxAttributionTarget {
+	flowId: string;
+	goalIndex: number;
+	goalFile: string;
+}
+
+export interface CheckboxAttributionChange {
+	key: string;
+	before?: CheckboxAttribution;
+	after?: CheckboxAttribution;
+}
+
+export interface FlowCheckboxAttributionCommit
+	extends FlowCheckboxAttributionTarget {
+	language: ActiveGoal["language"];
+	changes: CheckboxAttributionChange[];
+}
+
+export type CheckboxAttributionSyncResult =
+	| { kind: "saved" }
+	| { kind: "locked"; dir: string; owner: FlowLockOwner | undefined }
+	| { kind: "failed" };
+
+/** 用稳定步骤定位提交归因 delta，不覆盖检查 checkpoint 或其他 Flow 运行态。 */
+export function syncGoalCheckboxAttribution(
+	ctx: StatusContext,
+	commit: FlowCheckboxAttributionCommit,
+): CheckboxAttributionSyncResult {
+	return syncFlowGoalCheckboxAttribution(ctx, commit);
 }
 
 export function yieldForGoalReviewCard(): Promise<void> {
@@ -260,7 +335,8 @@ function sendCompletionCard(
 	qualitySummary: string,
 ): void {
 	const flow = flowContext(ctx);
-	const displayText = goalDisplayText(ctx, goal);
+	if (flow && shouldLetAdvanceSendSingleFlowCompletion(flow)) return;
+	const displayText = goal.text;
 	const checkLines = completionCheckLines(
 		goal,
 		stateReviewRound,
@@ -331,6 +407,18 @@ function sendCompletionCard(
 	);
 }
 
+function shouldLetAdvanceSendSingleFlowCompletion(
+	flow: NonNullable<ReturnType<typeof flowContext>>,
+) {
+	return (
+		!flow.flow.parallelRun &&
+		flow.flow.goals.length === 1 &&
+		flow.flow.goals.every(
+			(goal) => goal.index === flow.plan.index || goal.status === "complete",
+		)
+	);
+}
+
 function flowGoalCompleteContent(
 	title: string,
 	displayText: string,
@@ -344,13 +432,13 @@ function flowGoalCompleteContent(
 	].join("\n");
 }
 
-async function refreshReportStatus(
+function refreshReportStatus(
 	ctx: StatusContext,
 	htmlPath: string | undefined,
 	language: ActiveGoal["language"],
 ) {
 	if (!htmlPath) return;
-	await liveReportUrl(ctx, htmlPath, language).catch(() => undefined);
+	bindLiveReport(ctx, htmlPath, language);
 }
 
 function flowGoalCompleteDurationText(
@@ -371,12 +459,12 @@ function completionCheckLines(
 	language: ActiveGoal["language"],
 ): string[] {
 	const acceptance = completionPhaseLines(
-		language === "en" ? "Completion acceptance" : "完成验收",
+		language === "en" ? "Acceptance" : "验收",
 		completionStateReviewHistory(goal, stateReviewRound, language),
 		language,
 	);
 	const quality = completionPhaseLines(
-		language === "en" ? "Quality check" : "质量检查",
+		language === "en" ? "Quality check" : "质检",
 		completionQualityReviewHistory(goal, reviewStats, qualitySummary, language),
 		language,
 	);
@@ -398,7 +486,7 @@ function completionQualityReviewHistory(
 						result: "passed",
 						summary:
 							qualitySummary ||
-							(language === "en" ? "Quality check passed." : "质量检查通过。"),
+							(language === "en" ? "Quality check passed." : "质检通过。"),
 					},
 				];
 	if (!reviewToggles().quality) return undefined;
@@ -419,104 +507,9 @@ function completionStateReviewHistory(
 				{
 					round: fallbackRound,
 					result: "passed",
-					summary:
-						language === "en"
-							? "Completion acceptance passed."
-							: "完成验收通过。",
+					summary: language === "en" ? "Acceptance passed." : "验收通过。",
 				},
 			];
-}
-
-function completionPhaseLines(
-	label: string,
-	history: ReviewHistoryEntry[] | undefined,
-	language: ActiveGoal["language"],
-) {
-	const separator = language === "en" ? ":" : "：";
-	if (!history)
-		return [language === "en" ? `${label}: disabled` : `${label}：未启用`];
-	if (history.length === 1) {
-		const [round] = history;
-		return [formatCompletionRound(`${label}${separator}`, round, language)];
-	}
-	return [
-		`${label}${separator}`,
-		...history.map((round) =>
-			formatCompletionRound(roundLabel(round.round, language), round, language),
-		),
-	];
-}
-
-function formatCompletionRound(
-	prefix: string,
-	round: ReviewHistoryEntry,
-	language: ActiveGoal["language"],
-) {
-	const summary = completionSummary(round, language);
-	const gap = prefix.endsWith("：") ? "" : " ";
-	return `${prefix}${gap}${resultIcon(round.result)}${summary ? ` ${summary}` : ""}`;
-}
-
-function completionSummary(
-	round: ReviewHistoryEntry,
-	language: ActiveGoal["language"],
-) {
-	const summary =
-		visibleCompletionSummary(round.summary) || detailsSummary(round.details);
-	if (summary) return clipText(summary, 180);
-	if (round.result === "passed") return "";
-	return language === "en" ? "see this round's details" : "见本轮详情";
-}
-
-function visibleCompletionSummary(summary: string) {
-	const text = summary.trim();
-	return STATUS_ONLY_SUMMARIES.has(text.replace(/[。.]$/u, "")) ? "" : text;
-}
-
-const STATUS_ONLY_SUMMARIES = new Set([
-	"完成验收通过",
-	"完成验收判定未通过",
-	"完成验收失败",
-	"质量检查通过",
-	"质量检查未通过",
-	"质量检查失败",
-	"Completion acceptance passed",
-	"Completion acceptance judged the goal incomplete",
-	"Completion acceptance failed",
-	"Quality check passed",
-	"Quality check failed",
-]);
-
-function detailsSummary(details: string | undefined) {
-	if (!details) return "";
-	const lines = details
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.filter(Boolean);
-	const issueIndex = lines.findIndex((line) => /^- (问题|Issue):/u.test(line));
-	if (issueIndex === -1) return "";
-	const issue = lines[issueIndex].replace(/^- (问题|Issue):\s*/u, "");
-	return cleanCompletionDetail(
-		issue || nextIssueDetail(lines.slice(issueIndex + 1)),
-	);
-}
-
-function nextIssueDetail(lines: string[]) {
-	return lines.find(issueDetailCandidate) ?? "";
-}
-
-function issueDetailCandidate(line: string) {
-	if (line.startsWith("#") || /^(模型|Model)\s+\d+\s+·\s+/iu.test(line))
-		return false;
-	if (/^- (问题|Issue):\s*$/u.test(line)) return false;
-	return !STATUS_ONLY_SUMMARIES.has(line.replace(/[。.]$/u, ""));
-}
-
-function cleanCompletionDetail(line: string) {
-	return line
-		.replace(/^[-*+]\s+/u, "")
-		.replace(/`([^`]+)`/gu, "$1")
-		.trim();
 }
 
 function recordFlowGoalCompletion(
@@ -534,6 +527,9 @@ function recordFlowGoalCompletion(
 		acceptance: audit.trim(),
 		sessionFile: currentSessionFile(ctx) ?? null,
 		checks: settledGoalChecks(goal, reviewStats),
+		...(goal.checkAttribution
+			? { checkAttribution: goal.checkAttribution }
+			: {}),
 	};
 	try {
 		appendCustomEntry(ctx, pi, FLOW_GOAL_COMPLETED_ENTRY, fact);
@@ -556,14 +552,160 @@ function recordFlowGoalCompletion(
 	return fact;
 }
 
+/**
+ * 非暂停事务中的 best-effort attention 更新；能与状态同事务提交的调用方应走 syncGoalReviewSurfaces。
+ */
+export function setFlowAttention(
+	ctx: StatusContext,
+	attention: Omit<FlowAttention, "at"> | null,
+) {
+	// 单写者约束：worker 进程不写父 flow.json；worker 异常经自身 artifact 的 paused+handoff 由父控制台收口。
+	if (isPrivateWorkerProcess()) return;
+	try {
+		const owner = flowOwnerForSession(ctx);
+		if (!owner) return;
+		const updated = withFlowLockSync(
+			owner.dir,
+			`set attention ${owner.flow.id}`,
+			() => {
+				const flow = readFlow(owner.dir);
+				if (attention === null && flow.attention === null) return;
+				return writeFlow(owner.dir, {
+					...flow,
+					attention: attention ? { ...attention, at: Date.now() } : null,
+				});
+			},
+		);
+		if (updated.ok && updated.value)
+			refreshFlowHtmlProjection(
+				ctx,
+				owner.dir,
+				updated.value,
+				owner.flow.language,
+			);
+	} catch {
+		// 见 docstring：不阻塞暂停主链路。
+	}
+}
+
+function syncFlowGoalCheckboxAttribution(
+	ctx: StatusContext,
+	commit: FlowCheckboxAttributionCommit,
+): CheckboxAttributionSyncResult {
+	try {
+		const location = findFlow(ctx.cwd, commit.flowId);
+		if (!location) return { kind: "failed" };
+		const preview = applyCheckboxAttributionCommit(location.flow, commit);
+		if (!preview) return { kind: "failed" };
+		if (!preview.changed) {
+			refreshFlowHtmlProjection(
+				ctx,
+				location.dir,
+				location.flow,
+				commit.language,
+			);
+			return { kind: "saved" };
+		}
+		const synced = withFlowLockSync(
+			location.dir,
+			`sync checkbox attribution ${commit.flowId}`,
+			() => {
+				const flow = readFlow(location.dir);
+				const applied = applyCheckboxAttributionCommit(flow, commit);
+				if (!applied) return undefined;
+				return applied.changed ? writeFlow(location.dir, applied.flow) : flow;
+			},
+		);
+		if (!synced.ok)
+			return { kind: "locked", dir: location.dir, owner: synced.owner };
+		if (!synced.value) return { kind: "failed" };
+		refreshFlowHtmlProjection(ctx, location.dir, synced.value, commit.language);
+		return { kind: "saved" };
+	} catch (error) {
+		notifyUser(
+			ctx,
+			goalReviewSyncFailedNotice(formatNotifyError(error), commit.language),
+			"info",
+			commit.language,
+		);
+		return { kind: "failed" };
+	}
+}
+
+function applyCheckboxAttributionCommit(
+	flow: FlowState,
+	commit: FlowCheckboxAttributionCommit,
+) {
+	const goal = flow.goals[commit.goalIndex];
+	if (!goal || goal.index !== commit.goalIndex || goal.file !== commit.goalFile)
+		return undefined;
+	const applied = applyCheckboxAttributionChanges(
+		goal.checkAttribution,
+		commit.changes,
+	);
+	if (!applied.changed) return { flow, changed: false };
+	const goals = flow.goals.map((item, index) =>
+		index === commit.goalIndex
+			? { ...item, checkAttribution: applied.attribution }
+			: item,
+	);
+	return { flow: { ...flow, goals }, changed: true };
+}
+
+function applyCheckboxAttributionChanges(
+	current: Record<string, CheckboxAttribution> | undefined,
+	changes: CheckboxAttributionChange[],
+) {
+	const attribution = { ...(current ?? {}) };
+	let changed = false;
+	for (const change of changes) {
+		const value = attribution[change.key];
+		if (checkboxAttributionEqual(value, change.after)) continue;
+		if (checkboxAttributionEqual(value, change.before)) {
+			changed = updateCheckboxAttribution(attribution, change) || changed;
+			continue;
+		}
+		if (change.after && (!value || change.after.at > value.at)) {
+			attribution[change.key] = change.after;
+			changed = true;
+		}
+	}
+	return { attribution, changed };
+}
+
+function updateCheckboxAttribution(
+	attribution: Record<string, CheckboxAttribution>,
+	change: CheckboxAttributionChange,
+) {
+	if (change.after) attribution[change.key] = change.after;
+	else delete attribution[change.key];
+	return true;
+}
+
+function checkboxAttributionEqual(
+	left: CheckboxAttribution | undefined,
+	right: CheckboxAttribution | undefined,
+) {
+	return (
+		left?.model === right?.model &&
+		left?.thinking === right?.thinking &&
+		left?.at === right?.at
+	);
+}
+
 function syncFlowGoalReviews(
 	state: GoalRuntimeState,
 	ctx: StatusContext,
 	goal: ActiveGoal,
-): void {
+	options: {
+		expectedGeneration?: string | null;
+		completionCursor?: CompletionCursor;
+		attention?: PauseAttention;
+	},
+): GoalReviewSurfaceSyncResult {
 	try {
 		const owner = flowOwnerForSession(ctx);
-		if (!owner) return;
+		if (!owner) return { kind: "failed" };
 		const synced = withFlowLockSync(
 			owner.dir,
 			`sync goal reviews ${owner.flow.id}`,
@@ -575,7 +717,13 @@ function syncFlowGoalReviews(
 					current.status !== "running" ||
 					current.sessionFile !== currentSessionFile(ctx)
 				)
-					return;
+					return false;
+				if (
+					options.expectedGeneration !== undefined &&
+					checkpointGeneration(current.checks, state.goalReviewLive) !==
+						options.expectedGeneration
+				)
+					return false;
 				const checks = artifactChecks(
 					goal.stateReviewHistory,
 					goal.qualityReviewHistory,
@@ -583,19 +731,45 @@ function syncFlowGoalReviews(
 					state.goalReviewLive,
 				);
 				const goals = flow.goals.map((item, index) =>
-					index === flow.currentGoal ? { ...item, checks } : item,
+					index === flow.currentGoal
+						? {
+								...item,
+								checks,
+								...(goal.checkAttribution
+									? { checkAttribution: goal.checkAttribution }
+									: {}),
+								...(options.completionCursor !== undefined
+									? { completionCursor: options.completionCursor }
+									: {}),
+							}
+						: item,
 				);
-				const saved = writeFlow(owner.dir, { ...flow, goals });
-				writeFlowHtml(owner.dir, saved);
+				const status =
+					goal.status === "paused" || goal.status === "budget_limited"
+						? "paused"
+						: flow.status;
+				return writeFlow(owner.dir, {
+					...flow,
+					status,
+					goals,
+					...(options.attention
+						? { attention: { ...options.attention, at: Date.now() } }
+						: {}),
+				});
 			},
 		);
-		if (!synced.ok)
-			notifyUser(
-				ctx,
-				flowLockBusyMessage(synced.owner, goal.language),
-				"info",
-				goal.language,
-			);
+		if (synced.ok) {
+			if (!synced.value) return { kind: "failed" };
+			refreshFlowHtmlProjection(ctx, owner.dir, synced.value, goal.language);
+			return { kind: "saved" };
+		}
+		notifyUser(
+			ctx,
+			flowLockBusyMessage(synced.owner, goal.language),
+			"info",
+			goal.language,
+		);
+		return { kind: "locked", dir: owner.dir, owner: synced.owner };
 	} catch (error) {
 		notifyUser(
 			ctx,
@@ -603,7 +777,15 @@ function syncFlowGoalReviews(
 			"info",
 			goal.language,
 		);
+		return { kind: "failed" };
 	}
+}
+
+function checkpointGeneration(
+	checks: GoalChecks,
+	live: GoalRuntimeState["goalReviewLive"],
+) {
+	return live ? (checks[live.phase].active?.generation ?? null) : null;
 }
 
 function settledGoalChecks(
@@ -637,22 +819,12 @@ function reviewRound(entry: ReviewHistoryEntry) {
 	};
 }
 
-function resultIcon(result: ReviewHistoryEntry["result"]) {
-	if (result === "passed") return "✅";
-	if (result === "failed") return "❌";
-	return "🛑";
-}
-
 function stateReviewSummary(goal: ActiveGoal): string {
 	if (!reviewToggles().acceptance)
-		return goal.language === "en"
-			? "Completion acceptance disabled"
-			: "完成验收未启用";
+		return goal.language === "en" ? "Acceptance disabled" : "验收未启用";
 	return (
 		goal.stateReviewHistory.at(-1)?.summary ??
-		(goal.language === "en"
-			? "Completion acceptance passed."
-			: "完成验收通过。")
+		(goal.language === "en" ? "Acceptance passed." : "验收通过。")
 	);
 }
 
@@ -661,14 +833,6 @@ function sessionEntriesInspectable(ctx: StatusContext): boolean {
 		| { getBranch?: () => unknown[]; getEntries?: () => unknown[] }
 		| undefined;
 	return Boolean(sessionManager?.getBranch ?? sessionManager?.getEntries);
-}
-
-function goalDisplayText(ctx: StatusContext, goal: ActiveGoal): string {
-	if (!isLegacyFlowPromptText(goal.text)) return goal.text;
-	const flow = flowContext(ctx);
-	return flow
-		? objectiveFromPlan(flow.plan.snapshot ?? "") || flow.plan.title
-		: goal.text;
 }
 
 function flowContext(ctx: StatusContext) {
@@ -694,13 +858,6 @@ function flowContext(ctx: StatusContext) {
 		flow: owner.flow,
 		plan: goal,
 	};
-}
-
-function isLegacyFlowPromptText(text: string): boolean {
-	return (
-		text.includes("Flow Goal session 已启动") ||
-		text.includes("当前 Goal plan 完整 snapshot")
-	);
 }
 
 function durationSince(startedAt: number): string {
