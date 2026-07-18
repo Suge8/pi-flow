@@ -3,6 +3,15 @@ import type { Language } from "../shared/config.js";
 import type { ReviewerResult } from "../shared/reviewer-pool.js";
 
 type ReviewModelResult = ReviewerResult<ReviewOutcome>;
+type FailedReviewResult = ReviewModelResult & {
+	result: { kind: "needs_changes"; review: string };
+};
+type ErrorReviewResult = ReviewModelResult & {
+	result: { kind: "system_error"; notification: string };
+};
+type PassedReviewResult = ReviewModelResult & {
+	result: { kind: "pass"; summary: string };
+};
 
 export function aggregateReviewOutcomes(
 	results: ReviewModelResult[],
@@ -12,20 +21,18 @@ export function aggregateReviewOutcomes(
 	if (cancelled) return cancelled.result;
 	const failures = results.filter(
 		(item) => item.result.kind === "needs_changes",
-	) as Array<
-		ReviewModelResult & { result: { kind: "needs_changes"; review: string } }
-	>;
+	) as FailedReviewResult[];
 	const errors = results.filter(
 		(item) => item.result.kind === "system_error",
-	) as Array<
-		ReviewModelResult & {
-			result: { kind: "system_error"; notification: string };
-		}
-	>;
+	) as ErrorReviewResult[];
+	const passes = results.filter(
+		(item) => item.result.kind === "pass",
+	) as PassedReviewResult[];
 	if (failures.length > 0)
 		return {
 			kind: "needs_changes",
 			review: aggregateFailedReviews(failures, language),
+			details: aggregateReviewDetails(results, language),
 			...(errors.length > 0
 				? { infraErrors: aggregateReviewErrors(errors, language) }
 				: {}),
@@ -33,9 +40,6 @@ export function aggregateReviewOutcomes(
 	const formatErrors = errors.filter((item) =>
 		isReviewFormatInvalidError(item.result),
 	);
-	const passes = results.filter((item) => item.result.kind === "pass") as Array<
-		ReviewModelResult & { result: { kind: "pass"; summary: string } }
-	>;
 	if (passes.length === 0 || errors.length > formatErrors.length)
 		return {
 			kind: "system_error",
@@ -46,6 +50,7 @@ export function aggregateReviewOutcomes(
 		summary: aggregatePassSummaries(passes, language),
 		...(formatErrors.length > 0
 			? {
+					details: aggregateReviewDetails(results, language, formatErrors),
 					infraErrors: aggregateIgnoredReviewFormatErrors(
 						formatErrors,
 						language,
@@ -56,9 +61,7 @@ export function aggregateReviewOutcomes(
 }
 
 export function aggregateFailedReviews(
-	failures: Array<
-		ReviewModelResult & { result: { kind: "needs_changes"; review: string } }
-	>,
+	failures: FailedReviewResult[],
 	language: Language = "zh",
 ) {
 	return failures
@@ -67,11 +70,7 @@ export function aggregateFailedReviews(
 }
 
 export function aggregateReviewErrors(
-	results: Array<
-		ReviewModelResult & {
-			result: { kind: "system_error"; notification: string };
-		}
-	>,
+	results: ErrorReviewResult[],
 	language: Language = "zh",
 ) {
 	return results
@@ -80,12 +79,10 @@ export function aggregateReviewErrors(
 }
 
 export function aggregatePassSummaries(
-	results: Array<
-		ReviewModelResult & { result: { kind: "pass"; summary: string } }
-	>,
+	results: PassedReviewResult[],
 	language: Language = "zh",
 ) {
-	const passed = language === "en" ? "Quality check passed." : "质量检查通过。";
+	const passed = language === "en" ? "Quality check passed." : "质检通过。";
 	if (results.length === 1) return results[0].result.summary || passed;
 	return results
 		.map((item) =>
@@ -94,23 +91,58 @@ export function aggregatePassSummaries(
 		.join("\n\n");
 }
 
+function aggregateReviewDetails(
+	results: ReviewModelResult[],
+	language: Language,
+	ignoredErrors: ErrorReviewResult[] = [],
+) {
+	const ignored = new Set<ReviewModelResult>(ignoredErrors);
+	return results
+		.map((item) =>
+			reviewerSection(
+				item,
+				reviewDetailText(item, language, ignored.has(item)),
+				language,
+			),
+		)
+		.join("\n\n");
+}
+
+function reviewDetailText(
+	item: ReviewModelResult,
+	language: Language,
+	ignoredError = false,
+) {
+	if (item.result.kind === "pass")
+		return `PASS\n${item.result.summary || passFallback(language)}`;
+	if (item.result.kind === "needs_changes") return item.result.review;
+	if (item.result.kind === "system_error") {
+		const prefix = ignoredError ? `${ignoredFormatPrefix(language)}\n` : "";
+		return `${prefix}${item.result.notification}`;
+	}
+	return item.result.notification;
+}
+
+function passFallback(language: Language) {
+	return language === "en" ? "Quality check passed." : "质检通过。";
+}
+
 function aggregateIgnoredReviewFormatErrors(
-	results: Array<
-		ReviewModelResult & {
-			result: { kind: "system_error"; notification: string };
-		}
-	>,
+	results: ErrorReviewResult[],
 	language: Language,
 ) {
-	const prefix =
-		language === "en"
-			? "Invalid format (ignored this model result)"
-			: "格式无效（已忽略该模型结论）";
+	const prefix = ignoredFormatPrefix(language);
 	return results
 		.map((item) =>
 			reviewerSection(item, `${prefix}\n${item.result.notification}`, language),
 		)
 		.join("\n\n");
+}
+
+function ignoredFormatPrefix(language: Language) {
+	return language === "en"
+		? "Invalid format (ignored this model result)"
+		: "格式无效（已忽略该模型结论）";
 }
 
 function isReviewFormatInvalidError(

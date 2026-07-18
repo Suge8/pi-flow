@@ -2,6 +2,8 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { quoteCommand } from "../flow/parallel/console.js";
+import type { CheckRoundAdvisor } from "../goal/types.js";
 import {
 	type ReviewOutcome,
 	reviewFeedbackInstruction,
@@ -11,7 +13,8 @@ import {
 	currentCancelHint,
 	setReviewActivityBox,
 } from "../shared/activity-frame.js";
-import { type Language, readFlowConfig } from "../shared/config.js";
+import { advisorDirectionLines } from "../shared/check-feedback.js";
+import type { Language } from "../shared/config.js";
 import { runtimeLanguage } from "../shared/language.js";
 import {
 	elapsedLabel,
@@ -30,21 +33,22 @@ import {
 import { formatReviewResultLines } from "../shared/review-format.js";
 import { reviewerProgressLines, shortModel } from "../shared/reviewer-pool.js";
 import { elapsedSeconds, startElapsedStatus } from "../shared/status.js";
-import { formatUserNotice } from "../shared/ui-language.js";
-import type { ReviewLoop } from "./types.js";
+import { formatUserNotice, monitorDetailsHint } from "../shared/ui-language.js";
+import type {
+	FlowConfig,
+	ReviewCancellationSource,
+	ReviewLoop,
+} from "./types.js";
 
 const REVIEW_STATUS_KEY = "review";
 
-export function sendReviewStartCard(pi: ExtensionAPI, ctx: ExtensionContext) {
-	let flowConfig: ReturnType<typeof readFlowConfig>;
-	try {
-		flowConfig = readFlowConfig();
-	} catch {
-		return;
-	}
-	if (!flowConfig.quality.enabled) return;
+export function sendReviewStartCard(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	flowConfig: FlowConfig,
+) {
 	const language = runtimeLanguage();
-	const reviewers = flowConfig.models
+	const reviewers = flowConfig.modelRoles.reviewers
 		.map((reviewer) => shortModel(reviewer.model))
 		.join(language === "en" ? ", " : "、");
 	const title = qualityTitle("progress", language);
@@ -56,6 +60,7 @@ export function sendReviewStartCard(pi: ExtensionAPI, ctx: ExtensionContext) {
 		lines,
 		icon: "💯",
 		language,
+		context: "check-start",
 	});
 }
 
@@ -70,6 +75,8 @@ export function sendReviewCard(
 		triggerTurn?: boolean;
 		deliverAs?: "followUp";
 		displayReview?: string;
+		deliveryId?: string;
+		footerLines?: string[];
 	},
 ) {
 	setReviewActivityBox(ctx, undefined);
@@ -79,7 +86,7 @@ export function sendReviewCard(
 		qualityTitle(result, language),
 		language,
 	);
-	sendResultCard(
+	return sendResultCard(
 		pi,
 		ctx,
 		options.content,
@@ -91,8 +98,12 @@ export function sendReviewCard(
 				options.displayReview ?? review,
 				loop,
 				result === "通过",
+				options.footerLines,
 			),
 			language,
+			...(options.deliveryId
+				? { context: "check-result" as const, deliveryId: options.deliveryId }
+				: {}),
 		},
 		{ triggerTurn: options.triggerTurn, deliverAs: options.deliverAs },
 	);
@@ -102,6 +113,10 @@ export function displayReviewWithInfra(
 	outcome: Extract<ReviewOutcome, { kind: "needs_changes" }>,
 	language: Language = "zh",
 ) {
+	if (outcome.details)
+		return outcome.infraErrors
+			? labelInfraDetails(outcome.details, outcome.infraErrors, language)
+			: outcome.details;
 	return [
 		outcome.review,
 		...(outcome.infraErrors
@@ -110,11 +125,26 @@ export function displayReviewWithInfra(
 	].join("\n");
 }
 
+function labelInfraDetails(
+	details: string,
+	infraErrors: string,
+	language: Language,
+) {
+	const index = details.indexOf(infraErrors);
+	if (index === -1)
+		return [details, "", "---", "", infraLabel(language), "", infraErrors].join(
+			"\n",
+		);
+	return `${details.slice(0, index)}---\n\n${infraLabel(language)}\n\n${details.slice(index)}`;
+}
+
 export function displayPassReview(
 	summary: string,
 	infraErrors: string | undefined,
 	_language: Language = "zh",
+	details?: string,
 ) {
+	if (details) return details;
 	return [summary, ...(infraErrors ? ["", "---", "", infraErrors] : [])].join(
 		"\n",
 	);
@@ -129,7 +159,7 @@ export function reviewPassContent(
 	const lines = [
 		`[${roundTitle(loop.round, qualityTitle("通过", language), language)}]`,
 		"",
-		summary || (language === "en" ? "Quality check passed." : "质量检查通过。"),
+		summary || (language === "en" ? "Quality check passed." : "质检通过。"),
 	];
 	if (infraErrors)
 		lines.push("", "---", "", infraLabel(language), "", infraErrors);
@@ -144,23 +174,31 @@ export function reviewPassContent(
 
 export function reviewErrorContent(loop: ReviewLoop, message: string) {
 	const language = reviewLanguage(loop);
-	const next =
+	const next = quoteCommand(
 		loop.options.scope?.kind === "goal"
 			? (loop.options.scope.resumeCommand ?? "/flow go")
-			: "/review";
+			: "/review",
+	);
 	return [
 		`[${roundTitle(loop.round, qualityTitle("错误", language), language)}]`,
 		"",
 		language === "en"
 			? "Blocker: quality check did not complete"
-			: "卡点：质量检查未完成",
+			: "卡点：质检未完成",
 		language === "en" ? `Reason: ${message}` : `原因：${message}`,
 		"",
 		language === "en" ? `Next: ${next}` : `下一步：${next}`,
 	].join("\n");
 }
 
-export function reviewFailContent(loop: ReviewLoop, review: string) {
+export function reviewFailContent(
+	loop: ReviewLoop,
+	review: string,
+	directive?: {
+		advice?: CheckRoundAdvisor;
+		extraPromptLines?: string[];
+	},
+) {
 	const language = reviewLanguage(loop);
 	const lines = [
 		`[${roundTitle(loop.round, qualityTitle("未通过", language), language)}]`,
@@ -173,13 +211,15 @@ export function reviewFailContent(loop: ReviewLoop, review: string) {
 			"",
 		);
 	}
+	lines.push(language === "en" ? "Check result:" : "检查结果：", review, "");
+	if (directive?.advice)
+		lines.push(...advisorDirectionLines(directive.advice.advice, language), "");
 	lines.push(
-		language === "en" ? "Check result:" : "检查结果：",
-		review,
-		"",
 		language === "en" ? "Next:" : "下一步：",
 		reviewFeedbackNextStep(loop, language),
 	);
+	if (directive?.extraPromptLines?.length)
+		lines.push("", ...directive.extraPromptLines);
 	return lines.join("\n");
 }
 
@@ -201,47 +241,64 @@ export function startReviewStatus(ctx: ExtensionContext, loop: ReviewLoop) {
 
 export function reviewActivity(loop: ReviewLoop) {
 	const language = reviewLanguage(loop);
+	if (loop.options.scope?.kind === "review" && loop.round === 0)
+		return {
+			language,
+			flame: true,
+			title: language === "en" ? "💯 Running" : "💯 执行中",
+			rows: [
+				language === "en"
+					? "Runs quality checks automatically when done"
+					: "完成后自动质检",
+			],
+			hint: `${currentCancelHint()} ${
+				language === "en" ? "cancel automatic quality check" : "取消自动质检"
+			}`,
+		};
 	return {
 		language,
-		title: `💯 ${reviewActivityObject(loop)} · ${reviewActivityPhase(loop)}`,
+		flame: true,
+		title: reviewActivityTitle(loop),
 		rows: activityRows(
 			reviewActivityScopeRows(loop),
 			reviewActivityLines(loop),
 		),
 		hint: loop.awaitingAgent
 			? undefined
-			: `${currentCancelHint()} ${language === "en" ? "cancel" : "取消"}`,
+			: `${currentCancelHint()} ${language === "en" ? "cancel" : "取消"} · ${monitorDetailsHint(language)}`,
 	};
 }
 
-export function cancelReview(loop: ReviewLoop) {
+export function cancelReview(
+	loop: ReviewLoop,
+	source: ReviewCancellationSource = "user",
+) {
+	// first-writer-wins：用户主动取消不得被紧随的 shutdown/flow_stop 覆盖，
+	// 否则本应清除的 checkpoint 会被保留并在重启后重跑已取消的质检。
+	loop.cancellationSource ??= source;
 	loop.controller.abort();
 }
 
 export function cancelNotification(loop: ReviewLoop) {
-	const language = reviewLanguage(loop);
-	if (loop.options.scope?.kind !== "goal")
-		return language === "en"
-			? formatUserNotice("🛑", "Quality check cancelled", ["Stopped by user"])
-			: formatUserNotice("🛑", "质量检查已取消", ["已按你的操作停止"]);
-	const command = loop.options.scope.resumeCommand ?? "/flow go";
-	return language === "en"
-		? formatUserNotice("⚠️", "Flow step paused", [
-				"Quality check cancelled",
-				`Run ${command} to continue`,
-			])
-		: formatUserNotice("⚠️", "Flow 步骤已暂停", [
-				"质量检查已取消",
-				`运行 ${command} 继续`,
-			]);
+	return reviewLanguage(loop) === "en"
+		? formatUserNotice("⏸", "Quality check cancelled", ["Stopped by user"])
+		: formatUserNotice("⏸", "质检已取消", ["已按你的操作停止"]);
 }
 
-function reviewLines(review: string, loop: ReviewLoop, includeTotal: boolean) {
+function reviewLines(
+	review: string,
+	loop: ReviewLoop,
+	includeTotal: boolean,
+	footerLines: string[] = [],
+) {
 	const lines = formatReviewResultLines(review);
 	const language = reviewLanguage(loop);
 	return composeResultCardLines(
 		[lines],
-		[resultCardElapsedLine(reviewElapsedText(loop, includeTotal), language)],
+		[
+			...footerLines,
+			resultCardElapsedLine(reviewElapsedText(loop, includeTotal), language),
+		],
 	);
 }
 
@@ -257,13 +314,19 @@ function reviewStatusKey(loop: ReviewLoop) {
 
 function reviewStatusPrefix(loop: ReviewLoop) {
 	const language = reviewLanguage(loop);
+	if (loop.options.scope?.kind === "review" && loop.round === 0)
+		return `${REVIEW_SCOPE}/${
+			language === "en"
+				? "running · quality check when done"
+				: "执行中 · 完成后自动质检"
+		}`;
 	const phase = loop.awaitingAgent
 		? language === "en"
 			? "quality fix"
-			: "质量修复中"
+			: "优化中"
 		: language === "en"
 			? "quality check"
-			: "质量检查";
+			: "质检";
 	const scope =
 		loop.options.scope?.kind === "goal"
 			? (loop.options.scope.statusPrefix ?? GOAL_SCOPE)
@@ -313,34 +376,32 @@ function reviewActivityPhase(loop: ReviewLoop) {
 		loop.awaitingAgent
 			? language === "en"
 				? "Quality fix in progress"
-				: "质量修复中"
+				: "优化中"
 			: language === "en"
 				? "Quality check in progress"
-				: "质量检查中",
+				: "质检中",
 		language,
 	);
 }
 
+function reviewActivityTitle(loop: ReviewLoop) {
+	const phase = reviewActivityPhase(loop);
+	if (loop.options.scope?.kind !== "goal") return `💯 ${phase}`;
+	return `💯 ${reviewActivityObject(loop)} · ${phase}`;
+}
+
 function reviewActivityObject(loop: ReviewLoop) {
 	const language = reviewLanguage(loop);
-	if (loop.options.scope?.kind === "goal")
-		return (
-			loop.options.scope.activity?.object ??
-			(language === "en" ? "Goal" : "目标")
-		);
-	return language === "en" ? "Session" : "会话";
+	const scope = loop.options.scope;
+	if (scope?.kind === "goal")
+		return scope.activity?.object ?? (language === "en" ? "Goal" : "目标");
+	return language === "en" ? "Goal" : "目标";
 }
 
 function reviewActivityScopeRows(loop: ReviewLoop) {
-	const language = reviewLanguage(loop);
 	if (loop.options.scope?.kind === "goal")
 		return loop.options.scope.activity?.rows ?? [loop.options.scope.goalText];
-	return language === "en"
-		? [
-				"Target: current task delivery",
-				"Evidence: first user request + recent context + file clues",
-			]
-		: ["对象：当前任务交付", "证据：首条用户需求 + 最近上下文 + 文件线索"];
+	return [];
 }
 
 function reviewActivityLines(loop: ReviewLoop) {
@@ -349,13 +410,15 @@ function reviewActivityLines(loop: ReviewLoop) {
 		return [
 			language === "en"
 				? `Repairing ${roundLabel(loop.round, language)} quality feedback`
-				: `正在修复${roundLabel(loop.round, language)}质量反馈`,
+				: `正在修复${roundLabel(loop.round, language)}质检反馈`,
 		];
 	if (loop.reviewerProgress.length > 0)
-		return reviewerProgressLines(loop.reviewerProgress);
-	return loop.flowConfig.models.map(
-		(reviewer, index) => `${index + 1}·${shortModel(reviewer.model)} …`,
-	);
+		return reviewerProgressLines(
+			loop.reviewerProgress,
+			language,
+			loop.context.cwd,
+		);
+	return [];
 }
 
 function reviewLanguage(loop: ReviewLoop) {
@@ -370,10 +433,11 @@ function qualityTitle(
 		if (state === "progress") return "Quality check in progress";
 		if (state === "通过") return "Quality check passed";
 		if (state === "未通过") return "Quality check failed";
-		return "Quality check error";
+		return "Quality check incomplete";
 	}
-	if (state === "progress") return "质量检查中";
-	return `质量检查${state}`;
+	if (state === "progress") return "质检中";
+	if (state === "错误") return "质检未完成";
+	return `质检${state}`;
 }
 
 function modelLine(reviewers: string, language: Language) {
