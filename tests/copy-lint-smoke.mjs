@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const EXCLUDED_FILES = new Set([
 	"src/flow/prompt.ts",
-	"src/shared/session.ts", // 纯模型 transcript 构建
+	"src/shared/session.ts", // 会话访问与消息文本辅助
 ]);
 const STRING_BLACKLIST = [
 	/(?<!current)Goal/u,
@@ -22,6 +22,7 @@ const STRING_BLACKLIST = [
 	/\} goals/u,
 	/不能 start/u,
 	/running flow/u,
+	/请等当前轮次结束后再运行 \/review/u,
 	/Flow draft/u,
 	/draft goal/u,
 	/draft flow/u,
@@ -33,6 +34,9 @@ const ANY_LINE_BLACKLIST = [
 	/kindLabel: "Goal"/u,
 	/command:\s*"continue"/u,
 	/Flow (?:已取消|cancelled)/u,
+	/最终交接/u,
+	/Final handoff/u,
+	/Ctrl\+F|ctrl\+f/u,
 ];
 const SOURCE_PATH_BLACKLIST = [
 	/^src\/flow\/execution\/(?:cancel|continue)\.ts$/u,
@@ -54,26 +58,65 @@ const DOC_BLACKLIST = [
 const FLOW_MODEL_COPY_BLACKLIST = [
 	/\/flow\s+(?:start|continue|pause|cancel)\b/u,
 	/回复[「"]?开始生成[」"]?/u,
+	/Ctrl\+F/u,
 ];
 const FLOW_STATE_COPY_BLACKLIST = [/\bcancelled\b/u, /已取消/u];
-const DOC_FILES = ["README.md"];
-const FLOW_MODEL_COPY_FILES = [
-	"README.md",
-	"AGENTS.md",
-	"docs/runtime-contracts.md",
-	...promptMarkdownFiles().map((file) => relative(root, file)),
+// 草稿格式规则的单一事实源是 flow-draft-contract.md；禁止回流 plan/repair。
+const DRAFT_CONTRACT_ONLY_BLACKLIST = [
+	/flow\.html/u,
+	/final.?acceptance/iu,
+	/checkbox/iu,
+	/flow\.semantic\.json/u,
+	/G<N>-/u,
+	/结构校验/u,
+	/structural validation/iu,
+	/模拟|simulate/iu,
 ];
-const FLOW_PROTOCOL_FILES = [
-	"README.md",
+const SLIM_DRAFT_PROTOCOL_FILES = [
 	"prompts/en/flow-plan.md",
 	"prompts/en/flow-repair.md",
 	"prompts/zh/flow-plan.md",
 	"prompts/zh/flow-repair.md",
 ];
+const DOC_FILES = [
+	"README.md",
+	"README.zh-CN.md",
+	"site/index.html",
+	"site/src/lib/i18n.svelte.js",
+];
+const REQUIRED_DOC_LINES = new Map([
+	[
+		"README.md",
+		"- **Live subagent monitor** — Pi Flow opens it for parallel work, acceptance, quality checks, and advisor consultations. Press Esc to close it; press Alt+S to reopen it.",
+	],
+	[
+		"README.zh-CN.md",
+		"- **子代理实时监控** — Pi Flow 会在并行执行、验收、质检和顾问咨询时自动打开监控悬浮窗。按 Esc 关闭，按 Alt+S 重开。",
+	],
+]);
+const FLOW_MODEL_COPY_FILES = [
+	"README.md",
+	"README.zh-CN.md",
+	"AGENTS.md",
+	"docs/runtime-contracts.md",
+	"docs/prompts.md",
+	...promptMarkdownFiles().map((file) => relative(root, file)),
+];
+const FLOW_PROTOCOL_FILES = [
+	"README.md",
+	"README.zh-CN.md",
+	"prompts/en/flow-draft-contract.md",
+	"prompts/en/flow-plan.md",
+	"prompts/en/flow-repair.md",
+	"prompts/zh/flow-draft-contract.md",
+	"prompts/zh/flow-plan.md",
+	"prompts/zh/flow-repair.md",
+];
 const DOC_REVIEWER_THINKING =
-	/`off`.*`minimal`.*`low`.*`medium`.*`high`.*`xhigh`/u;
+	/`off`.*`minimal`.*`low`.*`medium`.*`high`.*`xhigh`.*`max`/u;
 const STRING_LITERAL =
 	/"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`|'(?:[^'\\]|\\.)*'/gu;
+const QUOTED_STRING_LITERAL = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/gu;
 
 const violations = [];
 for (const file of walk(join(root, "src"))) {
@@ -87,6 +130,8 @@ for (const file of FLOW_MODEL_COPY_FILES)
 	scanFlowModelCopy(file, join(root, file), FLOW_MODEL_COPY_BLACKLIST);
 for (const file of FLOW_PROTOCOL_FILES)
 	scanFlowModelCopy(file, join(root, file), FLOW_STATE_COPY_BLACKLIST);
+for (const file of SLIM_DRAFT_PROTOCOL_FILES)
+	scanFlowModelCopy(file, join(root, file), DRAFT_CONTRACT_ONLY_BLACKLIST);
 
 if (violations.length) {
 	console.error(`用户文案残留内部词：\n${violations.join("\n")}`);
@@ -121,7 +166,11 @@ function scanSource(path, file) {
 					`${path}:${index + 1} [notify 需中文文案] ${notifyLiteral[1]}`,
 				);
 		}
-		for (const literal of line.match(STRING_LITERAL) ?? []) {
+		const literals = new Set([
+			...(line.match(STRING_LITERAL) ?? []),
+			...(line.match(QUOTED_STRING_LITERAL) ?? []),
+		]);
+		for (const literal of literals) {
 			const text = literal.replace(/\$\{[^}]*\}/gu, "");
 			if (!/[\u4e00-\u9fff]/u.test(text)) continue;
 			for (const pattern of STRING_BLACKLIST) {
@@ -148,6 +197,9 @@ function ignoredByMarker(lines, index) {
 
 function scanDoc(path, file) {
 	const lines = readFileSync(file, "utf8").split("\n");
+	const required = REQUIRED_DOC_LINES.get(path);
+	if (required && !lines.includes(required))
+		violations.push(`${path} [required monitor copy] missing exact line`);
 	lines.forEach((line, index) => {
 		for (const pattern of DOC_BLACKLIST) {
 			if (pattern.test(line))

@@ -1,6 +1,27 @@
 {
 	"$schema": "https://biomejs.dev/schemas/2.4.14/schema.json",
 	"files": {
-		"includes": ["**", "!.flow", "!**/.tmp-*", "!config.json"]
-	}
+		"includes": [
+			"**",
+			"!dist",
+			"!.flow",
+			"!.tmp",
+			"!**/.tmp-*",
+			"!config.json",
+			"!site/dist"
+		]
+	},
+	"overrides": [
+		{
+			"includes": ["**/*.svelte"],
+			"linter": {
+				"rules": {
+					"correctness": {
+						"noUnusedImports": "off",
+						"noUnusedVariables": "off"
+					}
+				}
+			}
+		}
+	]
 }
