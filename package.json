@@ -13,7 +13,7 @@
 	"bugs": {
 		"url": "https://github.com/Suge8/pi-flow/issues"
 	},
-	"homepage": "https://github.com/Suge8/pi-flow#readme",
+	"homepage": "https://pi-flow.vercel.app",
 	"engines": {
 		"node": ">=22.19.0"
 	},
