@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+* { box-sizing: border-box; }
+html, body { width: 1280px; height: 720px; margin: 0; overflow: hidden; background: transparent; }
+body { font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif; color: #1c1917; }
+.scrim { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(255,251,245,.92) 0%, rgba(255,251,245,.78) 26%, rgba(255,251,245,.38) 42%, rgba(255,251,245,0) 58%); }
+.content { position: absolute; inset: 0; text-shadow: 0 1px 14px rgba(255,251,245,.55); }
+.brand { position: absolute; left: 68px; top: 72px; display: flex; align-items: center; gap: 17px; }
+.brand canvas { width: 72px; height: 72px; }
+h1 { margin: 0; font-size: 66px; font-weight: 820; line-height: 1; letter-spacing: -.035em; }
+.slogan { position: absolute; left: 68px; top: 188px; font-size: 36px; line-height: 1.32; font-weight: 680; letter-spacing: -.015em; color: #403c38; }
+.slogan em { font-style: normal; color: #df765b; }
+.flow { position: absolute; left: 68px; bottom: 116px; display: flex; align-items: center; gap: 7px; }
+.pill { padding: 7px 12px; border: 2px solid rgba(87,83,78,.24); border-radius: 999px; background: rgba(255,255,255,.58); color: #57534e; font-size: 14px; font-weight: 680; white-space: nowrap; }
+.pill.advisor { border-color: rgba(217,155,38,.7); color: #995d05; }
+.pill.ship { border-color: rgba(16,185,129,.78); color: #067a5b; }
+.sep { color: #a8a29e; font-size: 15px; font-weight: 800; }
+.repo { position: absolute; left: 70px; bottom: 64px; color: #8f8982; font-size: 15px; font-weight: 580; letter-spacing: .01em; }
+</style>
+</head>
+<body>
+<div class="scrim"></div>
+<div class="content">
+  <div class="brand"><canvas class="logo"></canvas><h1>Pi Flow</h1></div>
+  <div class="slogan">Stop trusting <em>&ldquo;done&rdquo;</em>.<br>Verify the loop.</div>
+  <div class="flow">
+    <span class="pill">Align</span><span class="sep">›</span>
+    <span class="pill">Plan</span><span class="sep">›</span>
+    <span class="pill">Execute</span><span class="sep">›</span>
+    <span class="pill">Check</span><span class="sep">›</span>
+    <span class="pill advisor">Advise</span><span class="sep">›</span>
+    <span class="pill ship">Ship ✓</span>
+  </div>
+  <div class="repo">github.com/Suge8/pi-flow</div>
+</div>
+<script src="../hero/logo-canvas.js"></script>
+</body>
+</html>

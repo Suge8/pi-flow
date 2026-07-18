@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="style.css">
+<style>
+  body { width: 1280px; height: 640px; }
+  .mascot { height: 600px; right: 30px; }
+  .copy { left: 92px; max-width: 660px; }
+  .brand { gap: 22px; }
+  .brand canvas.logo { width: 96px; height: 96px; }
+  .brand h1 { font-size: 96px; }
+  .slogan { font-size: 40px; margin-top: 32px; }
+  .pills { margin-top: 44px; gap: 8px; }
+  .pill { font-size: 17px; padding: 7px 15px; }
+  .sep { font-size: 17px; }
+  .repo { margin-top: 34px; font-size: 17px; }
+</style>
+</head>
+<body>
+<div class="hero">
+  <img class="bg" src="bg-stage.png" alt="">
+  <img class="mascot" src="../visual/mascot-master.png" alt="">
+  <div class="copy">
+    <div class="brand">
+      <canvas class="logo"></canvas>
+      <h1>Pi Flow</h1>
+    </div>
+    <div class="slogan">Stop trusting <span class="hl">&ldquo;done&rdquo;</span>.<br>Verify the loop.</div>
+    <div class="pills">
+      <span class="pill">Align</span><span class="sep">›</span>
+      <span class="pill">Plan</span><span class="sep">›</span>
+      <span class="pill">Execute</span><span class="sep">›</span>
+      <span class="pill">Check</span><span class="sep">›</span>
+      <span class="pill advisor">Advise</span><span class="sep">›</span>
+      <span class="pill ok">Ship ✓</span>
+    </div>
+    <div class="repo">github.com/Suge8/pi-flow</div>
+  </div>
+</div>
+<script src="logo-canvas.js"></script>
+</body>
+</html>
