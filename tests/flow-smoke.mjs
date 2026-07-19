@@ -11637,8 +11637,16 @@ async function sessionContextIsolationScenario() {
 }
 
 async function soakRetainedContextGateScenario() {
-	const { evaluateSoakResult } = await import(
+	const {
+		evaluateSoakResult,
+		generationCancellationLifecycle,
+		parallelExecutionLifecycle,
+		serialExecutionLifecycle,
+	} = await import(
 		`${pathToFileURL(join(root, "scripts/benchmark-performance.mjs")).href}?test=${Date.now()}`
+	);
+	const { readAlignmentState } = await importModule(
+		"shared/generation-state.js",
 	);
 	const resources = {
 		flow: { contexts: 0, completionFacts: 0 },
@@ -11654,33 +11662,234 @@ async function soakRetainedContextGateScenario() {
 		parallelBoards: 0,
 		active: {},
 	};
+	const contexts = { weakRefs: 0, aliveAfterGc: 0 };
 	const samples = Array.from({ length: 100 }, (_item, index) => ({
 		cycle: index + 1,
 		heapUsed: 10_000_000,
 		rss: 20_000_000,
 		lifecycle: {
+			generation: "cancelled",
+			serial: index % 2 === 0 ? "completed" : "stopped",
 			parallel: index % 2 === 0 ? "completed" : "stopped",
 			parallelWorkers: 2,
 		},
 		resources,
 	}));
-	const result = evaluateSoakResult(samples, 10, {
-		weakRefs: 1,
-		aliveAfterGc: 1,
-	});
 	assert(
-		result.ok === false &&
-			result.resourceFailures.some((failure) =>
+		evaluateSoakResult(samples, 10, contexts, resources).ok === true,
+		"soak rejected a stable lifecycle",
+	);
+	const preDraftFlow = {
+		status: "paused",
+		goals: [],
+		currentGoal: 0,
+		parallelRun: null,
+	};
+	const alignment = { version: 1 };
+	assert(
+		generationCancellationLifecycle(preDraftFlow, alignment) === "cancelled",
+		"soak rejected a verified generation cancellation",
+	);
+	assert(
+		serialExecutionLifecycle(
+			{ status: "paused", currentGoal: 1, goals: [{}, { status: "running" }] },
+			true,
+			{ completionBoundary: true, runtimeGoalStatus: "paused" },
+		) === "stopped",
+		"soak rejected a verified serial stop",
+	);
+	assert(
+		serialExecutionLifecycle(
+			{ status: "complete", goals: [{ status: "complete" }] },
+			false,
+		) === "completed",
+		"soak rejected a verified serial completion",
+	);
+	assert(
+		parallelExecutionLifecycle(
+			{
+				status: "paused",
+				parallelRun: { goalIndexes: [1, 2] },
+				goals: [
+					{ status: "complete" },
+					{ status: "paused" },
+					{ status: "paused" },
+				],
+			},
+			true,
+			[1, 2],
+		) === "stopped",
+		"soak rejected a verified parallel stop",
+	);
+	assert(
+		parallelExecutionLifecycle(
+			{
+				status: "complete",
+				parallelRun: null,
+				goals: [{ status: "complete" }, { status: "complete" }],
+			},
+			false,
+			[0, 1],
+		) === "completed",
+		"soak rejected a verified parallel completion",
+	);
+	const invalidAlignmentDir = tempDir("soak-invalid-alignment");
+	writeFileSync(join(invalidAlignmentDir, "alignment.json"), "{}\n");
+	let invalidAlignmentRejected = false;
+	try {
+		readAlignmentState(invalidAlignmentDir);
+	} catch {
+		invalidAlignmentRejected = true;
+	}
+	assert(
+		invalidAlignmentRejected,
+		"malformed alignment checkpoint was accepted",
+	);
+	for (const [message, validate] of [
+		[
+			"soak accepted generation cancellation without paused canonical state",
+			() =>
+				generationCancellationLifecycle(
+					{ ...preDraftFlow, status: "generating" },
+					alignment,
+				),
+		],
+		[
+			"soak accepted generation cancellation without alignment checkpoint",
+			() => generationCancellationLifecycle(preDraftFlow, undefined),
+		],
+		[
+			"soak accepted generation cancellation with a Goal",
+			() =>
+				generationCancellationLifecycle(
+					{ ...preDraftFlow, goals: [{ status: "running" }] },
+					alignment,
+				),
+		],
+		[
+			"soak accepted generation cancellation with a current Goal",
+			() =>
+				generationCancellationLifecycle(
+					{ ...preDraftFlow, currentGoal: 1 },
+					alignment,
+				),
+		],
+		[
+			"soak accepted generation cancellation with a parallel run",
+			() =>
+				generationCancellationLifecycle(
+					{ ...preDraftFlow, parallelRun: { goalIndexes: [] } },
+					alignment,
+				),
+		],
+		[
+			"soak accepted serial stop without a paused Goal runtime",
+			() =>
+				serialExecutionLifecycle(
+					{ status: "paused", currentGoal: 0, goals: [{ status: "running" }] },
+					true,
+					{ completionBoundary: true, runtimeGoalStatus: "active" },
+				),
+		],
+		[
+			"soak accepted serial stop without a completion boundary",
+			() =>
+				serialExecutionLifecycle(
+					{ status: "paused", currentGoal: 0, goals: [{ status: "running" }] },
+					true,
+					{ completionBoundary: false, runtimeGoalStatus: "paused" },
+				),
+		],
+		[
+			"soak accepted serial completion with an incomplete Goal",
+			() =>
+				serialExecutionLifecycle(
+					{
+						status: "complete",
+						goals: [{ status: "complete" }, { status: "running" }],
+					},
+					false,
+				),
+		],
+		[
+			"soak accepted parallel completion with an incomplete Goal",
+			() =>
+				parallelExecutionLifecycle(
+					{
+						status: "complete",
+						parallelRun: null,
+						goals: [{ status: "complete" }, { status: "running" }],
+					},
+					false,
+					[0, 1],
+				),
+		],
+		[
+			"soak accepted parallel completion with a retained run",
+			() =>
+				parallelExecutionLifecycle(
+					{
+						status: "complete",
+						parallelRun: { goalIndexes: [0, 1] },
+						goals: [{ status: "complete" }, { status: "complete" }],
+					},
+					false,
+					[0, 1],
+				),
+		],
+		[
+			"soak accepted parallel stop with a running Goal",
+			() =>
+				parallelExecutionLifecycle(
+					{
+						status: "paused",
+						parallelRun: { goalIndexes: [1] },
+						goals: [{ status: "complete" }, { status: "running" }],
+					},
+					true,
+					[1],
+				),
+		],
+		[
+			"soak accepted parallel stop without a retained run",
+			() =>
+				parallelExecutionLifecycle(
+					{
+						status: "paused",
+						parallelRun: null,
+						goals: [{ status: "complete" }, { status: "paused" }],
+					},
+					true,
+					[1],
+				),
+		],
+	]) {
+		let rejected = false;
+		try {
+			validate();
+		} catch {
+			rejected = true;
+		}
+		assert(rejected, message);
+	}
+	const retainedContext = evaluateSoakResult(
+		samples,
+		10,
+		{ weakRefs: 1, aliveAfterGc: 1 },
+		resources,
+	);
+	assert(
+		retainedContext.ok === false &&
+			retainedContext.resourceFailures.some((failure) =>
 				failure.includes("Session context"),
 			),
 		"soak accepted a retained full Session context",
 	);
+	const empty = evaluateSoakResult([], 10, contexts, resources);
 	assert(
-		evaluateSoakResult(samples, 10, {
-			weakRefs: 1,
-			aliveAfterGc: 0,
-		}).ok === true,
-		"soak rejected a stable lifecycle",
+		empty.ok === false &&
+			empty.resourceFailures.some((failure) => failure.includes("no samples")),
+		"soak accepted an empty run",
 	);
 	const retainedBoardSamples = samples.map((sample, index) => ({
 		...sample,
@@ -11689,10 +11898,12 @@ async function soakRetainedContextGateScenario() {
 				? { ...sample.resources, parallelBoards: 1 }
 				: sample.resources,
 	}));
-	const retainedBoard = evaluateSoakResult(retainedBoardSamples, 10, {
-		weakRefs: 0,
-		aliveAfterGc: 0,
-	});
+	const retainedBoard = evaluateSoakResult(
+		retainedBoardSamples,
+		10,
+		contexts,
+		resources,
+	);
 	assert(
 		retainedBoard.ok === false &&
 			retainedBoard.resourceFailures.some((failure) =>
@@ -11700,10 +11911,94 @@ async function soakRetainedContextGateScenario() {
 			),
 		"soak accepted a retained parallel lane board",
 	);
+	for (const resourceName of [
+		"FSWatcher",
+		"Timeout",
+		"ProcessWrap",
+		"PipeConnectWrap",
+		"TCPConnectWrap",
+		"ShutdownWrap",
+		"TCPSocketWrap",
+		"FutureResourceWrap",
+	]) {
+		const activeResources = {
+			...resources,
+			active: { [resourceName]: 1 },
+		};
+		const retainedResourceSamples = samples.map((sample, index) => ({
+			...sample,
+			resources:
+				index === samples.length - 1 ? activeResources : sample.resources,
+		}));
+		const retainedDuringCycle = evaluateSoakResult(
+			retainedResourceSamples,
+			10,
+			contexts,
+			resources,
+		);
+		const retainedAfterClose = evaluateSoakResult(
+			samples,
+			10,
+			contexts,
+			activeResources,
+		);
+		assert(
+			retainedDuringCycle.ok === false &&
+				retainedAfterClose.ok === false &&
+				retainedDuringCycle.resourceFailures.some((failure) =>
+					failure.includes(resourceName),
+				) &&
+				retainedAfterClose.resourceFailures.some((failure) =>
+					failure.includes(resourceName),
+				),
+			`soak accepted a retained ${resourceName}`,
+		);
+	}
+	const inheritedPipeResources = {
+		...resources,
+		active: { PipeWrap: 2 },
+	};
+	assert(
+		evaluateSoakResult(samples, 10, contexts, inheritedPipeResources, {
+			PipeWrap: 2,
+		}).ok === true,
+		"soak rejected inherited stdout/stderr PipeWrap resources",
+	);
+	const retainedPipe = evaluateSoakResult(
+		samples,
+		10,
+		contexts,
+		inheritedPipeResources,
+		{ PipeWrap: 1 },
+	);
+	assert(
+		retainedPipe.ok === false &&
+			retainedPipe.resourceFailures.some((failure) =>
+				failure.includes("PipeWrap"),
+			),
+		"soak accepted a retained Unix client socket above baseline",
+	);
+	const onlyCompleted = evaluateSoakResult(
+		samples.map((sample) => ({
+			...sample,
+			lifecycle: { ...sample.lifecycle, parallel: "completed" },
+		})),
+		10,
+		contexts,
+		resources,
+	);
+	assert(
+		onlyCompleted.ok === false &&
+			onlyCompleted.resourceFailures.some((failure) =>
+				failure.includes("completed and stopped"),
+			),
+		"soak accepted parallel coverage without a stopped lifecycle",
+	);
 	const missingParallel = evaluateSoakResult(
 		samples.map((sample) => ({ ...sample, lifecycle: undefined })),
 		10,
-		{ weakRefs: 0, aliveAfterGc: 0 },
+		contexts,
+		resources,
 	);
 	assert(
 		missingParallel.ok === false &&

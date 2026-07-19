@@ -198,9 +198,14 @@ async function runSoak(modeArgs) {
 		throw new Error("soak requires Node --expose-gc");
 	const cycles = integerOption(modeArgs, "cycles", 100, 100);
 	const warmupCycles = integerOption(modeArgs, "warmup", 10, 1);
+	// Node materializes piped stdio lazily; include inherited handles in the baseline.
+	void process.stdout;
+	void process.stderr;
+	const baselineActiveResources = activeResourceCounts();
 	const temp = mkdtempSync(join(tmpdir(), "pi-flow-soak-bench-"));
+	let bench;
 	try {
-		const bench = await createSoakBench(temp);
+		bench = await createSoakBench(temp);
 		for (let index = 0; index < warmupCycles; index += 1) {
 			await bench.runCycle(index);
 			await settleLifecycle();
@@ -218,11 +223,19 @@ async function runSoak(modeArgs) {
 				resources: bench.resourceSnapshot(),
 			});
 		}
-		const result = soakResult(samples, warmupCycles, bench.contextRefs);
-		bench.close();
+		await bench.close();
+		await settleLifecycle();
+		const result = soakResult(
+			samples,
+			warmupCycles,
+			bench.contextRefs,
+			bench.resourceSnapshot(),
+			baselineActiveResources,
+		);
 		if (!result.ok) process.exitCode = 1;
 		return result;
 	} finally {
+		await bench?.close();
 		rmSync(temp, { recursive: true, force: true });
 	}
 }
@@ -254,33 +267,37 @@ async function createSoakBench(temp) {
 		flowRuntimeModule,
 		{ waitForSessionTransitions },
 		generation,
+		generationState,
 		watcher,
 		goalRuntime,
 		laneUi,
-		report,
+		reportClient,
 		flowTypes,
+		flowValidator,
 	] = await Promise.all([
 		import(moduleUrl("flow/execution/advance.js")),
 		import(moduleUrl("goal.js")),
 		import(moduleUrl("flow/runtime.js")),
 		import(moduleUrl("flow/session-transition.js")),
 		import(moduleUrl("flow/generation.js")),
+		import(moduleUrl("shared/generation-state.js")),
 		import(moduleUrl("flow/watcher.js")),
 		import(moduleUrl("goal/runtime.js")),
 		import(moduleUrl("flow/parallel/lane-ui.js")),
-		import(moduleUrl("shared/report-server.js")),
+		import(moduleUrl("shared/report-client.js")),
 		import(moduleUrl("flow/types.js")),
+		import(moduleUrl("flow/validator.js")),
 	]);
 	const pi = piFacade(runtime);
 	const flowCommand = extension.commands.get("flow")?.handler;
 	if (!flowCommand) throw new Error("Loaded extension did not register /flow.");
 
 	async function runCycle(index) {
-		await runGenerationCancellation(index);
-		await runExecution(index, index % 2 === 0);
+		const generation = await runGenerationCancellation(index);
+		const serial = await runExecution(index, index % 2 === 0);
 		const parallel = await runParallelExecution(index, index % 2 === 0);
 		harness.releaseEntries();
-		return { parallel, parallelWorkers: 2 };
+		return { generation, serial, parallel, parallelWorkers: 2 };
 	}
 
 	async function runGenerationCancellation(index) {
@@ -291,7 +308,13 @@ async function createSoakBench(temp) {
 		await flowCommand("stop F1", ctx);
 		await harness.emit("agent_end", { messages: [] }, ctx);
 		await harness.shutdown(ctx);
+		const dir = join(workspace, ".flow", "F1");
+		const lifecycle = generationCancellationLifecycle(
+			validatedFlow(dir),
+			generationState.readAlignmentState(dir),
+		);
 		resetWorkspaceFlow(workspace);
+		return lifecycle;
 	}
 
 	async function runExecution(index, stop) {
@@ -314,8 +337,26 @@ async function createSoakBench(temp) {
 			goalCtx = harness.currentContext();
 			await completeGoal(dir, goalCtx);
 		}
+		const stopEvidence = stop
+			? {
+					completionBoundary: goalCtx.sessionManager
+						.getBranch()
+						.some(
+							(entry) =>
+								entry.customType === "pi-flow-goal-completion-boundary" &&
+								entry.data?.reason === "stop",
+						),
+					runtimeGoalStatus: getGoalState(goalCtx)?.status,
+				}
+			: undefined;
 		await harness.shutdown(goalCtx);
+		const lifecycle = serialExecutionLifecycle(
+			validatedFlow(dir),
+			stop,
+			stopEvidence,
+		);
 		resetWorkspaceFlow(workspace);
+		return lifecycle;
 	}
 
 	async function runParallelExecution(index, stop) {
@@ -325,7 +366,8 @@ async function createSoakBench(temp) {
 			"F1",
 			flowTypes.FLOW_SCHEMA_VERSION,
 		);
-		const markers = [1, 2].map((goalIndex) =>
+		const batchIndices = [1, 2];
+		const markers = batchIndices.map((goalIndex) =>
 			join(workspace, `benchmark-worker-${goalIndex}.started`),
 		);
 		for (const marker of markers) rmSync(marker, { force: true });
@@ -351,13 +393,10 @@ async function createSoakBench(temp) {
 				throw new Error("Parallel lane board was not mounted.");
 			if (stop) await flowCommand("stop F1", consoleCtx);
 			await running;
-			const flow = JSON.parse(readFileSync(join(dir, "flow.json"), "utf8"));
-			if (stop ? flow.status !== "paused" : flow.status !== "complete")
-				throw new Error(`Parallel lifecycle did not settle: ${flow.status}`);
 			if (laneUi.activeParallelLaneBoardCount() !== 0)
 				throw new Error("Settled parallel lane board remained active.");
 			await harness.shutdown(consoleCtx);
-			return stop ? "stopped" : "completed";
+			return parallelExecutionLifecycle(validatedFlow(dir), stop, batchIndices);
 		} finally {
 			consoleCtx ??= harness.currentContext();
 			if (
@@ -381,6 +420,8 @@ async function createSoakBench(temp) {
 			throw new Error(
 				`Goal runtime was not active: ${readFileSync(join(dir, "flow.json"), "utf8")}\n${harness.notifications.join("\n")}`,
 			);
+		const before = validatedFlow(dir);
+		const completedGoalIndex = before.currentGoal;
 		await handleGoalCompletionEnd(pi, ctx, {
 			goalId: goal.id,
 			summary: "benchmark complete",
@@ -388,9 +429,27 @@ async function createSoakBench(temp) {
 			sessionFile: ctx.sessionManager.getSessionFile(),
 		});
 		await waitForSessionTransitions();
-		const flow = JSON.parse(readFileSync(join(dir, "flow.json"), "utf8"));
-		if (flow.status !== "complete" && flow.currentGoal === 0)
-			throw new Error("Flow completion did not advance.");
+		const flow = validatedFlow(dir);
+		if (flow.goals[completedGoalIndex]?.status !== "complete")
+			throw new Error(
+				`Serial Goal ${completedGoalIndex + 1} did not complete.`,
+			);
+		if (completedGoalIndex === before.goals.length - 1)
+			serialExecutionLifecycle(flow, false);
+		else if (
+			flow.status !== "running" ||
+			flow.currentGoal !== completedGoalIndex + 1
+		)
+			throw new Error("Serial Flow completion did not advance exactly once.");
+	}
+
+	function validatedFlow(dir) {
+		const validation = flowValidator.validateFlowDir(dir, "zh");
+		if (!validation.ok || !validation.flow)
+			throw new Error(
+				`Benchmark Flow validation failed: ${validation.errors.join("; ")}`,
+			);
+		return validation.flow;
 	}
 
 	function resourceSnapshot() {
@@ -404,13 +463,17 @@ async function createSoakBench(temp) {
 		};
 	}
 
+	let closePromise;
 	return {
 		runCycle,
 		resourceSnapshot,
 		contextRefs: harness.contextRefs,
 		close() {
-			watcher.closeFlowGoalWatcher();
-			report.closeReportServer();
+			closePromise ??= (async () => {
+				watcher.closeFlowGoalWatcher();
+				await reportClient.closeReportClient();
+			})();
+			return closePromise;
 		},
 	};
 }
@@ -539,41 +602,73 @@ function piFacade(runtime) {
 	};
 }
 
-function soakResult(samples, warmupCycles, contextRefs) {
-	return evaluateSoakResult(samples, warmupCycles, {
-		weakRefs: contextRefs.length,
-		aliveAfterGc: aliveRefs(contextRefs),
-	});
+function soakResult(
+	samples,
+	warmupCycles,
+	contextRefs,
+	closedResources,
+	baselineActiveResources,
+) {
+	return evaluateSoakResult(
+		samples,
+		warmupCycles,
+		{
+			weakRefs: contextRefs.length,
+			aliveAfterGc: aliveRefs(contextRefs),
+		},
+		closedResources,
+		baselineActiveResources,
+	);
 }
 
-export function evaluateSoakResult(samples, warmupCycles, contexts) {
+export function evaluateSoakResult(
+	samples,
+	warmupCycles,
+	contexts,
+	closedResources,
+	baselineActiveResources = {},
+) {
 	const first = samples.slice(0, 20);
 	const last = samples.slice(-20);
 	const firstHeapMedian = median(first.map((sample) => sample.heapUsed));
 	const lastHeapMedian = median(last.map((sample) => sample.heapUsed));
 	const heapGrowthBytes = lastHeapMedian - firstHeapMedian;
 	const resourceFailures = samples.flatMap((sample) =>
-		terminalResourceFailures(sample.resources).map(
+		terminalResourceFailures(sample.resources, baselineActiveResources).map(
 			(failure) => `cycle ${sample.cycle}: ${failure}`,
 		),
 	);
+	if (samples.length === 0) resourceFailures.push("soak produced no samples");
 	if (contexts.aliveAfterGc !== 0)
 		resourceFailures.push(
 			`${contexts.aliveAfterGc} Session contexts survived GC`,
 		);
-	const parallelLifecycles = {
-		completed: samples.filter(
-			(sample) => sample.lifecycle?.parallel === "completed",
-		).length,
-		stopped: samples.filter(
-			(sample) => sample.lifecycle?.parallel === "stopped",
-		).length,
-	};
-	if (
-		parallelLifecycles.completed + parallelLifecycles.stopped !==
-		samples.length
-	)
-		resourceFailures.push("parallel lifecycle coverage is incomplete");
+	if (closedResources)
+		resourceFailures.push(
+			...terminalResourceFailures(closedResources, baselineActiveResources).map(
+				(failure) => `after close: ${failure}`,
+			),
+		);
+	else resourceFailures.push("post-close resource snapshot is missing");
+	const generationCancellations = samples.filter(
+		(sample) => sample.lifecycle?.generation === "cancelled",
+	).length;
+	if (generationCancellations !== samples.length)
+		resourceFailures.push("generation cancellation coverage is incomplete");
+	const serialLifecycles = lifecycleCounts(samples, "serial");
+	checkLifecycleCoverage(
+		"serial",
+		serialLifecycles,
+		samples.length,
+		resourceFailures,
+	);
+	const parallelLifecycles = lifecycleCounts(samples, "parallel");
+	checkLifecycleCoverage(
+		"parallel",
+		parallelLifecycles,
+		samples.length,
+		resourceFailures,
+	);
 	if (samples.some((sample) => sample.lifecycle?.parallelWorkers !== 2))
 		resourceFailures.push("parallel lifecycle did not start two workers");
 	const ok = heapGrowthBytes <= 5 * mebibyte && resourceFailures.length === 0;
@@ -597,7 +692,11 @@ export function evaluateSoakResult(samples, warmupCycles, contexts) {
 			gated: false,
 		},
 		contexts,
+		generationCancellations,
+		serialLifecycles,
 		parallelLifecycles,
+		baselineActiveResources,
+		closedResources,
 		resourceFailures,
 		samples: samples.map((sample, index) => {
 			const window = samples.slice(Math.max(0, index - 19), index + 1);
@@ -610,7 +709,89 @@ export function evaluateSoakResult(samples, warmupCycles, contexts) {
 	};
 }
 
-function terminalResourceFailures(resources) {
+export function generationCancellationLifecycle(flow, alignment) {
+	if (
+		flow?.status !== "paused" ||
+		!Array.isArray(flow.goals) ||
+		flow.goals.length !== 0 ||
+		flow.currentGoal !== 0 ||
+		flow.parallelRun !== null ||
+		alignment?.version !== 1
+	)
+		throw new Error(
+			`Generation cancellation did not settle as pre-draft: status=${String(flow?.status)}, goals=${String(flow?.goals?.length)}, currentGoal=${String(flow?.currentGoal)}, parallel=${String(flow?.parallelRun !== null)}, alignment=${String(alignment?.version)}`,
+		);
+	return "cancelled";
+}
+
+export function serialExecutionLifecycle(flow, stop, stopEvidence) {
+	if (stop) {
+		const currentGoal = flow?.goals?.[flow.currentGoal];
+		if (
+			flow?.status !== "paused" ||
+			currentGoal?.status !== "running" ||
+			stopEvidence?.runtimeGoalStatus !== "paused" ||
+			stopEvidence.completionBoundary !== true
+		)
+			throw new Error(
+				`Serial stop did not settle: status=${String(flow?.status)}, canonicalGoal=${String(currentGoal?.status)}, runtimeGoal=${String(stopEvidence?.runtimeGoalStatus)}, boundary=${String(stopEvidence?.completionBoundary)}`,
+			);
+		return "stopped";
+	}
+	if (
+		flow?.status !== "complete" ||
+		!Array.isArray(flow.goals) ||
+		flow.goals.length === 0 ||
+		flow.goals.some((goal) => goal.status !== "complete")
+	)
+		throw new Error("Serial completion did not complete every Goal.");
+	return "completed";
+}
+
+export function parallelExecutionLifecycle(flow, stop, goalIndexes) {
+	if (stop) {
+		const runIndexes = flow?.parallelRun?.goalIndexes;
+		if (
+			flow?.status !== "paused" ||
+			!Array.isArray(runIndexes) ||
+			runIndexes.length !== goalIndexes.length ||
+			runIndexes.some((goalIndex, index) => goalIndex !== goalIndexes[index]) ||
+			goalIndexes.some(
+				(goalIndex) => flow.goals?.[goalIndex]?.status !== "paused",
+			)
+		)
+			throw new Error("Parallel stop did not pause its active Goals.");
+		return "stopped";
+	}
+	if (
+		flow?.status !== "complete" ||
+		flow.parallelRun !== null ||
+		!Array.isArray(flow.goals) ||
+		flow.goals.length === 0 ||
+		flow.goals.some((goal) => goal.status !== "complete")
+	)
+		throw new Error("Parallel completion did not complete every Goal.");
+	return "completed";
+}
+
+function lifecycleCounts(samples, name) {
+	return {
+		completed: samples.filter(
+			(sample) => sample.lifecycle?.[name] === "completed",
+		).length,
+		stopped: samples.filter((sample) => sample.lifecycle?.[name] === "stopped")
+			.length,
+	};
+}
+
+function checkLifecycleCoverage(name, counts, sampleCount, failures) {
+	if (counts.completed + counts.stopped !== sampleCount)
+		failures.push(`${name} lifecycle coverage is incomplete`);
+	if (sampleCount > 0 && (counts.completed === 0 || counts.stopped === 0))
+		failures.push(`${name} lifecycle coverage requires completed and stopped`);
+}
+
+function terminalResourceFailures(resources, baselineActiveResources) {
 	const failures = [];
 	if (resources.flow.contexts !== 0)
 		failures.push(`${resources.flow.contexts} Flow contexts active`);
@@ -624,9 +805,11 @@ function terminalResourceFailures(resources) {
 		failures.push(`${resources.flowWatchers} Flow watchers active`);
 	if (resources.parallelBoards !== 0)
 		failures.push(`${resources.parallelBoards} parallel boards active`);
-	for (const name of ["FSEventWrap", "FSWatcher", "Timeout"])
-		if ((resources.active[name] ?? 0) !== 0)
-			failures.push(`${resources.active[name]} ${name} resources active`);
+	for (const [name, count] of Object.entries(resources.active)) {
+		const retained = count - (baselineActiveResources[name] ?? 0);
+		if (retained > 0)
+			failures.push(`${retained} ${name} resources active above baseline`);
+	}
 	return failures;
 }
 

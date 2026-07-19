@@ -5,6 +5,7 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	watch,
 	writeFileSync,
@@ -422,8 +423,9 @@ function spawnDaemon(
 	deadline: number,
 ) {
 	return new Promise<ReportEndpoint>((resolveSpawn, rejectSpawn) => {
-		const daemonEntry = fileURLToPath(
-			new URL("../report-daemon.js", import.meta.url),
+		// realpath：经 extensions 符号链接加载时避免 symlink argv；否则 daemon 主模块判断失败会静默 exit 0。
+		const daemonEntry = realpathSync(
+			fileURLToPath(new URL("../report-daemon.js", import.meta.url)),
 		);
 		const child = spawn(process.execPath, [daemonEntry], {
 			detached: true,
@@ -439,10 +441,27 @@ function spawnDaemon(
 			finished = true;
 			clearTimeout(timeout);
 			child.removeAllListeners();
-			child.disconnect();
+			if (endpoint) {
+				// 成功：父进程独占断开 IPC，daemon 靠 listen + idle timer 保活。
+				if (child.connected) {
+					try {
+						child.disconnect();
+					} catch {
+						/* TOCTOU: channel closed between check and disconnect */
+					}
+				}
+			} else {
+				// 超时/错误：杀掉未 ready 的子进程，避免占端口或留下半开 daemon。
+				try {
+					child.kill("SIGKILL");
+				} catch {}
+			}
 			child.unref();
-			if (error) rejectSpawn(error);
-			else if (endpoint) resolveSpawn(endpoint);
+			if (endpoint) resolveSpawn(endpoint);
+			else
+				rejectSpawn(
+					error ?? new Error("Report daemon startup finished without result"),
+				);
 		};
 		child.once("error", (error) => finish(error));
 		child.once("exit", (code, signal) =>

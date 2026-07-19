@@ -92,6 +92,26 @@ async function runSmoke() {
 		await closeServer(reusablePort);
 		rmSync(endpointPath, { recursive: true, force: true });
 
+		// symlink argv 不得预先 realpath：覆盖 daemon 主模块判断（extensions 符号链接安装形态）。
+		const symlinkDaemonEntry = join(out, "report-daemon.link.js");
+		symlinkSync(join(out, "dist", "report-daemon.js"), symlinkDaemonEntry);
+		const linkedDaemon = spawnRawDaemon(children, {
+			out,
+			runtimeDir,
+			entry: symlinkDaemonEntry,
+		});
+		const linkedReady = await childMessage(linkedDaemon, "ready");
+		daemonPids.add(linkedReady.health.pid);
+		assert(
+			linkedReady.health.bind === "127.0.0.1" &&
+				linkedReady.health.port === 49327,
+			JSON.stringify(linkedReady.health),
+		);
+		await killPid(linkedReady.health.pid);
+		await childExit(linkedDaemon, 2_000);
+		children.delete(linkedDaemon);
+		await waitForMissing(endpointPath);
+
 		const closingDaemon = spawnDaemon(children, {
 			out,
 			agentDir,
@@ -722,11 +742,11 @@ process.stdout.write(JSON.stringify({ url }));
 }
 
 function spawnRawDaemon(children, input) {
-	const child = spawn(
-		process.execPath,
-		[realpathSync(join(input.out, "dist", "report-daemon.js"))],
-		{ stdio: ["ignore", "ignore", "pipe", "ipc"] },
-	);
+	const entry =
+		input.entry ?? realpathSync(join(input.out, "dist", "report-daemon.js"));
+	const child = spawn(process.execPath, [entry], {
+		stdio: ["ignore", "ignore", "pipe", "ipc"],
+	});
 	children.add(child);
 	child.once("spawn", () =>
 		child.send({

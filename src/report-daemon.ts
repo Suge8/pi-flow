@@ -2,6 +2,7 @@ import {
 	chmodSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	writeFileSync,
@@ -485,24 +486,37 @@ async function startFromIpc() {
 		runtimeDir: start.runtimeDir,
 		idleMs: IDLE_MS,
 	});
-	process.send?.(
-		{ type: "ready", protocol: REPORT_PROTOCOL, health: daemon.health },
-		() => process.disconnect?.(),
-	);
+	// ready 后不在这里 disconnect：握手收尾由父进程单一负责，避免双端竞态。
+	// 父进程 finish/崩溃关闭 IPC 后，本进程仍由 server + idle timer 保活。
+	process.send?.({
+		type: "ready",
+		protocol: REPORT_PROTOCOL,
+		health: daemon.health,
+	});
 }
 
-const entry = process.argv[1]
-	? pathToFileURL(resolve(process.argv[1])).href
-	: "";
-if (import.meta.url === entry)
+// 经 symlink 路径启动时 argv 与 import.meta.url（realpath）不一致；对齐后再判断主模块。
+const entry = process.argv[1] ? mainModuleUrl(process.argv[1]) : "";
+if (entry && import.meta.url === entry)
 	void startFromIpc().catch((error) => {
-		process.send?.(
-			{
-				type: "error",
-				protocol: REPORT_PROTOCOL,
-				message: error instanceof Error ? error.message : String(error),
-			},
-			() => process.disconnect?.(),
-		);
-		process.exitCode = 1;
+		const payload = {
+			type: "error" as const,
+			protocol: REPORT_PROTOCOL,
+			message: error instanceof Error ? error.message : String(error),
+		};
+		// 失败路径由子进程收尾 IPC 并退出；父进程 finish 只在 connected 时 disconnect。
+		if (typeof process.send === "function")
+			process.send(payload, () => {
+				process.disconnect?.();
+				process.exit(1);
+			});
+		else process.exit(1);
 	});
+
+function mainModuleUrl(argvPath: string) {
+	try {
+		return pathToFileURL(realpathSync(argvPath)).href;
+	} catch {
+		return pathToFileURL(resolve(argvPath)).href;
+	}
+}
