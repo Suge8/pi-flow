@@ -1,0 +1,3045 @@
+{
+  "schemaVersion": 1,
+  "benchmarkFingerprint": "6a52d8498774fbd80740d92cd01860f9d704e78ef258d363f3d2538f5758016b",
+  "evaluationConfigFingerprint": "a465661058a27123ecc23581cd92c55a5d94a094ded5325ea6fee846a9368e61",
+  "modelFingerprint": "5f1486e2db92cea6da69ebdc00e35a4ebde950a25760bf73ff4c089e2b965688",
+  "packetRuleFingerprint": "a6c8f2b2762df6a6d5cc0f2c039560e20976bdf9328832de0bf58122743359a5",
+  "scorerFingerprint": "d71fb705bb14ae44feb5ee93d5441ce62a29c125702dcfdcfc373ece4272aa9a",
+  "runsPerArm": 1,
+  "workerBudget": 2,
+  "decision": "expand",
+  "directions": {
+    "historical-cross-module": "neutral",
+    "scope-conflict": "positive",
+    "uneven-fork-join": "positive"
+  },
+  "benchmarks": [
+    {
+      "id": "historical-cross-module",
+      "fingerprint": "b47d3b3d03b118defa7862375947c4f207d8589404d51ad10d7c5d51a453a1af",
+      "graph": [
+        {
+          "dependsOn": [],
+          "writeScope": [
+            "src/graph/**"
+          ]
+        },
+        {
+          "dependsOn": [],
+          "writeScope": [
+            "src/scope/**"
+          ]
+        },
+        {
+          "dependsOn": [
+            0,
+            1
+          ],
+          "writeScope": [
+            "src/scheduler/**"
+          ]
+        },
+        {
+          "dependsOn": [
+            2
+          ],
+          "writeScope": [
+            "src/summary/**"
+          ]
+        }
+      ],
+      "planFingerprint": "ab1138bf56001c1e63e8cdf8d223762aa49a90e660a4490bb5bdf9bdfa37d655",
+      "planning": {
+        "attempts": [
+          {
+            "attempt": 1,
+            "classification": "none",
+            "outcome": "complete",
+            "elapsedMs": 62494,
+            "cost": 0.0686216,
+            "calls": 4,
+            "tokens": 45024,
+            "metricsComplete": true
+          }
+        ],
+        "elapsedMs": 62449,
+        "totalAttemptElapsedMs": 62494,
+        "totalAttemptCost": 0.0686216,
+        "totalAttemptCalls": 4,
+        "totalAttemptTokens": 45024,
+        "attemptMetricsComplete": true,
+        "cost": 0.0686216,
+        "calls": 4,
+        "tokens": 45024,
+        "status": "valid"
+      },
+      "armOrder": [
+        [
+          "serial",
+          "current-batch",
+          "optimized-batch",
+          "streaming"
+        ]
+      ],
+      "runs": [
+        {
+          "arm": "serial",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 1,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 60200,
+              "active": []
+            },
+            {
+              "sequence": 3,
+              "type": "launch",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 60201,
+              "active": [
+                1
+              ]
+            },
+            {
+              "sequence": 4,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 131390,
+              "active": []
+            },
+            {
+              "sequence": 5,
+              "type": "launch",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 131392,
+              "active": [
+                2
+              ]
+            },
+            {
+              "sequence": 6,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 196428,
+              "active": []
+            },
+            {
+              "sequence": 7,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 196430,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 8,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 246554,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "2016918a95c7d04947b8a700bcb285859d80a1295778e460a067321bdc2959f8",
+            "3": "a8696cebe1f5aeab46f16d7f2ffdae8c0cb98187bf53b4a4bf9dc8f56277da0e"
+          },
+          "metrics": {
+            "elapsedMs": 246554,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": true,
+            "repairRounds": 0,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 2,
+            "prewalkExpected": 2,
+            "calls": 25,
+            "tokens": 414057,
+            "cost": 0.3025636,
+            "readCalls": 10,
+            "bashCalls": 8,
+            "totalAttemptElapsedMs": 247251,
+            "totalAttemptCost": 0.3025636,
+            "totalAttemptCalls": 25,
+            "totalAttemptTokens": 414057,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "process_start",
+              "outcome": "failed",
+              "elapsedMs": 515,
+              "cost": 0,
+              "calls": 0,
+              "tokens": 0,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 3,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "exit",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 445
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 1,
+                "prewalkExpected": 2,
+                "resourcesRemaining": 0,
+                "readCalls": 0,
+                "bashCalls": 0,
+                "elapsedMs": 445,
+                "acceptancePassed": false,
+                "qualityPassed": false,
+                "firstRoundPassed": false,
+                "repairRounds": 0
+              }
+            },
+            {
+              "attempt": 2,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 246736,
+              "cost": 0.3025636,
+              "calls": 25,
+              "tokens": 414057,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 1,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 60200,
+                    "active": []
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "launch",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 60201,
+                    "active": [
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 131390,
+                    "active": []
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "launch",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 131392,
+                    "active": [
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 196428,
+                    "active": []
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 196430,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 8,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 246554,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "2016918a95c7d04947b8a700bcb285859d80a1295778e460a067321bdc2959f8",
+                  "3": "a8696cebe1f5aeab46f16d7f2ffdae8c0cb98187bf53b4a4bf9dc8f56277da0e"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 2,
+                "prewalkExpected": 2,
+                "resourcesRemaining": 0,
+                "readCalls": 10,
+                "bashCalls": 8,
+                "elapsedMs": 246554,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": true,
+                "repairRounds": 0
+              }
+            }
+          ]
+        },
+        {
+          "arm": "current-batch",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                0,
+                1
+              ],
+              "elapsedMs": 1,
+              "active": [
+                0,
+                1
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 71795,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 3,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 81093,
+              "active": []
+            },
+            {
+              "sequence": 4,
+              "type": "launch",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 81094,
+              "active": [
+                2
+              ]
+            },
+            {
+              "sequence": 5,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 143152,
+              "active": []
+            },
+            {
+              "sequence": 6,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 143154,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 7,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 189709,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "fd7425e696ab5f783db14d7418053fbd38c4173d474b3b76d160f28572cc8426",
+            "3": "0f2a28f2d47201103271bc18ad5567e16ccb93ed5c4a714a730c9447d64be57f"
+          },
+          "metrics": {
+            "elapsedMs": 189709,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": true,
+            "repairRounds": 0,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 2,
+            "prewalkExpected": 2,
+            "calls": 23,
+            "tokens": 364481,
+            "cost": 0.3119356,
+            "readCalls": 3,
+            "bashCalls": 10,
+            "totalAttemptElapsedMs": 189896,
+            "totalAttemptCost": 0.3119356,
+            "totalAttemptCalls": 23,
+            "totalAttemptTokens": 364481,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 189896,
+              "cost": 0.3119356,
+              "calls": 23,
+              "tokens": 364481,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0,
+                      1
+                    ],
+                    "elapsedMs": 1,
+                    "active": [
+                      0,
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 71795,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 81093,
+                    "active": []
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "launch",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 81094,
+                    "active": [
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 143152,
+                    "active": []
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 143154,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 189709,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "fd7425e696ab5f783db14d7418053fbd38c4173d474b3b76d160f28572cc8426",
+                  "3": "0f2a28f2d47201103271bc18ad5567e16ccb93ed5c4a714a730c9447d64be57f"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 2,
+                "prewalkExpected": 2,
+                "resourcesRemaining": 0,
+                "readCalls": 3,
+                "bashCalls": 10,
+                "elapsedMs": 189709,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": true,
+                "repairRounds": 0
+              }
+            }
+          ]
+        },
+        {
+          "arm": "optimized-batch",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                0,
+                1
+              ],
+              "elapsedMs": 1,
+              "active": [
+                0,
+                1
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 58724,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 3,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 84019,
+              "active": []
+            },
+            {
+              "sequence": 4,
+              "type": "launch",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 84021,
+              "active": [
+                2
+              ]
+            },
+            {
+              "sequence": 5,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 154710,
+              "active": []
+            },
+            {
+              "sequence": 6,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 154712,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 7,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 205766,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "c2060f89a2c1b5abe6557ad3370bc936f654cd584f1416ee965455d39b34fac4",
+            "3": "6aa65e31ba99e1c8b208102af369d983c343d49d87c76265abc23f8eb68cb902"
+          },
+          "metrics": {
+            "elapsedMs": 205766,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": true,
+            "repairRounds": 0,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 2,
+            "prewalkExpected": 2,
+            "calls": 22,
+            "tokens": 330611,
+            "cost": 0.2691756,
+            "readCalls": 4,
+            "bashCalls": 10,
+            "totalAttemptElapsedMs": 205947,
+            "totalAttemptCost": 0.2691756,
+            "totalAttemptCalls": 22,
+            "totalAttemptTokens": 330611,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 205947,
+              "cost": 0.2691756,
+              "calls": 22,
+              "tokens": 330611,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0,
+                      1
+                    ],
+                    "elapsedMs": 1,
+                    "active": [
+                      0,
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 58724,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 84019,
+                    "active": []
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "launch",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 84021,
+                    "active": [
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 154710,
+                    "active": []
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 154712,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 205766,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "c2060f89a2c1b5abe6557ad3370bc936f654cd584f1416ee965455d39b34fac4",
+                  "3": "6aa65e31ba99e1c8b208102af369d983c343d49d87c76265abc23f8eb68cb902"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 2,
+                "prewalkExpected": 2,
+                "resourcesRemaining": 0,
+                "readCalls": 4,
+                "bashCalls": 10,
+                "elapsedMs": 205766,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": true,
+                "repairRounds": 0
+              }
+            }
+          ]
+        },
+        {
+          "arm": "streaming",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                0,
+                1
+              ],
+              "elapsedMs": 1,
+              "active": [
+                0,
+                1
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 49847,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 3,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 122368,
+              "active": []
+            },
+            {
+              "sequence": 4,
+              "type": "launch",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 122370,
+              "active": [
+                2
+              ]
+            },
+            {
+              "sequence": 5,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 196815,
+              "active": []
+            },
+            {
+              "sequence": 6,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 196816,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 7,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 245620,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "0932a0eaa0b0611625491f172f60976d0371cc3133aa5dba4f5c8e4b26a887c4",
+            "3": "954f4f9152dcaa9b062c87284bf81d1a69fb8db2558f4c511517183582ed100c"
+          },
+          "metrics": {
+            "elapsedMs": 245620,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": false,
+            "repairRounds": 1,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 2,
+            "prewalkExpected": 2,
+            "calls": 30,
+            "tokens": 553245,
+            "cost": 0.3684996,
+            "readCalls": 8,
+            "bashCalls": 13,
+            "totalAttemptElapsedMs": 245819,
+            "totalAttemptCost": 0.3684996,
+            "totalAttemptCalls": 30,
+            "totalAttemptTokens": 553245,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 245819,
+              "cost": 0.3684996,
+              "calls": 30,
+              "tokens": 553245,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0,
+                      1
+                    ],
+                    "elapsedMs": 1,
+                    "active": [
+                      0,
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 49847,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 122368,
+                    "active": []
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "launch",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 122370,
+                    "active": [
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 196815,
+                    "active": []
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 196816,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 245620,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "0932a0eaa0b0611625491f172f60976d0371cc3133aa5dba4f5c8e4b26a887c4",
+                  "3": "954f4f9152dcaa9b062c87284bf81d1a69fb8db2558f4c511517183582ed100c"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 2,
+                "prewalkExpected": 2,
+                "resourcesRemaining": 0,
+                "readCalls": 8,
+                "bashCalls": 13,
+                "elapsedMs": 245620,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": false,
+                "repairRounds": 1
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scope-conflict",
+      "fingerprint": "98de0aaac5a16303e3995debfce4a1fe5402e34d29aa7184f35f94c62fdf20c6",
+      "graph": [
+        {
+          "dependsOn": [],
+          "writeScope": [
+            "**"
+          ]
+        },
+        {
+          "dependsOn": [],
+          "writeScope": [
+            "src/alpha/**"
+          ]
+        },
+        {
+          "dependsOn": [],
+          "writeScope": [
+            "src/beta/**"
+          ]
+        },
+        {
+          "dependsOn": [
+            0,
+            1,
+            2
+          ],
+          "writeScope": [
+            "src/report/**"
+          ]
+        }
+      ],
+      "planFingerprint": "4e7d8a29b750bff2787255431fa0ddd965611d720585a78d33940f0f5d2340c5",
+      "planning": {
+        "attempts": [
+          {
+            "attempt": 1,
+            "classification": "none",
+            "outcome": "complete",
+            "elapsedMs": 45642,
+            "cost": 0.0489324,
+            "calls": 4,
+            "tokens": 30361,
+            "metricsComplete": true
+          }
+        ],
+        "elapsedMs": 45579,
+        "totalAttemptElapsedMs": 45642,
+        "totalAttemptCost": 0.0489324,
+        "totalAttemptCalls": 4,
+        "totalAttemptTokens": 30361,
+        "attemptMetricsComplete": true,
+        "cost": 0.0489324,
+        "calls": 4,
+        "tokens": 30361,
+        "status": "valid"
+      },
+      "armOrder": [
+        [
+          "current-batch",
+          "optimized-batch",
+          "streaming",
+          "serial"
+        ]
+      ],
+      "runs": [
+        {
+          "arm": "current-batch",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 1,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 44784,
+              "active": []
+            },
+            {
+              "sequence": 3,
+              "type": "launch",
+              "goalIndexes": [
+                1,
+                2
+              ],
+              "elapsedMs": 44785,
+              "active": [
+                1,
+                2
+              ]
+            },
+            {
+              "sequence": 4,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 106838,
+              "active": [
+                1
+              ]
+            },
+            {
+              "sequence": 5,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 114158,
+              "active": []
+            },
+            {
+              "sequence": 6,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 114161,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 7,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 167530,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "3ae6e18812c1d10f263a270cbc2df69f54043d0cc5b77a0317d9f4522e6fe2a5",
+            "3": "5cfdce40aad1422df4dbc4fae3734965ebdcbbfafbae35eff8f9f71bb1e70117"
+          },
+          "metrics": {
+            "elapsedMs": 167530,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": true,
+            "repairRounds": 0,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 3,
+            "prewalkExpected": 3,
+            "calls": 25,
+            "tokens": 346816,
+            "cost": 0.28515999999999997,
+            "readCalls": 6,
+            "bashCalls": 8,
+            "totalAttemptElapsedMs": 167738,
+            "totalAttemptCost": 0.28515999999999997,
+            "totalAttemptCalls": 25,
+            "totalAttemptTokens": 346816,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 167738,
+              "cost": 0.28515999999999997,
+              "calls": 25,
+              "tokens": 346816,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 1,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 44784,
+                    "active": []
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "launch",
+                    "goalIndexes": [
+                      1,
+                      2
+                    ],
+                    "elapsedMs": 44785,
+                    "active": [
+                      1,
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 106838,
+                    "active": [
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 114158,
+                    "active": []
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 114161,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 167530,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "3ae6e18812c1d10f263a270cbc2df69f54043d0cc5b77a0317d9f4522e6fe2a5",
+                  "3": "5cfdce40aad1422df4dbc4fae3734965ebdcbbfafbae35eff8f9f71bb1e70117"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 3,
+                "prewalkExpected": 3,
+                "resourcesRemaining": 0,
+                "readCalls": 6,
+                "bashCalls": 8,
+                "elapsedMs": 167530,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": true,
+                "repairRounds": 0
+              }
+            }
+          ]
+        },
+        {
+          "arm": "optimized-batch",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                1,
+                2
+              ],
+              "elapsedMs": 2,
+              "active": [
+                1,
+                2
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 49616,
+              "active": [
+                1
+              ]
+            },
+            {
+              "sequence": 3,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 55554,
+              "active": []
+            },
+            {
+              "sequence": 4,
+              "type": "launch",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 55555,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 5,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 102586,
+              "active": []
+            },
+            {
+              "sequence": 6,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 102588,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 7,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 154828,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "3ae6e18812c1d10f263a270cbc2df69f54043d0cc5b77a0317d9f4522e6fe2a5",
+            "3": "a7ff638be0083191033ccda5df49f38e5436877be1cc1a8f7118dab4f9d70414"
+          },
+          "metrics": {
+            "elapsedMs": 154828,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": true,
+            "repairRounds": 0,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 3,
+            "prewalkExpected": 3,
+            "calls": 23,
+            "tokens": 307988,
+            "cost": 0.2128912,
+            "readCalls": 8,
+            "bashCalls": 5,
+            "totalAttemptElapsedMs": 155038,
+            "totalAttemptCost": 0.2128912,
+            "totalAttemptCalls": 23,
+            "totalAttemptTokens": 307988,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 155038,
+              "cost": 0.2128912,
+              "calls": 23,
+              "tokens": 307988,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      1,
+                      2
+                    ],
+                    "elapsedMs": 2,
+                    "active": [
+                      1,
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 49616,
+                    "active": [
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 55554,
+                    "active": []
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 55555,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 102586,
+                    "active": []
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 102588,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 154828,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "3ae6e18812c1d10f263a270cbc2df69f54043d0cc5b77a0317d9f4522e6fe2a5",
+                  "3": "a7ff638be0083191033ccda5df49f38e5436877be1cc1a8f7118dab4f9d70414"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 3,
+                "prewalkExpected": 3,
+                "resourcesRemaining": 0,
+                "readCalls": 8,
+                "bashCalls": 5,
+                "elapsedMs": 154828,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": true,
+                "repairRounds": 0
+              }
+            }
+          ]
+        },
+        {
+          "arm": "streaming",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                1,
+                2
+              ],
+              "elapsedMs": 1,
+              "active": [
+                1,
+                2
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 46228,
+              "active": [
+                1
+              ]
+            },
+            {
+              "sequence": 3,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 63423,
+              "active": []
+            },
+            {
+              "sequence": 4,
+              "type": "launch",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 63424,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 5,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 153091,
+              "active": []
+            },
+            {
+              "sequence": 6,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 153092,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 7,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 203340,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "3ae6e18812c1d10f263a270cbc2df69f54043d0cc5b77a0317d9f4522e6fe2a5",
+            "3": "60156a755a9d1f17583bc89c8f90a6253359edb5cc337c73feb51bb47c5ce992"
+          },
+          "metrics": {
+            "elapsedMs": 203340,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": true,
+            "repairRounds": 0,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 3,
+            "prewalkExpected": 3,
+            "calls": 27,
+            "tokens": 389459,
+            "cost": 0.27302760000000004,
+            "readCalls": 7,
+            "bashCalls": 9,
+            "totalAttemptElapsedMs": 203528,
+            "totalAttemptCost": 0.27302760000000004,
+            "totalAttemptCalls": 27,
+            "totalAttemptTokens": 389459,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 203528,
+              "cost": 0.27302760000000004,
+              "calls": 27,
+              "tokens": 389459,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      1,
+                      2
+                    ],
+                    "elapsedMs": 1,
+                    "active": [
+                      1,
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 46228,
+                    "active": [
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 63423,
+                    "active": []
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 63424,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 153091,
+                    "active": []
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 153092,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 203340,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "3ae6e18812c1d10f263a270cbc2df69f54043d0cc5b77a0317d9f4522e6fe2a5",
+                  "3": "60156a755a9d1f17583bc89c8f90a6253359edb5cc337c73feb51bb47c5ce992"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 3,
+                "prewalkExpected": 3,
+                "resourcesRemaining": 0,
+                "readCalls": 7,
+                "bashCalls": 9,
+                "elapsedMs": 203340,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": true,
+                "repairRounds": 0
+              }
+            }
+          ]
+        },
+        {
+          "arm": "serial",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 1,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 33545,
+              "active": []
+            },
+            {
+              "sequence": 3,
+              "type": "launch",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 33547,
+              "active": [
+                1
+              ]
+            },
+            {
+              "sequence": 4,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 101208,
+              "active": []
+            },
+            {
+              "sequence": 5,
+              "type": "launch",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 101209,
+              "active": [
+                2
+              ]
+            },
+            {
+              "sequence": 6,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 147819,
+              "active": []
+            },
+            {
+              "sequence": 7,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 147820,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 8,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 207912,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "3ae6e18812c1d10f263a270cbc2df69f54043d0cc5b77a0317d9f4522e6fe2a5",
+            "3": "7a8c808fa821615eddc199a7de43245a3198878f7a9dbc47a76a1ebd0683c35b"
+          },
+          "metrics": {
+            "elapsedMs": 207912,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": true,
+            "repairRounds": 0,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 3,
+            "prewalkExpected": 3,
+            "calls": 20,
+            "tokens": 259283,
+            "cost": 0.185382,
+            "readCalls": 7,
+            "bashCalls": 4,
+            "totalAttemptElapsedMs": 208089,
+            "totalAttemptCost": 0.185382,
+            "totalAttemptCalls": 20,
+            "totalAttemptTokens": 259283,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 208089,
+              "cost": 0.185382,
+              "calls": 20,
+              "tokens": 259283,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 1,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 33545,
+                    "active": []
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "launch",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 33547,
+                    "active": [
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 101208,
+                    "active": []
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "launch",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 101209,
+                    "active": [
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 147819,
+                    "active": []
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 147820,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 8,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 207912,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "3ae6e18812c1d10f263a270cbc2df69f54043d0cc5b77a0317d9f4522e6fe2a5",
+                  "3": "7a8c808fa821615eddc199a7de43245a3198878f7a9dbc47a76a1ebd0683c35b"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 3,
+                "prewalkExpected": 3,
+                "resourcesRemaining": 0,
+                "readCalls": 7,
+                "bashCalls": 4,
+                "elapsedMs": 207912,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": true,
+                "repairRounds": 0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "uneven-fork-join",
+      "fingerprint": "47c7e9608ada67385f608363c2dcb80603d8749bb9af761502169e2264579e98",
+      "graph": [
+        {
+          "dependsOn": [],
+          "writeScope": [
+            "src/slow/**"
+          ]
+        },
+        {
+          "dependsOn": [],
+          "writeScope": [
+            "src/token/**"
+          ]
+        },
+        {
+          "dependsOn": [
+            1
+          ],
+          "writeScope": [
+            "src/label/**"
+          ]
+        },
+        {
+          "dependsOn": [
+            0,
+            2
+          ],
+          "writeScope": [
+            "src/report/**"
+          ]
+        }
+      ],
+      "planFingerprint": "dba5d871a0348807f4ae782a3bd43ea6902d79951f972ff07a1aef22d8a65eab",
+      "planning": {
+        "attempts": [
+          {
+            "attempt": 1,
+            "classification": "none",
+            "outcome": "complete",
+            "elapsedMs": 53824,
+            "cost": 0.0566972,
+            "calls": 4,
+            "tokens": 32801,
+            "metricsComplete": true
+          }
+        ],
+        "elapsedMs": 53783,
+        "totalAttemptElapsedMs": 53824,
+        "totalAttemptCost": 0.0566972,
+        "totalAttemptCalls": 4,
+        "totalAttemptTokens": 32801,
+        "attemptMetricsComplete": true,
+        "cost": 0.0566972,
+        "calls": 4,
+        "tokens": 32801,
+        "status": "valid"
+      },
+      "armOrder": [
+        [
+          "optimized-batch",
+          "streaming",
+          "serial",
+          "current-batch"
+        ]
+      ],
+      "runs": [
+        {
+          "arm": "optimized-batch",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                0,
+                1
+              ],
+              "elapsedMs": 1,
+              "active": [
+                0,
+                1
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 66345,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 3,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 74430,
+              "active": []
+            },
+            {
+              "sequence": 4,
+              "type": "launch",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 74431,
+              "active": [
+                2
+              ]
+            },
+            {
+              "sequence": 5,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 123721,
+              "active": []
+            },
+            {
+              "sequence": 6,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 123723,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 7,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 171178,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "c5c85f7ef7f3065f783834e3fc37d3baa9d4c6d0f8886c7a61b1813c86db158b",
+            "3": "e29a096d9c6a1d7e2263ca8bae1deef3d84d57df685aa420ec87944868f8f86a"
+          },
+          "metrics": {
+            "elapsedMs": 171178,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": true,
+            "repairRounds": 0,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 2,
+            "prewalkExpected": 2,
+            "calls": 26,
+            "tokens": 381996,
+            "cost": 0.2504216,
+            "readCalls": 5,
+            "bashCalls": 10,
+            "totalAttemptElapsedMs": 171352,
+            "totalAttemptCost": 0.2504216,
+            "totalAttemptCalls": 26,
+            "totalAttemptTokens": 381996,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 171352,
+              "cost": 0.2504216,
+              "calls": 26,
+              "tokens": 381996,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0,
+                      1
+                    ],
+                    "elapsedMs": 1,
+                    "active": [
+                      0,
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 66345,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 74430,
+                    "active": []
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "launch",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 74431,
+                    "active": [
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 123721,
+                    "active": []
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 123723,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 171178,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "c5c85f7ef7f3065f783834e3fc37d3baa9d4c6d0f8886c7a61b1813c86db158b",
+                  "3": "e29a096d9c6a1d7e2263ca8bae1deef3d84d57df685aa420ec87944868f8f86a"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 2,
+                "prewalkExpected": 2,
+                "resourcesRemaining": 0,
+                "readCalls": 5,
+                "bashCalls": 10,
+                "elapsedMs": 171178,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": true,
+                "repairRounds": 0
+              }
+            }
+          ]
+        },
+        {
+          "arm": "streaming",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                0,
+                1
+              ],
+              "elapsedMs": 1,
+              "active": [
+                0,
+                1
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 52967,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 3,
+              "type": "launch",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 52968,
+              "active": [
+                0,
+                2
+              ]
+            },
+            {
+              "sequence": 4,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 58222,
+              "active": [
+                2
+              ]
+            },
+            {
+              "sequence": 5,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 104411,
+              "active": []
+            },
+            {
+              "sequence": 6,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 104412,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 7,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 151639,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "c5ec7a47186ce1f39c9d207c14de66bccdbceedd62e8a8e5b52264a39c6f909d",
+            "3": "962f7d463f1303ab53a1936d82766deb45cab035e5aba4ccc0e6f4e5c5be3297"
+          },
+          "metrics": {
+            "elapsedMs": 151639,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": true,
+            "repairRounds": 0,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 2,
+            "prewalkExpected": 2,
+            "calls": 19,
+            "tokens": 241484,
+            "cost": 0.1815032,
+            "readCalls": 2,
+            "bashCalls": 8,
+            "totalAttemptElapsedMs": 151815,
+            "totalAttemptCost": 0.1815032,
+            "totalAttemptCalls": 19,
+            "totalAttemptTokens": 241484,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 151815,
+              "cost": 0.1815032,
+              "calls": 19,
+              "tokens": 241484,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0,
+                      1
+                    ],
+                    "elapsedMs": 1,
+                    "active": [
+                      0,
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 52967,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "launch",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 52968,
+                    "active": [
+                      0,
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 58222,
+                    "active": [
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 104411,
+                    "active": []
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 104412,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 151639,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "c5ec7a47186ce1f39c9d207c14de66bccdbceedd62e8a8e5b52264a39c6f909d",
+                  "3": "962f7d463f1303ab53a1936d82766deb45cab035e5aba4ccc0e6f4e5c5be3297"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 2,
+                "prewalkExpected": 2,
+                "resourcesRemaining": 0,
+                "readCalls": 2,
+                "bashCalls": 8,
+                "elapsedMs": 151639,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": true,
+                "repairRounds": 0
+              }
+            }
+          ]
+        },
+        {
+          "arm": "serial",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 0,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 48434,
+              "active": []
+            },
+            {
+              "sequence": 3,
+              "type": "launch",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 48435,
+              "active": [
+                1
+              ]
+            },
+            {
+              "sequence": 4,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 97773,
+              "active": []
+            },
+            {
+              "sequence": 5,
+              "type": "launch",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 97774,
+              "active": [
+                2
+              ]
+            },
+            {
+              "sequence": 6,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 145505,
+              "active": []
+            },
+            {
+              "sequence": 7,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 145507,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 8,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 193204,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "9c0eb6a61515487d860529762d7cc7010dfc77bc1cb72f99cbad248859c00c2f",
+            "3": "ca430247798be203c92cc82387720ccca54b716dbe89cd1d52a46debbb19a8f4"
+          },
+          "metrics": {
+            "elapsedMs": 193204,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": true,
+            "repairRounds": 0,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 2,
+            "prewalkExpected": 2,
+            "calls": 21,
+            "tokens": 281535,
+            "cost": 0.2002524,
+            "readCalls": 5,
+            "bashCalls": 8,
+            "totalAttemptElapsedMs": 193409,
+            "totalAttemptCost": 0.2002524,
+            "totalAttemptCalls": 21,
+            "totalAttemptTokens": 281535,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 193409,
+              "cost": 0.2002524,
+              "calls": 21,
+              "tokens": 281535,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 0,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 48434,
+                    "active": []
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "launch",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 48435,
+                    "active": [
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 97773,
+                    "active": []
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "launch",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 97774,
+                    "active": [
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 145505,
+                    "active": []
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 145507,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 8,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 193204,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "9c0eb6a61515487d860529762d7cc7010dfc77bc1cb72f99cbad248859c00c2f",
+                  "3": "ca430247798be203c92cc82387720ccca54b716dbe89cd1d52a46debbb19a8f4"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 2,
+                "prewalkExpected": 2,
+                "resourcesRemaining": 0,
+                "readCalls": 5,
+                "bashCalls": 8,
+                "elapsedMs": 193204,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": true,
+                "repairRounds": 0
+              }
+            }
+          ]
+        },
+        {
+          "arm": "current-batch",
+          "repetition": 1,
+          "terminalOutcome": "complete",
+          "oracle": {
+            "executed": true,
+            "ok": true
+          },
+          "repositoryClean": true,
+          "schedule": [
+            {
+              "sequence": 1,
+              "type": "launch",
+              "goalIndexes": [
+                0,
+                1
+              ],
+              "elapsedMs": 2,
+              "active": [
+                0,
+                1
+              ]
+            },
+            {
+              "sequence": 2,
+              "type": "completion",
+              "goalIndexes": [
+                1
+              ],
+              "elapsedMs": 47151,
+              "active": [
+                0
+              ]
+            },
+            {
+              "sequence": 3,
+              "type": "completion",
+              "goalIndexes": [
+                0
+              ],
+              "elapsedMs": 60957,
+              "active": []
+            },
+            {
+              "sequence": 4,
+              "type": "launch",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 60959,
+              "active": [
+                2
+              ]
+            },
+            {
+              "sequence": 5,
+              "type": "completion",
+              "goalIndexes": [
+                2
+              ],
+              "elapsedMs": 114632,
+              "active": []
+            },
+            {
+              "sequence": 6,
+              "type": "launch",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 114634,
+              "active": [
+                3
+              ]
+            },
+            {
+              "sequence": 7,
+              "type": "completion",
+              "goalIndexes": [
+                3
+              ],
+              "elapsedMs": 165587,
+              "active": []
+            }
+          ],
+          "packetFingerprints": {
+            "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+            "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+            "2": "f4233c67a05987397e1d0b6117fd33f04a81c82da0160a865826659a0b1a9ff0",
+            "3": "67f483bcb5f905eadbd4e28988c15211bbedf2a2adfb4aa7edf3928cb0c26bed"
+          },
+          "metrics": {
+            "elapsedMs": 165587,
+            "acceptancePassed": true,
+            "qualityPassed": true,
+            "firstRoundPassed": true,
+            "repairRounds": 0,
+            "processErrors": 0,
+            "processErrorClassifications": {
+              "process_start": 0,
+              "protocol": 0
+            },
+            "resourcesRemaining": 0,
+            "prewalkHits": 2,
+            "prewalkExpected": 2,
+            "calls": 19,
+            "tokens": 243455,
+            "cost": 0.20749,
+            "readCalls": 8,
+            "bashCalls": 6,
+            "totalAttemptElapsedMs": 165775,
+            "totalAttemptCost": 0.20749,
+            "totalAttemptCalls": 19,
+            "totalAttemptTokens": 243455,
+            "attemptMetricsComplete": true
+          },
+          "attempts": [
+            {
+              "attempt": 1,
+              "classification": "none",
+              "outcome": "complete",
+              "elapsedMs": 165775,
+              "cost": 0.20749,
+              "calls": 19,
+              "tokens": 243455,
+              "metricsComplete": true,
+              "evidence": {
+                "schedule": [
+                  {
+                    "sequence": 1,
+                    "type": "launch",
+                    "goalIndexes": [
+                      0,
+                      1
+                    ],
+                    "elapsedMs": 2,
+                    "active": [
+                      0,
+                      1
+                    ]
+                  },
+                  {
+                    "sequence": 2,
+                    "type": "completion",
+                    "goalIndexes": [
+                      1
+                    ],
+                    "elapsedMs": 47151,
+                    "active": [
+                      0
+                    ]
+                  },
+                  {
+                    "sequence": 3,
+                    "type": "completion",
+                    "goalIndexes": [
+                      0
+                    ],
+                    "elapsedMs": 60957,
+                    "active": []
+                  },
+                  {
+                    "sequence": 4,
+                    "type": "launch",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 60959,
+                    "active": [
+                      2
+                    ]
+                  },
+                  {
+                    "sequence": 5,
+                    "type": "completion",
+                    "goalIndexes": [
+                      2
+                    ],
+                    "elapsedMs": 114632,
+                    "active": []
+                  },
+                  {
+                    "sequence": 6,
+                    "type": "launch",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 114634,
+                    "active": [
+                      3
+                    ]
+                  },
+                  {
+                    "sequence": 7,
+                    "type": "completion",
+                    "goalIndexes": [
+                      3
+                    ],
+                    "elapsedMs": 165587,
+                    "active": []
+                  }
+                ],
+                "packetFingerprints": {
+                  "0": "df8c028ce450c1be9767a8b87677f78d02875b1e15792b4c4586fdbbaab5dfb2",
+                  "1": "a5af0043c42312af03209eb5c8ee2e4c49dfa8d30189be2769814e47febaff66",
+                  "2": "f4233c67a05987397e1d0b6117fd33f04a81c82da0160a865826659a0b1a9ff0",
+                  "3": "67f483bcb5f905eadbd4e28988c15211bbedf2a2adfb4aa7edf3928cb0c26bed"
+                },
+                "processErrors": 0,
+                "processErrorClassifications": {
+                  "process_start": 0,
+                  "protocol": 0
+                },
+                "prewalkHits": 2,
+                "prewalkExpected": 2,
+                "resourcesRemaining": 0,
+                "readCalls": 8,
+                "bashCalls": 6,
+                "elapsedMs": 165587,
+                "acceptancePassed": true,
+                "qualityPassed": true,
+                "firstRoundPassed": true,
+                "repairRounds": 0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "executorFingerprint": "48fe46ae43eab785d6369aa60bf886c548ce52bc66a2249eec450610d1496379",
+  "benchmarkIds": [
+    "historical-cross-module",
+    "scope-conflict",
+    "uneven-fork-join"
+  ],
+  "schedulerFingerprint": "d695d432f3a599c30d3a5ad3ffa2a87a4507cdb0f0ca558793437bb6e1fbee6a"
+}

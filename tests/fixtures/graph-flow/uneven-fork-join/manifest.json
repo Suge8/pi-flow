@@ -1,0 +1,40 @@
+{
+	"version": 1,
+	"id": "uneven-fork-join",
+	"title": "不等长 fork-join",
+	"sourceCommit": null,
+	"task": "在这个自包含 ESM 仓库完成四个步骤。必须生成恰好 4 个 normal Goal，文件依次为 G1-slow.md、G2-token.md、G3-label.md、G4-report.md。依赖和 writeScope 必须逐项严格为：G1 dependsOn=[] writeScope=[\"src/slow/**\"]，实现 compileCatalog：trim、转小写、去重、排序；G2 dependsOn=[] writeScope=[\"src/token/**\"]，实现 normalizeToken：trim、转小写、连续非字母数字变为单个连字符并去掉首尾连字符；G3 dependsOn=[1] writeScope=[\"src/label/**\"]，复用 normalizeToken 实现 buildLabel(value, revision) => token#revision；G4 dependsOn=[0,2] writeScope=[\"src/report/**\"]，复用前述函数实现 renderReport(items,name,revision) => 逗号 catalog + ' | ' + label。每个步骤只能修改其 writeScope，必须运行 npm test，并在步骤 markdown 中保留完整 Objective/Scope/Steps/Success Criteria/Verification/Notes/Handoff 合同。不要增加 final_acceptance。",
+	"expectedGraph": [
+		{
+			"file": "G1-slow.md",
+			"dependsOn": [],
+			"writeScope": ["src/slow/**"]
+		},
+		{
+			"file": "G2-token.md",
+			"dependsOn": [],
+			"writeScope": ["src/token/**"]
+		},
+		{
+			"file": "G3-label.md",
+			"dependsOn": [1],
+			"writeScope": ["src/label/**"]
+		},
+		{
+			"file": "G4-report.md",
+			"dependsOn": [0, 2],
+			"writeScope": ["src/report/**"]
+		}
+	],
+	"allowedChanges": [
+		"src/slow/catalog.js",
+		"src/token/token.js",
+		"src/label/label.js",
+		"src/report/report.js"
+	],
+	"oracle": {
+		"command": "npm",
+		"args": ["test"]
+	},
+	"initialSnapshotFingerprint": "6f89a91e07bb75f668a21608a6f098fef4a988a54c3019f7b78ff379b7cff2b0"
+}

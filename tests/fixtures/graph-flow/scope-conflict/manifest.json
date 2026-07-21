@@ -1,0 +1,40 @@
+{
+	"version": 1,
+	"id": "scope-conflict",
+	"title": "writeScope 冲突组合",
+	"sourceCommit": null,
+	"task": "在这个自包含 ESM 仓库完成四个步骤。必须生成恰好 4 个 normal Goal，文件依次为 G1-policy.md、G2-alpha.md、G3-beta.md、G4-report.md。依赖和 writeScope 必须逐项严格为：G1 dependsOn=[] writeScope=[\"**\"]，但实际只修改 src/global/policy.js，实现 applyPolicy：trim、转小写、连续空白压成一个空格；G2 dependsOn=[] writeScope=[\"src/alpha/**\"]，实现 alphaScore 数字求和；G3 dependsOn=[] writeScope=[\"src/beta/**\"]，实现 betaScore 数字乘积；G4 dependsOn=[0,1,2] writeScope=[\"src/report/**\"]，复用 score 函数输出 alpha=N;beta=N。每步只能修改合同指定文件，必须运行 npm test，并在步骤 markdown 中保留完整 Objective/Scope/Steps/Success Criteria/Verification/Notes/Handoff 合同。不要增加 final_acceptance。",
+	"expectedGraph": [
+		{
+			"file": "G1-policy.md",
+			"dependsOn": [],
+			"writeScope": ["**"]
+		},
+		{
+			"file": "G2-alpha.md",
+			"dependsOn": [],
+			"writeScope": ["src/alpha/**"]
+		},
+		{
+			"file": "G3-beta.md",
+			"dependsOn": [],
+			"writeScope": ["src/beta/**"]
+		},
+		{
+			"file": "G4-report.md",
+			"dependsOn": [0, 1, 2],
+			"writeScope": ["src/report/**"]
+		}
+	],
+	"allowedChanges": [
+		"src/global/policy.js",
+		"src/alpha/alpha.js",
+		"src/beta/beta.js",
+		"src/report/report.js"
+	],
+	"oracle": {
+		"command": "npm",
+		"args": ["test"]
+	},
+	"initialSnapshotFingerprint": "2688a90c76aeaa1f3ca0a253e4df3345e331f7e4b17c71d4c22e355fd28d8d8d"
+}

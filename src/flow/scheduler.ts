@@ -1,6 +1,7 @@
 import type { FlowState } from "./types.js";
 
 const WRITE_SCOPE_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/u;
+const MAX_ENUMERATED_GOALS = 10;
 
 export interface ReadyBatch {
 	mode: "serial" | "parallel";
@@ -10,6 +11,29 @@ export interface ReadyBatch {
 export function computeReadyBatch(flow: FlowState): ReadyBatch | null {
 	if (hasActiveBatch(flow)) return null;
 	return readyBatch(flow, readyGoalIndices(flow));
+}
+
+export function computeLaunchSet(
+	flow: FlowState,
+	active: ReadonlySet<number>,
+	budget: number,
+): number[] {
+	if (
+		!Number.isInteger(budget) ||
+		budget <= active.size ||
+		ordinaryGoalCount(flow) > MAX_ENUMERATED_GOALS
+	)
+		return [];
+	const candidates = readyGoalIndices(flow).filter(
+		(index) =>
+			hasSafeWriteScope(flow, index) && activeScopesAllow(flow, active, index),
+	);
+	const finalAcceptance = candidates.find((index) =>
+		isFinalAcceptance(flow, index),
+	);
+	if (finalAcceptance !== undefined)
+		return active.size === 0 ? [finalAcceptance] : [];
+	return bestLaunchSubset(flow, active, candidates, budget - active.size);
 }
 
 export function scopesOverlap(a: unknown, b: unknown) {
@@ -27,6 +51,107 @@ function hasActiveBatch(flow: FlowState) {
 	return (
 		flow.goals.some((goal) => goal.status === "running") ||
 		(flow.parallelRun?.goalIndexes.length ?? 0) > 0
+	);
+}
+
+function ordinaryGoalCount(flow: FlowState) {
+	return flow.goals.filter((goal) => goal.role === "normal").length;
+}
+
+function activeScopesAllow(
+	flow: FlowState,
+	active: ReadonlySet<number>,
+	candidate: number,
+) {
+	const candidateScopes = flow.goals[candidate]?.writeScope;
+	for (const activeIndex of active) {
+		if (scopesOverlap(candidateScopes, flow.goals[activeIndex]?.writeScope))
+			return false;
+	}
+	return true;
+}
+
+function bestLaunchSubset(
+	flow: FlowState,
+	active: ReadonlySet<number>,
+	candidates: number[],
+	capacity: number,
+) {
+	let best: number[] = [];
+	let bestPath = remainingCriticalPath(flow, active, best);
+	for (let mask = 1; mask < 2 ** candidates.length; mask += 1) {
+		const launch = candidates.filter((_, offset) => mask & (2 ** offset));
+		if (launch.length > capacity || !scopesArePairwiseDisjoint(flow, launch))
+			continue;
+		const path = remainingCriticalPath(flow, active, launch);
+		if (!isBetterLaunch(launch, path, best, bestPath)) continue;
+		best = launch;
+		bestPath = path;
+	}
+	return best;
+}
+
+function scopesArePairwiseDisjoint(flow: FlowState, indices: number[]) {
+	return indices.every((index, offset) =>
+		indices
+			.slice(offset + 1)
+			.every(
+				(other) =>
+					!scopesOverlap(
+						flow.goals[index]?.writeScope,
+						flow.goals[other]?.writeScope,
+					),
+			),
+	);
+}
+
+function isBetterLaunch(
+	candidate: number[],
+	candidatePath: number,
+	current: number[],
+	currentPath: number,
+) {
+	if (candidatePath !== currentPath) return candidatePath < currentPath;
+	if (candidate.length !== current.length)
+		return candidate.length > current.length;
+	for (const [offset, index] of candidate.entries()) {
+		if (index !== current[offset]) return index < (current[offset] ?? Infinity);
+	}
+	return false;
+}
+
+function remainingCriticalPath(
+	flow: FlowState,
+	active: ReadonlySet<number>,
+	launch: number[],
+) {
+	const excluded = new Set(active);
+	for (const index of launch) excluded.add(index);
+	const depths: number[] = [];
+	let longest = 0;
+	for (const [index, goal] of flow.goals.entries()) {
+		if (goal.status === "complete" || excluded.has(index)) {
+			depths[index] = 0;
+			continue;
+		}
+		const depth =
+			1 +
+			Math.max(
+				0,
+				...criticalPathDependencies(flow, index).map(
+					(dependency) => depths[dependency] ?? 0,
+				),
+			);
+		depths[index] = depth;
+		longest = Math.max(longest, depth);
+	}
+	return longest;
+}
+
+function criticalPathDependencies(flow: FlowState, index: number) {
+	if (!isFinalAcceptance(flow, index)) return goalDependencies(flow, index);
+	return flow.goals.flatMap((goal, goalIndex) =>
+		goal.role === "normal" ? [goalIndex] : [],
 	);
 }
 
@@ -100,6 +225,15 @@ function isComplete(flow: FlowState, index: number) {
 
 function hasWriteScope(flow: FlowState, index: number) {
 	return hasScopes(flow.goals[index]?.writeScope);
+}
+
+function hasSafeWriteScope(flow: FlowState, index: number) {
+	const scopes = flow.goals[index]?.writeScope;
+	if (!hasScopes(scopes)) return false;
+	for (const scope of scopes) {
+		if (scopePrefix(scope) === undefined) return false;
+	}
+	return true;
 }
 
 function hasScopes(value: unknown): value is unknown[] {

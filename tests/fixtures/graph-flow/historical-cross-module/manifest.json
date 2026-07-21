@@ -1,0 +1,40 @@
+{
+	"version": 1,
+	"id": "historical-cross-module",
+	"title": "历史跨模块调度任务",
+	"sourceCommit": "132c4c1",
+	"task": "这是从 pi-flow 提交 132c4c1 的依赖调度工作缩减出的自包含 ESM 任务。必须生成恰好 4 个 normal Goal，文件依次为 G1-ready.md、G2-scope.md、G3-select.md、G4-summary.md。依赖和 writeScope 必须逐项严格为：G1 dependsOn=[] writeScope=[\"src/graph/**\"]，实现 readyNodes：pending 且直接依赖均 complete 的下标；G2 dependsOn=[] writeScope=[\"src/scope/**\"]，实现 scopesOverlap，支持 canonical dir/** 的祖先/后代冲突；G3 dependsOn=[0,1] writeScope=[\"src/scheduler/**\"]，复用两者实现 selectReady(nodes,budget)，按下标选择互不冲突且不超过预算的 ready 节点；G4 dependsOn=[2] writeScope=[\"src/summary/**\"]，复用 selectReady 输出 ready:i,j。每步只能修改合同指定文件，必须运行 npm test，并在步骤 markdown 中保留完整 Objective/Scope/Steps/Success Criteria/Verification/Notes/Handoff 合同。不要增加 final_acceptance。",
+	"expectedGraph": [
+		{
+			"file": "G1-ready.md",
+			"dependsOn": [],
+			"writeScope": ["src/graph/**"]
+		},
+		{
+			"file": "G2-scope.md",
+			"dependsOn": [],
+			"writeScope": ["src/scope/**"]
+		},
+		{
+			"file": "G3-select.md",
+			"dependsOn": [0, 1],
+			"writeScope": ["src/scheduler/**"]
+		},
+		{
+			"file": "G4-summary.md",
+			"dependsOn": [2],
+			"writeScope": ["src/summary/**"]
+		}
+	],
+	"allowedChanges": [
+		"src/graph/ready.js",
+		"src/scope/overlap.js",
+		"src/scheduler/select.js",
+		"src/summary/summary.js"
+	],
+	"oracle": {
+		"command": "npm",
+		"args": ["test"]
+	},
+	"initialSnapshotFingerprint": "67c9df961a563c7ad32d86022c2b20aa71f0abaee500f48a37b01416163539ad"
+}

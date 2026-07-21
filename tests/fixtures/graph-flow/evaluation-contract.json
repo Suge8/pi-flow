@@ -1,0 +1,57 @@
+{
+	"version": 1,
+	"benchmarks": [
+		"historical-cross-module",
+		"scope-conflict",
+		"uneven-fork-join"
+	],
+	"config": {
+		"language": "zh",
+		"background": {
+			"command": "pi",
+			"extensions": []
+		},
+		"generation": {
+			"align": "no"
+		},
+		"checks": {
+			"tools": ["read", "grep", "find", "ls", "bash"],
+			"timeoutMinutes": 20,
+			"openaiFast": false
+		},
+		"modelRoles": {
+			"advisor": {
+				"model": "xai/grok-4.5",
+				"thinking": "high"
+			},
+			"executor": {
+				"model": "xai/grok-4.5",
+				"thinking": "high"
+			},
+			"reviewers": [
+				{
+					"model": "xai/grok-4.5",
+					"thinking": "high"
+				},
+				{
+					"model": "xai/grok-4.5",
+					"thinking": "high"
+				}
+			]
+		},
+		"advisor": {
+			"enabled": true
+		},
+		"prewalk": {
+			"enabled": true
+		},
+		"acceptance": {
+			"enabled": true
+		},
+		"quality": {
+			"enabled": true,
+			"mode": "autoFix",
+			"runAfterCompletion": true
+		}
+	}
+}

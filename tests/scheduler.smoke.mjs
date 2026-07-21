@@ -53,7 +53,7 @@ const MULTI_WAVE_GOALS = [
 ];
 
 try {
-	const { computeReadyBatch, scopesOverlap } = await import(
+	const { computeLaunchSet, computeReadyBatch, scopesOverlap } = await import(
 		`file://${join(srcOut, "flow/scheduler.js")}?t=${Date.now()}`
 	);
 
@@ -181,6 +181,194 @@ try {
 		);
 	}
 
+	const nonGreedy = graphFlow([
+		{ status: "pending", dependsOn: [], writeScope: ["**"] },
+		{ status: "pending", dependsOn: [], writeScope: ["src/api/**"] },
+		{ status: "pending", dependsOn: [], writeScope: ["src/ui/**"] },
+	]);
+	assert.deepEqual(
+		computeLaunchSet(nonGreedy, new Set(), 2),
+		[1, 2],
+		"two narrow scopes should beat the first global scope",
+	);
+	assert.deepEqual(
+		computeLaunchSet(nonGreedy, new Set(), 1),
+		[0],
+		"budget one should use stable index tie-break",
+	);
+	assert.deepEqual(
+		computeLaunchSet(nonGreedy, new Set(), 8),
+		[1, 2],
+		"budget above the frontier should not admit conflicts",
+	);
+
+	const activeConflict = graphFlow([
+		{ status: "running", dependsOn: [], writeScope: ["src/api/**"] },
+		{ status: "pending", dependsOn: [], writeScope: ["src/api/generated/**"] },
+		{ status: "pending", dependsOn: [], writeScope: ["src/ui/**"] },
+		{ status: "pending", dependsOn: [], writeScope: ["docs/**"] },
+	]);
+	assert.deepEqual(
+		computeLaunchSet(activeConflict, new Set([0]), 3),
+		[2, 3],
+		"launches should avoid active scopes and consume remaining budget",
+	);
+	for (const budget of [0, 1]) {
+		assert.deepEqual(
+			computeLaunchSet(activeConflict, new Set([0]), budget),
+			[],
+			`budget ${budget} should leave no capacity beside one active goal`,
+		);
+	}
+
+	const blockedDependency = graphFlow([
+		{ status: "running", dependsOn: [], writeScope: ["src/base/**"] },
+		{ status: "pending", dependsOn: [0], writeScope: ["src/next/**"] },
+	]);
+	assert.deepEqual(
+		computeLaunchSet(blockedDependency, new Set([0]), 2),
+		[],
+		"an active dependency is not complete and must keep successors blocked",
+	);
+
+	const pendingFinal = graphFlow([
+		{ status: "pending", dependsOn: [], writeScope: ["src/**"] },
+		{
+			status: "pending",
+			role: "final_acceptance",
+			dependsOn: [],
+			writeScope: ["docs/**"],
+		},
+	]);
+	assert.deepEqual(
+		computeLaunchSet(pendingFinal, new Set(), 2),
+		[0],
+		"final acceptance should wait behind every ordinary goal",
+	);
+	const readyFinal = graphFlow([
+		{ status: "complete", dependsOn: [], writeScope: ["src/**"] },
+		{
+			status: "pending",
+			role: "final_acceptance",
+			dependsOn: [],
+			writeScope: ["docs/**"],
+		},
+	]);
+	assert.deepEqual(
+		computeLaunchSet(readyFinal, new Set(), 1),
+		[1],
+		"final acceptance should launch alone once ordinary goals complete",
+	);
+	assert.deepEqual(
+		computeLaunchSet(readyFinal, new Set([0]), 2),
+		[],
+		"final acceptance must not launch beside any active goal",
+	);
+
+	const sparseLaunchScope = [];
+	sparseLaunchScope.length = 1;
+	for (const unsafeScope of [
+		undefined,
+		[],
+		["src/*"],
+		[null],
+		sparseLaunchScope,
+	]) {
+		assert.deepEqual(
+			computeLaunchSet(
+				graphFlow([
+					{ status: "pending", dependsOn: [], writeScope: unsafeScope },
+				]),
+				new Set(),
+				1,
+			),
+			[],
+			`unsafe candidate scope must fail closed: ${JSON.stringify(unsafeScope)}`,
+		);
+	}
+	assert.deepEqual(
+		computeLaunchSet(
+			graphFlow([{ status: "pending", dependsOn: [], writeScope: ["src/**"] }]),
+			new Set([99]),
+			2,
+		),
+		[],
+		"an unknown active goal scope must fail closed",
+	);
+
+	for (const [deepRoot, expected] of [
+		[1, [1]],
+		[0, [0]],
+	]) {
+		const topology = deepBranchFlow(deepRoot);
+		assert.deepEqual(
+			computeLaunchSet(topology, new Set(), 1),
+			expected,
+			"the deeper branch should win regardless of root order",
+		);
+	}
+	const stableTie = graphFlow([
+		{ status: "pending", dependsOn: [], writeScope: ["src/a/**"] },
+		{ status: "pending", dependsOn: [], writeScope: ["src/b/**"] },
+		{ status: "pending", dependsOn: [], writeScope: ["src/c/**"] },
+		{ status: "pending", dependsOn: [0], writeScope: ["docs/a/**"] },
+		{ status: "pending", dependsOn: [1], writeScope: ["docs/b/**"] },
+		{ status: "pending", dependsOn: [2], writeScope: ["docs/c/**"] },
+		{ status: "pending", dependsOn: [3, 4, 5], writeScope: ["docs/join/**"] },
+	]);
+	assert.deepEqual(
+		computeLaunchSet(stableTie, new Set(), 2),
+		[0, 1],
+		"equal-width branches should use lexicographic goal indices",
+	);
+
+	const tenNodeGraph = graphFlow([
+		{ status: "pending", dependsOn: [], writeScope: ["**"] },
+		{ status: "pending", dependsOn: [], writeScope: ["src/api/**"] },
+		{ status: "pending", dependsOn: [], writeScope: ["src/ui/**"] },
+		{ status: "pending", dependsOn: [], writeScope: ["ops/**"] },
+		{ status: "pending", dependsOn: [0], writeScope: ["docs/a/**"] },
+		{ status: "pending", dependsOn: [1], writeScope: ["docs/b/**"] },
+		{ status: "pending", dependsOn: [1], writeScope: ["docs/c/**"] },
+		{ status: "pending", dependsOn: [2, 3], writeScope: ["docs/d/**"] },
+		{ status: "pending", dependsOn: [4, 5], writeScope: ["docs/e/**"] },
+		{ status: "pending", dependsOn: [6, 7, 8], writeScope: ["docs/f/**"] },
+	]);
+	for (const [candidateFlow, budgets] of [
+		[nonGreedy, [0, 1, 2, 4]],
+		[activeConflict, [1, 2, 3, 5]],
+		[tenNodeGraph, [1, 2, 3, 10]],
+	]) {
+		const active = candidateFlow === activeConflict ? new Set([0]) : new Set();
+		for (const budget of budgets) {
+			assert.deepEqual(
+				computeLaunchSet(candidateFlow, active, budget),
+				oracleLaunchSet(candidateFlow, active, budget),
+				`launch set should match exhaustive oracle at budget ${budget}`,
+			);
+		}
+	}
+
+	const immutableFlow = deepFreeze(structuredClone(tenNodeGraph));
+	const immutableSnapshot = structuredClone(immutableFlow);
+	const immutableActive = new Set([3]);
+	const firstLaunch = computeLaunchSet(immutableFlow, immutableActive, 3);
+	assert.deepEqual(
+		computeLaunchSet(immutableFlow, immutableActive, 3),
+		firstLaunch,
+		"identical inputs should produce an identical launch order",
+	);
+	assert.deepEqual(
+		immutableFlow,
+		immutableSnapshot,
+		"scheduler mutated its flow",
+	);
+	assert.deepEqual(
+		[...immutableActive],
+		[3],
+		"scheduler mutated the active goal set",
+	);
+
 	assert.equal(
 		computeReadyBatch(flow([{ status: "complete" }, { status: "complete" }])),
 		null,
@@ -284,6 +472,181 @@ function multiWaveFlow(completedIndices) {
 			status: completed.has(index) ? "complete" : "pending",
 		})),
 	);
+}
+
+function graphFlow(goals, overrides = {}) {
+	return flow(
+		goals.map((goal) => ({ role: "normal", ...goal })),
+		overrides,
+	);
+}
+
+function deepBranchFlow(deepRoot) {
+	const shallowRoot = deepRoot === 0 ? 1 : 0;
+	return graphFlow([
+		{ status: "pending", dependsOn: [], writeScope: ["src/root-a/**"] },
+		{ status: "pending", dependsOn: [], writeScope: ["src/root-b/**"] },
+		{
+			status: "pending",
+			dependsOn: [shallowRoot],
+			writeScope: ["src/shallow-a/**"],
+		},
+		{
+			status: "pending",
+			dependsOn: [shallowRoot],
+			writeScope: ["src/shallow-b/**"],
+		},
+		{
+			status: "pending",
+			dependsOn: [deepRoot],
+			writeScope: ["src/deep-a/**"],
+		},
+		{ status: "pending", dependsOn: [4], writeScope: ["src/deep-b/**"] },
+		{
+			status: "pending",
+			dependsOn: [2, 3, 5],
+			writeScope: ["src/join/**"],
+		},
+	]);
+}
+
+function oracleLaunchSet(candidateFlow, active, budget) {
+	if (!Number.isInteger(budget) || budget <= active.size) return [];
+	const ready = candidateFlow.goals
+		.filter((goal, index) => oracleReady(candidateFlow, goal, index))
+		.map((goal) => goal.index)
+		.filter(
+			(index) =>
+				oracleSafeScopes(candidateFlow.goals[index]?.writeScope) &&
+				[...active].every((activeIndex) =>
+					oracleScopesDisjoint(
+						candidateFlow.goals[index]?.writeScope,
+						candidateFlow.goals[activeIndex]?.writeScope,
+					),
+				),
+		);
+	const finalAcceptance = ready.find(
+		(index) => candidateFlow.goals[index]?.role === "final_acceptance",
+	);
+	if (finalAcceptance !== undefined)
+		return active.size === 0 ? [finalAcceptance] : [];
+
+	let best = [];
+	for (let mask = 1; mask < 2 ** ready.length; mask += 1) {
+		const launch = ready.filter((_, offset) => mask & (2 ** offset));
+		if (launch.length > budget - active.size) continue;
+		if (!oraclePairwiseDisjoint(candidateFlow, launch)) continue;
+		if (oracleLaunchIsBetter(candidateFlow, active, launch, best))
+			best = launch;
+	}
+	return best;
+}
+
+function oracleReady(candidateFlow, goal, index) {
+	if (goal.status !== "pending") return false;
+	if (goal.role === "final_acceptance")
+		return candidateFlow.goals.every(
+			(candidate) =>
+				candidate.role === "final_acceptance" ||
+				candidate.status === "complete",
+		);
+	const dependencies = goal.dependsOn ?? (index === 0 ? [] : [index - 1]);
+	return dependencies.every(
+		(dependency) => candidateFlow.goals[dependency]?.status === "complete",
+	);
+}
+
+function oracleSafeScopes(scopes) {
+	return (
+		Array.isArray(scopes) &&
+		scopes.length > 0 &&
+		[...scopes].every((scope) => oracleScopePrefix(scope) !== undefined)
+	);
+}
+
+function oracleScopesDisjoint(left, right) {
+	if (!oracleSafeScopes(left) || !oracleSafeScopes(right)) return false;
+	return left.every((leftScope) =>
+		right.every((rightScope) => {
+			const leftPrefix = oracleScopePrefix(leftScope);
+			const rightPrefix = oracleScopePrefix(rightScope);
+			return !(
+				leftPrefix === "" ||
+				rightPrefix === "" ||
+				leftPrefix === rightPrefix ||
+				leftPrefix.startsWith(`${rightPrefix}/`) ||
+				rightPrefix.startsWith(`${leftPrefix}/`)
+			);
+		}),
+	);
+}
+
+function oracleScopePrefix(scope) {
+	if (scope === "**") return "";
+	if (typeof scope !== "string" || !scope.endsWith("/**")) return undefined;
+	const prefix = scope.slice(0, -3);
+	return prefix
+		.split("/")
+		.every(
+			(segment) =>
+				segment !== "." &&
+				segment !== ".." &&
+				/^[A-Za-z0-9._-]+$/u.test(segment),
+		)
+		? prefix
+		: undefined;
+}
+
+function oraclePairwiseDisjoint(candidateFlow, launch) {
+	return launch.every((index, offset) =>
+		launch
+			.slice(offset + 1)
+			.every((other) =>
+				oracleScopesDisjoint(
+					candidateFlow.goals[index]?.writeScope,
+					candidateFlow.goals[other]?.writeScope,
+				),
+			),
+	);
+}
+
+function oracleLaunchIsBetter(candidateFlow, active, launch, best) {
+	const launchPath = oracleRemainingCriticalPath(candidateFlow, active, launch);
+	const bestPath = oracleRemainingCriticalPath(candidateFlow, active, best);
+	if (launchPath !== bestPath) return launchPath < bestPath;
+	if (launch.length !== best.length) return launch.length > best.length;
+	for (const [offset, index] of launch.entries()) {
+		if (index !== best[offset]) return index < best[offset];
+	}
+	return false;
+}
+
+function oracleRemainingCriticalPath(candidateFlow, active, launch) {
+	const excluded = new Set([...active, ...launch]);
+	const depths = [];
+	for (const [index, goal] of candidateFlow.goals.entries()) {
+		if (goal.status === "complete" || excluded.has(index)) {
+			depths[index] = 0;
+			continue;
+		}
+		const dependencies =
+			goal.role === "final_acceptance"
+				? candidateFlow.goals
+						.filter((candidate) => candidate.role === "normal")
+						.map((candidate) => candidate.index)
+				: (goal.dependsOn ?? (index === 0 ? [] : [index - 1]));
+		depths[index] =
+			1 + Math.max(0, ...dependencies.map((item) => depths[item] ?? 0));
+	}
+	return Math.max(0, ...depths);
+}
+
+function deepFreeze(value) {
+	if (value && typeof value === "object") {
+		Object.freeze(value);
+		for (const child of Object.values(value)) deepFreeze(child);
+	}
+	return value;
 }
 
 function flow(goals, overrides = {}) {

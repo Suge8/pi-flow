@@ -9,7 +9,8 @@
 			"!**/.tmp-*",
 			"!**/.vercel",
 			"!config.json",
-			"!site/dist"
+			"!site/dist",
+			"!tests/fixtures/graph-flow/baseline.json"
 		]
 	},
 	"overrides": [
