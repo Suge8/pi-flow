@@ -5,7 +5,7 @@ import { readAlignmentStateIfExists } from "../../shared/generation-state.js";
 import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
 import { recordFlowGoalCompletionBoundary } from "../completion.js";
 import { cancelFlowGeneration } from "../generation.js";
-import { refreshFlowHtmlProjection } from "../html.js";
+import { publishFlowReportProjection } from "../html.js";
 import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { currentSessionFile } from "../ownership.js";
 import {
@@ -142,7 +142,7 @@ async function stopFlowTransaction(
 	if (shouldPauseGoal) await pauseTargetGoal(ctx, plan?.sessionFile ?? null);
 	const saved = writeFlow(dir, stopFlowState(dir, flow));
 	closeFlowGoalWatcher(dir);
-	refreshFlowHtmlProjection(ctx, dir, saved);
+	publishFlowReportProjection(ctx, dir, saved);
 	return {
 		alreadyComplete: saved.status === "complete",
 		releaseSessionFiles,

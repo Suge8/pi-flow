@@ -13,9 +13,10 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { prepareTestDist } from "./prepare-dist.mjs";
 import { acquireReportPortTestLock } from "./report-port-lock.mjs";
@@ -90,6 +91,7 @@ try {
 	await runScenario(advisorCommandRegistrationScenario);
 	await runScenario(bootstrapLazyActivationScenario);
 	await runScenario(bootstrapRegistrationRetryScenario);
+	await runScenario(flowReportPublicationLifecycleScenario);
 	await runScenario(flowReportPortConflictIsolationScenario);
 	await runScenario(flowGoalPromptChecklistSyncScenario);
 	await runScenario(completionListenerUsesFreshApiAfterReloadScenario);
@@ -263,6 +265,7 @@ try {
 	await runScenario(sessionNameSyncScenario);
 	await runScenario(snapshotMutationScenario);
 	await runScenario(snapshotRecoveryPrecheckScenario);
+	await runScenario(planFileWatcherSharingScenario);
 	await runScenario(flowGoalWatcherScenario);
 	await runScenario(flowParallelMainGoalWatcherScenario);
 	await runScenario(flowParallelWatcherScenario);
@@ -535,10 +538,11 @@ async function bootstrapLazyActivationScenario() {
 		type: "custom",
 		customType: "review-checkpoint",
 		data: {
-			version: 2,
+			version: 3,
 			active: null,
 			round: 1,
 			phase: "awaiting_agent",
+			reportRun: 1,
 			history: [],
 		},
 	});
@@ -651,6 +655,123 @@ async function bootstrapRegistrationRetryScenario() {
 			(handlers.get(scenario.failEvent) ?? []).length > 0,
 			`${scenario.name} retry did not register ${scenario.failEvent}`,
 		);
+	}
+}
+
+async function flowReportPublicationLifecycleScenario() {
+	// 真实完成链：多步串行中间 Live → 最终 Recent；同路径更高 createdAt 重进 Live。
+	const cwd = tempDir("directory-serial-lifecycle");
+	const dir = createFlow(cwd, "F1", { planCount: 2 });
+	const htmlPath = join(dir, "flow.html");
+	const state = newState(cwd);
+	const { commands } = await loadExtension(state);
+	const sessionFile = join(cwd, "goal-session.jsonl");
+	writeFileSync(sessionFile, "");
+	const flow = readFlow(dir);
+	const createdAt = flow.createdAt;
+	flow.status = "running";
+	flow.startedAt = Date.now();
+	flow.currentGoal = 0;
+	flow.goals[0].status = "running";
+	flow.goals[0].sessionFile = sessionFile;
+	flow.goals[0].snapshot = readFileSync(join(dir, flow.goals[0].file), "utf8");
+	writeFlow(dir, flow);
+	const ctx = commandContext(state, cwd, sessionFile);
+	await commands.get("flow").handler("status F1", ctx);
+	await waitForDirectoryRecord(
+		htmlPath,
+		(record) => record?.state === "live" && record.generation === createdAt,
+		"serial mid-run was not Live",
+	);
+	const { emitFlowGoalCompleted } =
+		await importCachedModule("flow/completion.js");
+	emitFlowGoalCompleted(completionEntry(sessionFile).data, ctx);
+	await flushScheduledGoalStart();
+	const mid = readFlow(dir);
+	assert(
+		mid.status === "running",
+		`expected running after step1: ${mid.status}`,
+	);
+	assert(mid.goals[0].status === "complete", "step1 not complete");
+	assert(mid.goals[1].status === "running", "step2 not started");
+	await waitForDirectoryRecord(
+		htmlPath,
+		(record) => record?.state === "live" && record.generation === createdAt,
+		"serial after step1 left Live",
+	);
+	const nextSession = mid.goals[1].sessionFile;
+	assert(nextSession, "step2 session missing");
+	const nextCtx = commandContext(state, cwd, nextSession);
+	emitFlowGoalCompleted(
+		completionEntry(nextSession, {
+			goalId: mid.goals[1].goalId ?? "goal-2",
+		}).data,
+		nextCtx,
+	);
+	await flushScheduledGoalStart();
+	const done = readFlow(dir);
+	assert(done.status === "complete", `expected complete: ${done.status}`);
+	await waitForDirectoryRecord(
+		htmlPath,
+		(record) => record?.state === "complete" && record.generation === createdAt,
+		"serial final was not Recent",
+	);
+	const reopenedAt = createdAt + 10_000;
+	const reopened = {
+		...done,
+		status: "running",
+		createdAt: reopenedAt,
+		updatedAt: reopenedAt,
+		completedAt: null,
+		currentGoal: 0,
+		goals: done.goals.map((goal, index) => ({
+			...goal,
+			status: index === 0 ? "running" : "pending",
+			completedAt: null,
+			sessionFile: index === 0 ? sessionFile : null,
+			goalId: index === 0 ? "goal-reopen" : null,
+		})),
+	};
+	writeFlow(dir, reopened);
+	await commands.get("flow").handler("status F1", ctx);
+	await waitForDirectoryRecord(
+		htmlPath,
+		(record) => record?.state === "live" && record.generation === reopenedAt,
+		"reopened Flow did not re-enter Live with higher generation",
+	);
+	await shutdownReportDaemon();
+}
+
+async function waitForDirectoryRecord(
+	htmlPath,
+	match,
+	message,
+	timeoutMs = 5_000,
+) {
+	const deadline = Date.now() + timeoutMs;
+	let last;
+	while (Date.now() < deadline) {
+		last = directoryRecordFor(htmlPath);
+		if (match(last)) return last;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	throw new Error(`${message}: ${JSON.stringify(last)}`);
+}
+
+function directoryRecordFor(htmlPath) {
+	const ledgerPath = join(
+		process.env.PI_CODING_AGENT_DIR,
+		"pi-flow-report",
+		"directory.json",
+	);
+	try {
+		const ledger = JSON.parse(readFileSync(ledgerPath, "utf8"));
+		const absolute = resolve(htmlPath);
+		return ledger.records.find(
+			(record) => record.path === absolute || record.realPath === absolute,
+		);
+	} catch {
+		return undefined;
 	}
 }
 
@@ -1343,6 +1464,35 @@ async function parallelLaneBoardThreeGoalScenario() {
 			activeParallelLaneBoardCount() === 1,
 			"mounted lane board was not counted",
 		);
+		const widgetMountCount = () =>
+			state.widgets.filter(
+				(item) =>
+					item.key === "flow-parallel-lanes" && item.content !== undefined,
+			).length;
+		assert(widgetMountCount() === 1, "lane board was not mounted exactly once");
+		const widgetFactory = state.widgets.find(
+			(item) =>
+				item.key === "flow-parallel-lanes" &&
+				typeof item.content === "function",
+		)?.content;
+		assert(
+			typeof widgetFactory === "function",
+			"lane board factory was not set",
+		);
+		const terminal = { rows: 30 };
+		const mountedWidget = widgetFactory(
+			{ terminal, requestRender() {} },
+			{ fg: (_color, value) => value, bold: (value) => value },
+		);
+		const expandedLines = mountedWidget.render(100);
+		terminal.rows = 5;
+		const compactLines = mountedWidget.render(100);
+		assert(
+			expandedLines.length === 17 &&
+				compactLines.length === 5 &&
+				widgetMountCount() === 1,
+			`mounted lane board did not respond to terminal resize: ${expandedLines.length} -> ${compactLines.length}`,
+		);
 
 		let text = latestWidgetText(state);
 		assert(
@@ -1374,9 +1524,14 @@ async function parallelLaneBoardThreeGoalScenario() {
 		assertRunningLaneFirstActivity(text, "G2", `${firstSpinner} 思考中`);
 		assert(typeof tick === "function", "lane board timer was not started");
 		now = 2500;
+		writeWorkerGoalArtifact(dir, flow, 1, qualityFailedChecks());
 		tick();
 		text = latestWidgetText(state);
 		assert(text.includes("2s"), `lane elapsed did not refresh:\n${text}`);
+		assert(
+			!text.includes("优化中") && widgetMountCount() === 1,
+			`elapsed tick read lane state or remounted the widget:\n${text}`,
+		);
 		const refreshedSpinner =
 			ACTIVITY_SPINNER_FRAMES[
 				Math.floor(now / 100) % ACTIVITY_SPINNER_FRAMES.length
@@ -1386,6 +1541,14 @@ async function parallelLaneBoardThreeGoalScenario() {
 				text.includes(`${refreshedSpinner} 思考中`),
 			`running lane spinner did not refresh:\n${text}`,
 		);
+		board.updateWorkerEvent(1);
+		text = latestWidgetText(state);
+		assert(
+			text.includes("优化中") && widgetMountCount() === 1,
+			`worker event did not refresh its lane without remounting:\n${text}`,
+		);
+		writeWorkerGoalArtifact(dir, flow, 1, emptyChecks());
+		board.updateWorkerEvent(1);
 		flow.goals[1].title =
 			"这是一个故意很长用于验证紧凑布局仍能看见当前活动和静默告警的并行步骤标题";
 		now = 181_000;
@@ -1417,7 +1580,6 @@ async function parallelLaneBoardThreeGoalScenario() {
 			args: { command: "echo lane" },
 		};
 		progressScope.feed("G2", toolStart);
-		board.updateWorkerEvent(1);
 		text = latestWidgetText(state);
 		assert(
 			text.includes("bash echo lane · 0s") &&
@@ -1446,7 +1608,6 @@ async function parallelLaneBoardThreeGoalScenario() {
 			isError: false,
 		};
 		progressScope.feed("G2", toolEnd);
-		board.updateWorkerEvent(1);
 		text = latestWidgetText(state);
 		assert(text.includes("✓ bash echo lane · 1s"), text);
 
@@ -1502,10 +1663,14 @@ async function parallelLaneBoardThreeGoalScenario() {
 			"disposed lane board remained active",
 		);
 		assert(intervalCleared, "lane board timer was not cleared");
+		const widgetCalls = state.widgets.filter(
+			(item) => item.key === "flow-parallel-lanes",
+		);
 		assert(
-			state.widgets.filter((item) => item.key === "flow-parallel-lanes").at(-1)
-				?.content === undefined,
-			"lane board was not cleared",
+			widgetMountCount() === 1 &&
+				widgetCalls.length === 2 &&
+				widgetCalls.at(-1)?.content === undefined,
+			"lane board was remounted or not cleared exactly once",
 		);
 	} finally {
 		if (!intervalCleared) board?.dispose();
@@ -1524,6 +1689,7 @@ async function parallelRunSuccessScenario() {
 	let progressTracker;
 	let start;
 	let startedParallelRunId;
+	let watcherProbe;
 	try {
 		const state = newState(cwd);
 		const { commands } = await loadExtension(state);
@@ -1532,6 +1698,7 @@ async function parallelRunSuccessScenario() {
 			"shared/agent-progress.js",
 		);
 		progressTracker = trackParallelProgress(onProgressChanged);
+		watcherProbe = installDirectoryWatchProbe(dir);
 
 		start = commands.get("flow").handler("go F1", ctx);
 		await waitForParallelRunPrepared(dir, [1, 2]);
@@ -1551,6 +1718,10 @@ async function parallelRunSuccessScenario() {
 			30_000,
 		);
 		const laneText = latestWidgetText(state);
+		assert(
+			watcherProbe.active() === 1 && watcherProbe.maximum() === 1,
+			`parallel batch used ${watcherProbe.active()} active / ${watcherProbe.maximum()} peak OS watchers`,
+		);
 		const { isFlowEditorInputHidden } = await importCachedModule(
 			"shared/activity-frame.js",
 		);
@@ -1608,6 +1779,11 @@ async function parallelRunSuccessScenario() {
 				`G${goalIndex} snapshot not persisted`,
 			);
 		}
+		await waitForDirectoryRecord(
+			join(dir, "flow.html"),
+			(record) => record?.state === "live",
+			"running parallel batch was not Live in directory",
+		);
 		writeFileSync(join(cwd, "release-workers"), "");
 		await start;
 		await flushScheduledGoalStart();
@@ -1634,6 +1810,10 @@ async function parallelRunSuccessScenario() {
 		);
 		assert(flow.currentGoal === 3, "parallel fan-in did not advance to G4");
 		assert(flow.parallelRun === null, "parallel run was not cleared");
+		assert(
+			watcherProbe.active() === 1 && watcherProbe.maximum() === 1,
+			"parallel fan-in retained batch watchers or opened overlapping watchers",
+		);
 		assert(
 			state.widgets.filter((item) => item.key === "flow-parallel-lanes").at(-1)
 				?.content === undefined,
@@ -1690,6 +1870,7 @@ async function parallelRunSuccessScenario() {
 		delete process.env.PI_FLOW_FAKE_WAIT_FOR_RELEASE;
 		writeFileSync(join(cwd, "release-workers"), "");
 		if (start) await start.catch(() => undefined);
+		watcherProbe?.restore();
 		restorePi();
 	}
 }
@@ -2600,6 +2781,14 @@ async function flowParallelStopAllResultsCompleteScenario() {
 	const state = newState(cwd);
 	const { commands } = await loadExtension(state);
 	const ctx = commandContext(state, cwd, join(cwd, "planning.jsonl"));
+	// 真实 status 命令登记 Live；stop 收口后必须在 go 前断言 Recent。
+	const htmlPath = join(dir, "flow.html");
+	await commands.get("flow").handler("status F1", ctx);
+	await waitForDirectoryRecord(
+		htmlPath,
+		(record) => record?.state === "live",
+		"pre-stop parallel Flow was not Live in directory",
+	);
 	await commands.get("flow").handler("stop F1", ctx);
 	const stopped = readFlow(dir);
 	assert(
@@ -2620,6 +2809,12 @@ async function flowParallelStopAllResultsCompleteScenario() {
 				Number.isFinite(stopped.goals[index].completedAt),
 			),
 		"parallel stop completion did not stamp parent timestamps",
+	);
+	await waitForDirectoryRecord(
+		htmlPath,
+		(record) =>
+			record?.state === "complete" && record.generation === stopped.createdAt,
+		"stop complete left directory Live",
 	);
 	await commands.get("flow").handler("go F1", ctx);
 	assert(state.newSessions.length === 0, "go after complete stop started work");
@@ -7683,6 +7878,16 @@ async function flowReportPortConflictIsolationScenario() {
 		);
 		await emit(handlers, "agent_end", { messages: [] }, ctx);
 		await reportFailure;
+		const reportClient = await importCachedModule("shared/report-client.js");
+		await reportClient.waitForReportClientIdle();
+		const diagnostics = reportClient.reportClientResourceSnapshot();
+		assert(
+			diagnostics.failureCount > 0 &&
+				!diagnostics.connected &&
+				diagnostics.registeredReports === 0 &&
+				diagnostics.registerChains === 0,
+			`failed report connection diagnostics mismatch: ${JSON.stringify(diagnostics)}`,
+		);
 		await flushScheduledGoalStart();
 		const flow = readFlow(join(cwd, ".flow", "F1"));
 		assert(
@@ -10886,6 +11091,80 @@ async function snapshotRecoveryPrecheckScenario() {
 	);
 }
 
+async function planFileWatcherSharingScenario() {
+	const { createPlanFileWatcher } = await importModule(
+		"shared/plan-file-watcher.js",
+	);
+	const dir = tempDir("plan-file-watcher-sharing");
+	const firstPath = join(dir, "first.md");
+	const secondPath = join(dir, "second.json");
+	const watchHarness = installDirectoryWatchHarness(dir);
+	const watcher = createPlanFileWatcher();
+	let firstSignals = 0;
+	let replacementSignals = 0;
+	let secondSignals = 0;
+	try {
+		watcher.watchFile(firstPath, () => {
+			firstSignals += 1;
+		});
+		watcher.watchFile(
+			firstPath,
+			() => {
+				replacementSignals += 1;
+			},
+			{ skipIfSame: true },
+		);
+		watcher.watchFile(
+			secondPath,
+			() => {
+				secondSignals += 1;
+			},
+			{ keepExisting: true },
+		);
+		assert(
+			watcher.stats().osWatchers === 1 &&
+				watcher.stats().watchedFiles === 2 &&
+				watchHarness.watchCalls() === 1,
+			`same-directory files did not share one watcher: ${JSON.stringify(watcher.stats())}`,
+		);
+		for (let iteration = 0; iteration < 100; iteration += 1) {
+			watchHarness.emit("first.md");
+			watchHarness.emit("second.json");
+		}
+		watchHarness.emit("unrelated.tmp");
+		assert(
+			firstSignals === 100 && secondSignals === 100 && replacementSignals === 0,
+			"basename dispatch notified the wrong callback",
+		);
+		watchHarness.emit(null);
+		assert(
+			firstSignals === 101 && secondSignals === 101 && replacementSignals === 0,
+			"shared watcher did not dispatch deterministic null events",
+		);
+		watcher.closeFile(firstPath);
+		watcher.closeFile(firstPath);
+		watchHarness.emit("first.md");
+		assert(
+			firstSignals === 101 &&
+				watcher.stats().osWatchers === 1 &&
+				watcher.stats().watchedFiles === 1,
+			"closeFile retained a callback or closed the shared watcher too early",
+		);
+		watcher.closeFile(secondPath);
+		watcher.closeFile(secondPath);
+		watcher.close();
+		assert(
+			watcher.stats().osWatchers === 0 &&
+				watcher.stats().watchedFiles === 0 &&
+				watchHarness.closeCalls() === 1,
+			"shared watcher close was not idempotent",
+		);
+	} finally {
+		watcher.close();
+		watchHarness.restore();
+	}
+}
+
 async function flowGoalWatcherScenario() {
 	const { writeFlowHtml } = await importModule("flow/html.js");
 	const { closeFlowGoalWatcher, watchCurrentFlowGoal } =
@@ -10955,7 +11234,7 @@ async function flowParallelMainGoalWatcherScenario() {
 
 async function flowParallelWatcherScenario() {
 	const { writeFlowHtml } = await importModule("flow/html.js");
-	const { closeFlowGoalWatcher, watchParallelBatch } =
+	const { closeFlowGoalWatcher, flowGoalWatcherStats, watchParallelBatch } =
 		await importModule("flow/watcher.js");
 	const cwd = tempDir("flow-parallel-watch");
 	const dir = createThreeParallelFlow(cwd, "F1");
@@ -10974,6 +11253,11 @@ async function flowParallelWatcherScenario() {
 	writeFlowHtml(dir, flow);
 	const htmlPath = join(dir, "flow.html");
 	watchParallelBatch(dir, flow, [1, 2, 3]);
+	assert(
+		flowGoalWatcherStats(dir)?.osWatchers === 1 &&
+			flowGoalWatcherStats(dir)?.watchedFiles === 9,
+		`parallel Flow did not share one directory watcher: ${JSON.stringify(flowGoalWatcherStats(dir))}`,
+	);
 	await waitForCondition(
 		() => readFileSync(htmlPath, "utf8").includes("Worker live old."),
 		"parallel watcher did not perform its initial refresh",
@@ -11038,13 +11322,23 @@ async function flowParallelWatcherScenario() {
 		readFileSync(htmlPath, "utf8").includes("worker acceptance passed"),
 		"parallel watcher did not render worker artifact changes",
 	);
+	rmSync(artifactPath);
+	await waitForCondition(
+		() => !readFileSync(htmlPath, "utf8").includes("worker acceptance passed"),
+		"parallel watcher did not refresh after worker artifact deletion",
+	);
 	closeFlowGoalWatcher();
+	assert(
+		flowGoalWatcherStats(dir) === undefined,
+		"closed parallel watcher retained its Flow entry",
+	);
 }
 
 async function flowWatcherEventStormScenario() {
 	const { writeFlowHtml } = await importModule("flow/html.js");
 	const {
 		closeFlowGoalWatcher,
+		flowGoalWatcherCount,
 		flowGoalWatcherStats,
 		watchCurrentFlowGoal,
 		watchParallelBatch,
@@ -11111,6 +11405,12 @@ async function flowWatcherEventStormScenario() {
 	writeFlowHtml(otherDir, otherFlow);
 	watchCurrentFlowGoal(otherDir, otherFlow);
 	await new Promise((resolve) => setImmediate(resolve));
+	assert(
+		flowGoalWatcherCount() === 2 &&
+			flowGoalWatcherStats(dir)?.osWatchers === 1 &&
+			flowGoalWatcherStats(otherDir)?.osWatchers === 1,
+		"independent Flows did not retain one isolated watcher each",
+	);
 	atomicReplace(
 		join(otherDir, otherFlow.goals[0].file),
 		readFileSync(join(otherDir, otherFlow.goals[0].file), "utf8").replace(
@@ -11237,6 +11537,10 @@ async function flowWatcherEventStormScenario() {
 		"old parallel run frame overwrote its replacement",
 	);
 	closeFlowGoalWatcher();
+	assert(
+		flowGoalWatcherCount() === 0,
+		"closing report watchers retained Flow entries",
+	);
 }
 
 function waitForReportFrames(count) {
@@ -11659,8 +11963,43 @@ async function soakRetainedContextGateScenario() {
 		},
 		goalSessions: 0,
 		flowWatchers: 0,
+		flowWatcherResources: {
+			flows: 0,
+			osWatchers: 0,
+			watchedFiles: 0,
+			registrations: 0,
+			pendingFrames: 0,
+		},
 		parallelBoards: 0,
+		laneWidgets: { active: 0, mounts: 1, clears: 1 },
+		report: {
+			backgroundTasks: 0,
+			connecting: false,
+			connected: true,
+			registeredReports: 1,
+			registerChains: 0,
+			statusContext: false,
+			failureCount: 0,
+			requestDestroyed: false,
+			responseDestroyed: false,
+			lastClosedConnection: null,
+		},
 		active: {},
+	};
+	const closedResources = {
+		...resources,
+		report: {
+			...resources.report,
+			connected: false,
+			registeredReports: 0,
+			registerChains: 0,
+			requestDestroyed: null,
+			responseDestroyed: null,
+			lastClosedConnection: {
+				requestDestroyed: true,
+				responseDestroyed: true,
+			},
+		},
 	};
 	const contexts = { weakRefs: 0, aliveAfterGc: 0 };
 	const samples = Array.from({ length: 100 }, (_item, index) => ({
@@ -11676,7 +12015,7 @@ async function soakRetainedContextGateScenario() {
 		resources,
 	}));
 	assert(
-		evaluateSoakResult(samples, 10, contexts, resources).ok === true,
+		evaluateSoakResult(samples, 10, contexts, closedResources).ok === true,
 		"soak rejected a stable lifecycle",
 	);
 	const preDraftFlow = {
@@ -11876,7 +12215,7 @@ async function soakRetainedContextGateScenario() {
 		samples,
 		10,
 		{ weakRefs: 1, aliveAfterGc: 1 },
-		resources,
+		closedResources,
 	);
 	assert(
 		retainedContext.ok === false &&
@@ -11885,7 +12224,7 @@ async function soakRetainedContextGateScenario() {
 			),
 		"soak accepted a retained full Session context",
 	);
-	const empty = evaluateSoakResult([], 10, contexts, resources);
+	const empty = evaluateSoakResult([], 10, contexts, closedResources);
 	assert(
 		empty.ok === false &&
 			empty.resourceFailures.some((failure) => failure.includes("no samples")),
@@ -11902,7 +12241,7 @@ async function soakRetainedContextGateScenario() {
 		retainedBoardSamples,
 		10,
 		contexts,
-		resources,
+		closedResources,
 	);
 	assert(
 		retainedBoard.ok === false &&
@@ -11910,6 +12249,54 @@ async function soakRetainedContextGateScenario() {
 				failure.includes("parallel board"),
 			),
 		"soak accepted a retained parallel lane board",
+	);
+	const retainedWatcher = evaluateSoakResult(
+		samples.map((sample, index) => ({
+			...sample,
+			resources:
+				index === samples.length - 1
+					? {
+							...sample.resources,
+							flowWatcherResources: {
+								...sample.resources.flowWatcherResources,
+								osWatchers: 1,
+								pendingFrames: 1,
+							},
+						}
+					: sample.resources,
+		})),
+		10,
+		contexts,
+		closedResources,
+	);
+	assert(
+		retainedWatcher.ok === false &&
+			retainedWatcher.resourceFailures.some((failure) =>
+				failure.includes("Flow watcher osWatchers"),
+			),
+		"soak accepted retained Flow watcher resources",
+	);
+	const retainedLaneWidget = evaluateSoakResult(
+		samples.map((sample, index) => ({
+			...sample,
+			resources:
+				index === samples.length - 1
+					? {
+							...sample.resources,
+							laneWidgets: { ...sample.resources.laneWidgets, active: 1 },
+						}
+					: sample.resources,
+		})),
+		10,
+		contexts,
+		closedResources,
+	);
+	assert(
+		retainedLaneWidget.ok === false &&
+			retainedLaneWidget.resourceFailures.some((failure) =>
+				failure.includes("lane widgets"),
+			),
+		"soak accepted a retained lane widget",
 	);
 	for (const resourceName of [
 		"FSWatcher",
@@ -11925,6 +12312,10 @@ async function soakRetainedContextGateScenario() {
 			...resources,
 			active: { [resourceName]: 1 },
 		};
+		const closedActiveResources = {
+			...closedResources,
+			active: { [resourceName]: 1 },
+		};
 		const retainedResourceSamples = samples.map((sample, index) => ({
 			...sample,
 			resources:
@@ -11934,13 +12325,13 @@ async function soakRetainedContextGateScenario() {
 			retainedResourceSamples,
 			10,
 			contexts,
-			resources,
+			closedResources,
 		);
 		const retainedAfterClose = evaluateSoakResult(
 			samples,
 			10,
 			contexts,
-			activeResources,
+			closedActiveResources,
 		);
 		assert(
 			retainedDuringCycle.ok === false &&
@@ -11958,17 +12349,29 @@ async function soakRetainedContextGateScenario() {
 		...resources,
 		active: { PipeWrap: 2 },
 	};
+	const inheritedPipeSamples = samples.map((sample) => ({
+		...sample,
+		resources: inheritedPipeResources,
+	}));
+	const inheritedClosedPipeResources = {
+		...closedResources,
+		active: { PipeWrap: 2 },
+	};
 	assert(
-		evaluateSoakResult(samples, 10, contexts, inheritedPipeResources, {
-			PipeWrap: 2,
-		}).ok === true,
+		evaluateSoakResult(
+			inheritedPipeSamples,
+			10,
+			contexts,
+			inheritedClosedPipeResources,
+			{ PipeWrap: 2 },
+		).ok === true,
 		"soak rejected inherited stdout/stderr PipeWrap resources",
 	);
 	const retainedPipe = evaluateSoakResult(
-		samples,
+		inheritedPipeSamples,
 		10,
 		contexts,
-		inheritedPipeResources,
+		inheritedClosedPipeResources,
 		{ PipeWrap: 1 },
 	);
 	assert(
@@ -11978,6 +12381,71 @@ async function soakRetainedContextGateScenario() {
 			),
 		"soak accepted a retained Unix client socket above baseline",
 	);
+	const failedReportSamples = samples.map((sample, index) => ({
+		...sample,
+		resources:
+			index === samples.length - 1
+				? {
+						...resources,
+						report: {
+							...resources.report,
+							connected: false,
+							registeredReports: 0,
+							failureCount: 1,
+							requestDestroyed: null,
+							responseDestroyed: null,
+						},
+					}
+				: sample.resources,
+	}));
+	const failedReport = evaluateSoakResult(
+		failedReportSamples,
+		10,
+		contexts,
+		closedResources,
+	);
+	assert(
+		failedReport.ok === false &&
+			failedReport.resourceFailures.some((failure) =>
+				failure.includes("report client failed"),
+			),
+		"soak accepted a failed report connection",
+	);
+	const retainedControl = evaluateSoakResult(samples, 10, contexts, {
+		...closedResources,
+		report: {
+			...closedResources.report,
+			connected: true,
+			registeredReports: 1,
+			requestDestroyed: false,
+			responseDestroyed: false,
+			lastClosedConnection: null,
+		},
+	});
+	assert(
+		retainedControl.ok === false &&
+			retainedControl.resourceFailures.some((failure) =>
+				failure.includes("still connected"),
+			),
+		"soak accepted a retained unref report control socket",
+	);
+	const undestroyedControl = evaluateSoakResult(samples, 10, contexts, {
+		...closedResources,
+		report: {
+			...closedResources.report,
+			lastClosedConnection: {
+				requestDestroyed: false,
+				responseDestroyed: false,
+			},
+		},
+	});
+	assert(
+		undestroyedControl.ok === false &&
+			undestroyedControl.resourceFailures.some((failure) =>
+				failure.includes("was not destroyed"),
+			),
+		"soak accepted an undestroyed report control connection",
+	);
 	const onlyCompleted = evaluateSoakResult(
 		samples.map((sample) => ({
 			...sample,
@@ -11985,7 +12453,7 @@ async function soakRetainedContextGateScenario() {
 		})),
 		10,
 		contexts,
-		resources,
+		closedResources,
 	);
 	assert(
 		onlyCompleted.ok === false &&
@@ -11998,7 +12466,7 @@ async function soakRetainedContextGateScenario() {
 		samples.map((sample) => ({ ...sample, lifecycle: undefined })),
 		10,
 		contexts,
-		resources,
+		closedResources,
 	);
 	assert(
 		missingParallel.ok === false &&
@@ -13542,6 +14010,73 @@ async function importModule(path) {
 
 async function importCachedModule(path) {
 	return import(`file://${join(srcOut, path)}`);
+}
+
+function installDirectoryWatchHarness(directory) {
+	const mutableFs = createRequire(import.meta.url)("node:fs");
+	const originalWatch = mutableFs.watch;
+	let listener;
+	let watches = 0;
+	let closes = 0;
+	mutableFs.watch = (path, ...args) => {
+		if (resolve(String(path)) !== resolve(directory))
+			return originalWatch(path, ...args);
+		watches += 1;
+		listener = args.findLast((value) => typeof value === "function");
+		let closed = false;
+		return {
+			close() {
+				if (closed) return;
+				closed = true;
+				closes += 1;
+			},
+		};
+	};
+	syncBuiltinESMExports();
+	return {
+		watchCalls: () => watches,
+		closeCalls: () => closes,
+		emit(name) {
+			assert(listener, "directory watch listener was not registered");
+			listener("change", name);
+		},
+		restore() {
+			mutableFs.watch = originalWatch;
+			syncBuiltinESMExports();
+		},
+	};
+}
+
+function installDirectoryWatchProbe(directory) {
+	const mutableFs = createRequire(import.meta.url)("node:fs");
+	const originalWatch = mutableFs.watch;
+	let active = 0;
+	let maximum = 0;
+	mutableFs.watch = (path, ...args) => {
+		const watcher = originalWatch(path, ...args);
+		if (resolve(String(path)) !== resolve(directory)) return watcher;
+		active += 1;
+		maximum = Math.max(maximum, active);
+		const originalClose = watcher.close.bind(watcher);
+		let closed = false;
+		watcher.close = () => {
+			if (!closed) {
+				closed = true;
+				active -= 1;
+			}
+			return originalClose();
+		};
+		return watcher;
+	};
+	syncBuiltinESMExports();
+	return {
+		active: () => active,
+		maximum: () => maximum,
+		restore() {
+			mutableFs.watch = originalWatch;
+			syncBuiltinESMExports();
+		},
+	};
 }
 
 function latestWidgetText(state) {

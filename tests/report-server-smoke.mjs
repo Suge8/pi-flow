@@ -1,6 +1,8 @@
-import { fork, spawn } from "node:child_process";
+import { fork, spawn, spawnSync } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
 import {
+	chmodSync,
+	existsSync,
 	lstatSync,
 	mkdirSync,
 	readdirSync,
@@ -112,6 +114,16 @@ async function runSmoke() {
 		children.delete(linkedDaemon);
 		await waitForMissing(endpointPath);
 
+		const compiledAgentDir = join(out, "compiled-agent");
+		await assertCompiledBunHostStartsDaemon({
+			out,
+			agentDir: compiledAgentDir,
+			workspace: workspaceA,
+			reportPath: flowA,
+			endpointPath: join(compiledAgentDir, "pi-flow-report", "endpoint.json"),
+			daemonPids,
+		});
+
 		const closingDaemon = spawnDaemon(children, {
 			out,
 			agentDir,
@@ -189,6 +201,37 @@ async function runSmoke() {
 			await closeServer(startupPeer.server);
 		}
 
+		const emptyDaemon = spawnDaemon(children, {
+			out,
+			agentDir,
+			idleMs: 60_000,
+		});
+		const emptyReady = await childMessage(emptyDaemon, "ready");
+		daemonPids.add(emptyReady.health.pid);
+		const emptyHtml = await fetch("http://127.0.0.1:49327/").then((response) =>
+			response.text(),
+		);
+		assert(
+			emptyHtml.includes("报告目录") &&
+				emptyHtml.includes("Live") &&
+				emptyHtml.includes("Recent") &&
+				emptyHtml.includes("暂无进行中的报告"),
+			"empty directory page incomplete",
+		);
+		assert(
+			(await fetch("http://127.0.0.1:49327/", { method: "POST" })).status ===
+				405,
+			"root POST should be rejected",
+		);
+		assert(
+			(await chunkedRequest("http://127.0.0.1:49327/", "GET")).status === 400,
+			"root GET with body should be rejected",
+		);
+		await killPid(emptyReady.health.pid);
+		await childExit(emptyDaemon);
+		children.delete(emptyDaemon);
+		await waitForMissing(endpointPath);
+
 		const first = spawnClient(children, {
 			out,
 			agentDir,
@@ -236,7 +279,7 @@ async function runSmoke() {
 			`health leaked fields: ${JSON.stringify(health)}`,
 		);
 		assert(
-			health.service === "pi-flow-report" && health.protocol === 1,
+			health.service === "pi-flow-report" && health.protocol === 2,
 			"bad health protocol",
 		);
 		const firstResponse = await fetch(firstReady.url);
@@ -256,16 +299,19 @@ async function runSmoke() {
 			).includes("flow-b"),
 			"second report unreadable",
 		);
-		assert(
-			(await fetch("http://127.0.0.1:49327/")).status === 404,
-			"root exposed a report index",
+		const accessKey = readFileSync(join(runtimeDir, "access.key"));
+		const populatedDirectory = await fetch("http://127.0.0.1:49327/").then(
+			(response) => response.text(),
 		);
 		assert(
-			(await fetch("http://127.0.0.1:49327/events")).status === 404,
-			"root SSE route still exists",
+			populatedDirectory.includes("报告目录") &&
+				populatedDirectory.includes(workspaceA) &&
+				populatedDirectory.includes(workspaceB) &&
+				populatedDirectory.includes("F1") &&
+				populatedDirectory.includes("F2"),
+			"populated directory page incomplete",
 		);
 
-		const accessKey = readFileSync(join(runtimeDir, "access.key"));
 		const firstCap = new URL(firstReady.url).pathname.split("/")[2];
 		const [changedWithBody, reportWithBody] = await Promise.all([
 			chunkedRequest(
@@ -283,6 +329,8 @@ async function runSmoke() {
 			accessKey,
 			workspaceB,
 			review,
+			"live",
+			2_000,
 		);
 		assert(
 			registeredReview.status === 200,
@@ -307,11 +355,26 @@ async function runSmoke() {
 			(
 				await postJson(
 					"http://127.0.0.1:49327/control/reports",
-					{ cwd: workspaceA, path: flowA },
+					{
+						cwd: workspaceA,
+						path: flowA,
+						state: "live",
+						generation: 1,
+					},
 					"bad-key",
 				)
 			).status === 401,
 			"bad control auth was accepted",
+		);
+		assert(
+			(
+				await postJson(
+					"http://127.0.0.1:49327/control/reports",
+					{ cwd: workspaceA, path: flowA },
+					accessKey.toString("base64url"),
+				)
+			).status === 400,
+			"protocol 1 registration body was accepted",
 		);
 		writeFileSync(
 			join(out, "config.json"),
@@ -358,11 +421,27 @@ async function runSmoke() {
 			`/r/${new URL(firstReady.url).pathname.split("/")[2]}/../`,
 			`/r/%2e%2e/`,
 			`/r/%252e%252e/`,
-		])
+		]) {
+			// fetch() 会先归一化 URL；探测必须走 raw path，才能覆盖 daemon 侧防护。
+			const response = await rawGet(path);
 			assert(
-				(await fetch(`http://127.0.0.1:49327${path}`)).status === 404,
-				`unsafe route was served: ${path}`,
+				response.status === 404 && !response.text.includes("报告目录"),
+				`unsafe route was served: ${path} (${response.status})`,
 			);
+		}
+
+		await assertDirectoryBehavior({
+			accessKey,
+			runtimeDir,
+			workspaceA,
+			workspaceB,
+			flowA,
+			flowB,
+			review,
+			firstReady,
+			secondReady,
+			registeredReview,
+		});
 
 		const firstReload = sseReload(new URL("events", firstReady.url).href);
 		const secondReload = sseReload(new URL("events", secondReady.url).href);
@@ -490,6 +569,19 @@ async function runSmoke() {
 		await killPid(retriedHealth.pid);
 		await waitForMissing(endpointPath);
 
+		// 前面 directory 测试已写 ledger；此处验证冷启动精确重载与 unavailable。
+		await assertDirectoryColdStart({
+			accessKey: readFileSync(join(runtimeDir, "access.key")),
+			runtimeDir,
+			out,
+			agentDir,
+			children,
+			daemonPids,
+			workspaceB,
+			flowA,
+			flowB,
+		});
+
 		const unknown = createServer((_request, response) =>
 			response.end("not pi-flow"),
 		);
@@ -550,6 +642,145 @@ async function runSmoke() {
 	}
 }
 
+async function assertCompiledBunHostStartsDaemon(input) {
+	const bun = spawnSync("bun", ["--version"], { encoding: "utf8" });
+	if (bun.error?.code === "ENOENT") {
+		console.log("compiled Bun report host smoke skipped: bun is unavailable");
+		return;
+	}
+	assert(
+		bun.status === 0,
+		`bun --version failed: ${bun.stderr || bun.error?.message || bun.status}`,
+	);
+	const sourcePath = join(input.out, "compiled-report-host.mjs");
+	const executablePath = join(input.out, "compiled-report-host");
+	const selfLaunchMarker = join(input.out, "compiled-report-host-relaunched");
+	const oldNodeLaunchMarker = join(input.out, "old-node-launched-daemon");
+	const bunOnlyBin = join(input.out, "bun-only-bin");
+	const bunExecutable = spawnSync(
+		"bun",
+		["-e", "process.stdout.write(process.execPath)"],
+		{ encoding: "utf8" },
+	).stdout;
+	mkdirSync(bunOnlyBin);
+	symlinkSync(bunExecutable, join(bunOnlyBin, "bun"));
+	const oldNode = join(bunOnlyBin, "node");
+	writeFileSync(
+		oldNode,
+		`#!/bin/sh
+if [ "$1" = "--version" ]; then
+	echo v20.18.0
+	exit 0
+fi
+printf launched > "${oldNodeLaunchMarker}"
+exit 72
+`,
+	);
+	chmodSync(oldNode, 0o755);
+	writeFileSync(
+		sourcePath,
+		`import { writeFileSync } from "node:fs";
+if (process.argv.some((argument) => argument.endsWith("report-daemon.js"))) {
+	writeFileSync(process.env.PI_FLOW_SELF_LAUNCH_MARKER, process.argv.join("\\n"));
+	process.exit(71);
+}
+const client = await import(process.env.PI_FLOW_REPORT_CLIENT_URL);
+const statuses = [];
+const url = await client.liveReportUrl(
+	{ cwd: process.env.PI_FLOW_REPORT_WORKSPACE, ui: { setStatus: (key, value) => statuses.push({ key, value }) } },
+	process.env.PI_FLOW_REPORT_PATH,
+	"zh",
+	{ state: "live", generation: 1 },
+);
+await client.closeReportClient();
+process.stdout.write(JSON.stringify({ execPath: process.execPath, statuses, url }));
+`,
+	);
+	const built = spawnSync(
+		"bun",
+		["build", sourcePath, "--compile", "--outfile", executablePath],
+		{ encoding: "utf8" },
+	);
+	assert(
+		built.status === 0,
+		`compiled Bun host build failed: ${built.stderr || built.error?.message || built.status}`,
+	);
+	let endpoint;
+	try {
+		const run = spawnSync(executablePath, [], {
+			cwd: input.out,
+			encoding: "utf8",
+			env: {
+				...process.env,
+				PI_CODING_AGENT_DIR: input.agentDir,
+				PI_FLOW_REPORT_CLIENT_URL: `${pathToFileURL(join(input.out, "dist", "shared", "report-client.js")).href}?compiled-host`,
+				PATH: bunOnlyBin,
+				PI_FLOW_REPORT_PATH: input.reportPath,
+				PI_FLOW_REPORT_WORKSPACE: input.workspace,
+				PI_FLOW_SELF_LAUNCH_MARKER: selfLaunchMarker,
+			},
+			timeout: 10_000,
+		});
+		assert(
+			run.status === 0,
+			`compiled Bun host failed (${run.status ?? run.signal}): ${run.stderr}`,
+		);
+		assert(
+			!existsSync(selfLaunchMarker),
+			"report client relaunched the compiled Pi-style host as a JS runtime",
+		);
+		assert(
+			!existsSync(oldNodeLaunchMarker),
+			"report client launched the daemon with an unsupported Node.js runtime",
+		);
+		const result = JSON.parse(run.stdout);
+		assert(
+			result.execPath === realpathSync(executablePath),
+			JSON.stringify(result),
+		);
+		assert(
+			result.statuses.some(
+				(status) =>
+					status.key === "pi-flow-html-live" &&
+					status.value?.includes(result.url),
+			),
+			JSON.stringify(result),
+		);
+		assert(
+			(await fetch(new URL("/health", result.url))).status === 200,
+			"compiled Bun host report daemon was unreachable",
+		);
+	} finally {
+		endpoint = safeEndpoint(input.endpointPath);
+		if (endpoint?.pid) {
+			input.daemonPids.add(endpoint.pid);
+			await killPid(endpoint.pid);
+			await waitForMissing(input.endpointPath);
+		}
+	}
+	const unavailable = spawnSync(executablePath, [], {
+		cwd: input.out,
+		encoding: "utf8",
+		env: {
+			...process.env,
+			PATH: "",
+			PI_CODING_AGENT_DIR: join(input.out, "compiled-no-runtime-agent"),
+			PI_FLOW_REPORT_CLIENT_URL: `${pathToFileURL(join(input.out, "dist", "shared", "report-client.js")).href}?compiled-no-runtime`,
+			PI_FLOW_REPORT_PATH: input.reportPath,
+			PI_FLOW_REPORT_WORKSPACE: input.workspace,
+			PI_FLOW_SELF_LAUNCH_MARKER: selfLaunchMarker,
+		},
+		timeout: 10_000,
+	});
+	assert(
+		unavailable.status !== 0 &&
+			unavailable.stderr.includes(
+				"Pi Flow Web Report requires Node.js >=22.19 or Bun in PATH",
+			),
+		`missing report runtime was not explicit: ${unavailable.stderr}`,
+	);
+}
+
 async function runClientChild() {
 	try {
 		const dist = join(process.env.PI_FLOW_REPORT_SMOKE_OUT, "dist");
@@ -567,7 +798,13 @@ async function runClientChild() {
 				},
 			},
 		};
-		const url = await client.liveReportUrl(ctx, path, "zh");
+		const lifecycleFor = (message = {}) => ({
+			state: message.state ?? "live",
+			generation:
+				message.generation ??
+				Number(process.env.PI_FLOW_REPORT_SMOKE_GENERATION ?? Date.now()),
+		});
+		const url = await client.liveReportUrl(ctx, path, "zh", lifecycleFor());
 		const health = await fetch(new URL("/health", url)).then((response) =>
 			response.json(),
 		);
@@ -582,6 +819,7 @@ async function runClientChild() {
 						ctx,
 						message.path,
 						"zh",
+						lifecycleFor(message),
 					);
 					process.send?.({ type: "registered", url: registered });
 				} else if (message.type === "close") {
@@ -636,7 +874,7 @@ function createStartupRacePeer(key) {
 			return response.end(
 				JSON.stringify({
 					service: "pi-flow-report",
-					protocol: 1,
+					protocol: 2,
 					pid: process.pid,
 					bind: "127.0.0.1",
 					port: 49327,
@@ -673,7 +911,7 @@ function writeEndpointFixture(path, pid) {
 	writeFileSync(
 		temporary,
 		`${JSON.stringify({
-			protocol: 1,
+			protocol: 2,
 			pid,
 			bind: "127.0.0.1",
 			port: 49327,
@@ -691,6 +929,7 @@ const url = await client.liveReportUrl(
   { cwd: process.env.PI_FLOW_REPORT_SMOKE_CWD, ui: { setStatus() {} } },
   process.env.PI_FLOW_REPORT_SMOKE_PATH,
   "zh",
+  { state: "live", generation: Number(process.env.PI_FLOW_REPORT_SMOKE_GENERATION ?? Date.now()) },
 );
 process.stdout.write(JSON.stringify({ url }));
 `;
@@ -751,7 +990,7 @@ function spawnRawDaemon(children, input) {
 	child.once("spawn", () =>
 		child.send({
 			type: "start",
-			protocol: 1,
+			protocol: 2,
 			config: { bind: "127.0.0.1", port: 49327, publicBaseUrl: null },
 			runtimeDir: input.runtimeDir,
 		}),
@@ -856,11 +1095,324 @@ function capability(key, path) {
 	return createHmac("sha256", key).update(path).digest("base64url");
 }
 
-async function registerReport(key, cwd, path) {
+async function registerReport(key, cwd, path, state = "live", generation = 1) {
 	return postJson(
 		"http://127.0.0.1:49327/control/reports",
-		{ cwd, path },
+		{ cwd, path, state, generation },
 		key.toString("base64url"),
+	);
+}
+
+async function assertDirectoryBehavior(input) {
+	const directoryPath = join(input.runtimeDir, "directory.json");
+	const currentGeneration = (path) => {
+		try {
+			const ledger = JSON.parse(readFileSync(directoryPath, "utf8"));
+			return (
+				ledger.records.find((record) => record.path === path)?.generation ?? 0
+			);
+		} catch {
+			return 0;
+		}
+	};
+	const genA = currentGeneration(input.flowA);
+	const completeGen = genA + 1;
+	const liveComplete = await registerReport(
+		input.accessKey,
+		input.workspaceA,
+		input.flowA,
+		"complete",
+		completeGen,
+	);
+	assert(liveComplete.status === 200, liveComplete.text);
+	const staleLive = await registerReport(
+		input.accessKey,
+		input.workspaceA,
+		input.flowA,
+		"live",
+		completeGen,
+	);
+	assert(
+		staleLive.status === 409,
+		`complete downgraded to live: ${staleLive.status} ${staleLive.text}`,
+	);
+	const olderGeneration = await registerReport(
+		input.accessKey,
+		input.workspaceA,
+		input.flowA,
+		"live",
+		0,
+	);
+	assert(
+		olderGeneration.status === 400,
+		`non-positive generation accepted: ${olderGeneration.status}`,
+	);
+	const staleGeneration = await registerReport(
+		input.accessKey,
+		input.workspaceA,
+		input.flowA,
+		"live",
+		completeGen,
+	);
+	assert(
+		staleGeneration.status === 409,
+		`stale generation accepted: ${staleGeneration.status}`,
+	);
+	const reopenGen = completeGen + 1;
+	const reopen = await registerReport(
+		input.accessKey,
+		input.workspaceA,
+		input.flowA,
+		"live",
+		reopenGen,
+	);
+	assert(reopen.status === 200, reopen.text);
+	const genB = currentGeneration(input.flowB);
+	const completeB = await registerReport(
+		input.accessKey,
+		input.workspaceB,
+		input.flowB,
+		"complete",
+		genB + 1,
+	);
+	assert(completeB.status === 200, completeB.text);
+
+	const directoryHtml = await fetch("http://127.0.0.1:49327/").then(
+		(response) => response.text(),
+	);
+	assert(
+		directoryHtml.includes(input.workspaceA) &&
+			directoryHtml.includes(input.workspaceB) &&
+			directoryHtml.includes("F1") &&
+			directoryHtml.includes("F2") &&
+			directoryHtml.includes("session") &&
+			directoryHtml.includes(
+				`/r/${new URL(input.firstReady.url).pathname.split("/")[2]}/`,
+			),
+		"directory page missing registered reports",
+	);
+	assert(
+		!directoryHtml.includes("unregistered") &&
+			!directoryHtml.includes("private.html"),
+		"directory listed unregistered paths",
+	);
+
+	const ledger = JSON.parse(readFileSync(directoryPath, "utf8"));
+	assert(ledger.version === 1, JSON.stringify(ledger));
+	assert(modeBits(directoryPath) === 0o600, "directory.json is not 0600");
+	assert(
+		ledger.records.every(
+			(record) =>
+				record.available === true &&
+				(record.state === "live" || record.state === "complete"),
+		),
+		JSON.stringify(ledger.records),
+	);
+
+	// recent 上限 50：再塞 51 条 complete，只保留最新 50。
+	const floodRoot = join(input.workspaceA, ".flow");
+	for (let index = 10; index <= 60; index += 1) {
+		const id = `F${index}`;
+		const path = join(floodRoot, id, "flow.html");
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `<!doctype html><p>${id}</p>`);
+		const result = await registerReport(
+			input.accessKey,
+			input.workspaceA,
+			path,
+			"complete",
+			index,
+		);
+		assert(result.status === 200, `${id}: ${result.text}`);
+	}
+	const flooded = JSON.parse(readFileSync(directoryPath, "utf8"));
+	const recent = flooded.records.filter(
+		(record) => record.state === "complete",
+	);
+	const live = flooded.records.filter((record) => record.state === "live");
+	assert(recent.length === 50, `recent kept ${recent.length}`);
+	assert(live.length >= 1, "live records were dropped");
+	assert(
+		!recent.some((record) => record.label === "F10"),
+		"oldest recent was not trimmed",
+	);
+	assert(
+		recent.some((record) => record.label === "F60"),
+		"newest recent missing",
+	);
+
+	const directoryReload = sseReload("http://127.0.0.1:49327/events");
+	await directoryReload.ready;
+	const sseBump = await registerReport(
+		input.accessKey,
+		input.workspaceB,
+		input.review,
+		"complete",
+		9_000,
+	);
+	assert(sseBump.status === 200, sseBump.text);
+	assert(
+		(await directoryReload.event).includes("event: reload"),
+		"directory SSE did not reload",
+	);
+}
+
+async function assertDirectoryColdStart(input) {
+	const directoryPath = join(input.runtimeDir, "directory.json");
+	const bootstrap = spawnDaemon(input.children, {
+		out: input.out,
+		agentDir: input.agentDir,
+		idleMs: 60_000,
+	});
+	const bootReady = await childMessage(bootstrap, "ready");
+	input.daemonPids.add(bootReady.health.pid);
+	writeFileSync(input.flowB, "<!doctype html><p>flow-b</p>");
+	let previous = 0;
+	try {
+		previous =
+			JSON.parse(readFileSync(directoryPath, "utf8")).records.find(
+				(record) => record.path === input.flowB,
+			)?.generation ?? 0;
+	} catch {}
+	const ensured = await registerReport(
+		input.accessKey,
+		input.workspaceB,
+		input.flowB,
+		"complete",
+		previous + 1,
+	);
+	assert(ensured.status === 200, ensured.text);
+	const missingCap = capability(input.accessKey, realpathSync(input.flowB));
+	rmSync(input.flowB, { force: true });
+	await killPid(bootReady.health.pid);
+	await childExit(bootstrap);
+	input.children.delete(bootstrap);
+	await waitForMissing(join(input.runtimeDir, "endpoint.json"));
+	const cold = spawnDaemon(input.children, {
+		out: input.out,
+		agentDir: input.agentDir,
+		idleMs: 60_000,
+	});
+	const ready = await childMessage(cold, "ready");
+	input.daemonPids.add(ready.health.pid);
+	const html = await fetch("http://127.0.0.1:49327/").then((response) =>
+		response.text(),
+	);
+	assert(html.includes(input.workspaceB), "cold start dropped recent record");
+	assert(html.includes("不可用"), html);
+	assert(
+		!html.includes(`href="/r/${missingCap}/"`),
+		"unavailable record still linked",
+	);
+	const liveCap = capability(input.accessKey, realpathSync(input.flowA));
+	assert(
+		(await fetch(`http://127.0.0.1:49327/r/${liveCap}/`)).status === 200,
+		"cold start did not restore safe report capability",
+	);
+	const ledger = JSON.parse(readFileSync(directoryPath, "utf8"));
+	const missing = ledger.records.find((record) => record.cap === missingCap);
+	assert(missing && missing.available === false, JSON.stringify(missing));
+
+	// 伪造 capability：文件仍在，但 cap 与 HMAC 不一致 → unavailable 且详情 404
+	const forgedPath = input.flowA;
+	const realCap = capability(input.accessKey, realpathSync(forgedPath));
+	const forgedCap = capability(Buffer.alloc(32, 7), realpathSync(forgedPath));
+	assert(forgedCap !== realCap, "forged cap collided");
+	const goodRecord = ledger.records.find(
+		(record) => record.path === forgedPath,
+	);
+	assert(goodRecord, "missing live record for forge test");
+	const forgedLedger = {
+		version: 1,
+		records: [
+			{
+				...goodRecord,
+				cap: forgedCap,
+				available: true,
+			},
+		],
+	};
+	await killPid(ready.health.pid);
+	await childExit(cold);
+	input.children.delete(cold);
+	await waitForMissing(join(input.runtimeDir, "endpoint.json"));
+	writeFileSync(directoryPath, `${JSON.stringify(forgedLedger)}\n`, {
+		mode: 0o600,
+	});
+	const forgedDaemon = spawnDaemon(input.children, {
+		out: input.out,
+		agentDir: input.agentDir,
+		idleMs: 60_000,
+	});
+	const forgedReady = await childMessage(forgedDaemon, "ready");
+	input.daemonPids.add(forgedReady.health.pid);
+	const forgedHtml = await fetch("http://127.0.0.1:49327/").then((response) =>
+		response.text(),
+	);
+	assert(forgedHtml.includes("不可用"), forgedHtml);
+	assert(
+		!forgedHtml.includes(`href="/r/${forgedCap}/"`),
+		"forged capability rendered as live link",
+	);
+	assert(
+		(await fetch(`http://127.0.0.1:49327/r/${forgedCap}/`)).status === 404,
+		"forged capability detail was served",
+	);
+	await killPid(forgedReady.health.pid);
+	await childExit(forgedDaemon);
+	input.children.delete(forgedDaemon);
+	await waitForMissing(join(input.runtimeDir, "endpoint.json"));
+
+	// 严格 schema：非法 cap / 相对路径 / 身份错配 / 重复记录 整账本拒绝加载
+	const { parseDirectoryLedger } = await import(
+		pathToFileURL(join(input.out, "dist", "shared", "report-directory.js")).href
+	);
+	const base = {
+		cap: realCap,
+		cwd: input.workspaceA,
+		path: input.flowA,
+		realPath: realpathSync(input.flowA),
+		state: "live",
+		generation: 1,
+		updatedAt: Date.now(),
+		kind: "flow",
+		label: "F1",
+		available: true,
+	};
+	assert(
+		parseDirectoryLedger({
+			version: 1,
+			records: [{ ...base, cap: "x" }],
+		}) === undefined,
+		"malformed capability accepted",
+	);
+	assert(
+		parseDirectoryLedger({
+			version: 1,
+			records: [{ ...base, path: "relative/flow.html" }],
+		}) === undefined,
+		"relative path accepted",
+	);
+	assert(
+		parseDirectoryLedger({
+			version: 1,
+			records: [{ ...base, label: "F9" }],
+		}) === undefined,
+		"identity mismatch accepted",
+	);
+	assert(
+		parseDirectoryLedger({
+			version: 1,
+			records: [{ ...base, updatedAt: Number.NaN }],
+		}) === undefined,
+		"NaN updatedAt accepted",
+	);
+	assert(
+		parseDirectoryLedger({
+			version: 1,
+			records: [base, { ...base, generation: 2 }],
+		}) === undefined,
+		"duplicate realPath accepted",
 	);
 }
 
@@ -896,6 +1448,30 @@ function postJson(url, body, key) {
 		);
 		req.on("error", reject);
 		req.end(payload);
+	});
+}
+
+function rawGet(path) {
+	return new Promise((resolve, reject) => {
+		const req = request(
+			{
+				hostname: "127.0.0.1",
+				port: 49327,
+				path,
+				method: "GET",
+			},
+			(response) => {
+				let text = "";
+				response.on("data", (chunk) => {
+					text += chunk;
+				});
+				response.on("end", () =>
+					resolve({ status: response.statusCode, text }),
+				);
+			},
+		);
+		req.on("error", reject);
+		req.end();
 	});
 }
 

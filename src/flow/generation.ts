@@ -53,8 +53,9 @@ import {
 import { formatUserNotice, notifyUser } from "../shared/ui-language.js";
 import { buildFlowArtifact, type FlowSemanticInput } from "./builder.js";
 import {
+	flowReportPublication,
+	publishFlowReportProjection,
 	refreshFlowErrorHtmlProjection,
-	refreshFlowHtmlProjection,
 } from "./html.js";
 import {
 	type FlowLockOwner,
@@ -612,8 +613,15 @@ export async function handleGenerationEnd(
 	}
 	const { flow, alignment } = committed.value;
 	rememberGenerationSession(active.location.dir, ctx);
-	const html = refreshFlowHtmlProjection(ctx, active.location.dir, flow);
-	if (html) openLiveHtmlInBackgroundOnce(pi, ctx, html, flow.language);
+	const html = publishFlowReportProjection(ctx, active.location.dir, flow);
+	if (html)
+		openLiveHtmlInBackgroundOnce(
+			pi,
+			ctx,
+			html,
+			flow.language,
+			flowReportPublication(flow),
+		);
 	if (!alignment.autoStart)
 		notifyUser(ctx, generatedSummary(flow), "info", flow.language);
 	finishGeneration(active, ctx);

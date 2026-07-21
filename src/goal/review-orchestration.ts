@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -10,7 +9,10 @@ import {
 	latestGoalCompletion,
 } from "../flow/completion.js";
 import { isPrivateWorkerProcess } from "../flow/execution/worker-protocol.js";
-import { refreshFlowHtmlProjection } from "../flow/html.js";
+import {
+	publishFlowReportLifecycle,
+	publishFlowReportProjection,
+} from "../flow/html.js";
 import {
 	type FlowLockOwner,
 	flowLockBusyMessage,
@@ -32,7 +34,7 @@ import {
 	flowGoalDisplayLabel,
 	flowStepLabel,
 } from "../shared/progress-labels.js";
-import { bindLiveReport } from "../shared/report-client.js";
+
 import {
 	composeResultCardLines,
 	finalReplyInstruction,
@@ -61,7 +63,7 @@ import type {
 } from "./runtime.js";
 import type { CompletionCursor, GoalChecks, GoalHandoff } from "./types.js";
 
-export { refreshFlowHtmlProjection };
+export { publishFlowReportProjection };
 
 export interface GoalCompletionActions {
 	extensionApi: ExtensionAPI | undefined;
@@ -356,7 +358,7 @@ function sendCompletionCard(
 			goal.language,
 			"totalElapsed",
 		);
-		void refreshReportStatus(ctx, join(flow.dir, "flow.html"), goal.language);
+		publishFlowReportLifecycle(ctx, flow.dir, flow.flow, goal.language);
 		const lines = composeResultCardLines(
 			[[goalLine], checkLines],
 			[durationLine],
@@ -383,7 +385,6 @@ function sendCompletionCard(
 		goal.language,
 		"totalElapsed",
 	);
-	void refreshReportStatus(ctx, undefined, goal.language);
 	const content = [
 		`[${title}]`,
 		stepLine,
@@ -430,15 +431,6 @@ function flowGoalCompleteContent(
 		language === "en" ? `Goal: ${displayText}` : `目标：${displayText}`,
 		...checkLines,
 	].join("\n");
-}
-
-function refreshReportStatus(
-	ctx: StatusContext,
-	htmlPath: string | undefined,
-	language: ActiveGoal["language"],
-) {
-	if (!htmlPath) return;
-	bindLiveReport(ctx, htmlPath, language);
 }
 
 function flowGoalCompleteDurationText(
@@ -577,7 +569,7 @@ export function setFlowAttention(
 			},
 		);
 		if (updated.ok && updated.value)
-			refreshFlowHtmlProjection(
+			publishFlowReportProjection(
 				ctx,
 				owner.dir,
 				updated.value,
@@ -598,7 +590,7 @@ function syncFlowGoalCheckboxAttribution(
 		const preview = applyCheckboxAttributionCommit(location.flow, commit);
 		if (!preview) return { kind: "failed" };
 		if (!preview.changed) {
-			refreshFlowHtmlProjection(
+			publishFlowReportProjection(
 				ctx,
 				location.dir,
 				location.flow,
@@ -619,7 +611,12 @@ function syncFlowGoalCheckboxAttribution(
 		if (!synced.ok)
 			return { kind: "locked", dir: location.dir, owner: synced.owner };
 		if (!synced.value) return { kind: "failed" };
-		refreshFlowHtmlProjection(ctx, location.dir, synced.value, commit.language);
+		publishFlowReportProjection(
+			ctx,
+			location.dir,
+			synced.value,
+			commit.language,
+		);
 		return { kind: "saved" };
 	} catch (error) {
 		notifyUser(
@@ -760,7 +757,7 @@ function syncFlowGoalReviews(
 		);
 		if (synced.ok) {
 			if (!synced.value) return { kind: "failed" };
-			refreshFlowHtmlProjection(ctx, owner.dir, synced.value, goal.language);
+			publishFlowReportProjection(ctx, owner.dir, synced.value, goal.language);
 			return { kind: "saved" };
 		}
 		notifyUser(

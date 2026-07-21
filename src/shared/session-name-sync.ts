@@ -2,7 +2,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { refreshFlowHtmlProjection } from "../flow/html.js";
+import { publishFlowReportProjection } from "../flow/html.js";
 import { flowLockBusyMessage, withFlowLockSync } from "../flow/lock.js";
 import { listFlows, readFlow, writeFlow } from "../flow/store.js";
 import { formatError } from "./guards.js";
@@ -87,7 +87,7 @@ function syncFlowSessionNameWithLock(
 	});
 	if (!changed) return;
 	const saved = writeFlow(dir, { ...flow, goals });
-	refreshFlowHtmlProjection(ctx, dir, saved);
+	publishFlowReportProjection(ctx, dir, saved);
 }
 
 function sessionNameOrNull(name: unknown) {

@@ -51,6 +51,10 @@ export interface UiCopy {
 	error: string;
 	model: string;
 	deliveryDetails: string;
+	reportDirectoryTitle: string;
+	reportDirectoryHint: string;
+	reportDirectoryLive: string;
+	reportDirectoryRecent: string;
 	completionTitle: (total: number) => string;
 	flowWaitingStart: (total: number) => string;
 	flowRunningStep: (label: string) => string;
@@ -114,6 +118,10 @@ const ZH: UiCopy = {
 	error: "错误",
 	model: "模型",
 	deliveryDetails: "交付详情",
+	reportDirectoryTitle: "报告目录",
+	reportDirectoryHint: "进行中与最近由插件上报的报告；点选后进入详情",
+	reportDirectoryLive: "Live",
+	reportDirectoryRecent: "Recent",
 	completionTitle: (total) => `全部完成 · ${total} 步`,
 	flowWaitingStart: (total) => `共 ${total} 步，等待启动`,
 	flowRunningStep: (label) => `正在执行${label}`,
@@ -173,6 +181,11 @@ const EN: UiCopy = {
 	error: "Error",
 	model: "Model",
 	deliveryDetails: "Delivery details",
+	reportDirectoryTitle: "Report directory",
+	reportDirectoryHint:
+		"Live and recent reports registered by the plugin; open one to view details",
+	reportDirectoryLive: "Live",
+	reportDirectoryRecent: "Recent",
 	completionTitle: (total) =>
 		`All complete · ${total} ${total === 1 ? "step" : "steps"}`,
 	flowWaitingStart: (total) => `${total} steps, waiting to start`,

@@ -6,7 +6,7 @@ import { liveReportUrl } from "../shared/report-client.js";
 import { formatUserNotice, notifyUser } from "../shared/ui-language.js";
 import { flowTargetOrNotify } from "./execution/shared.js";
 import { statusText } from "./execution.js";
-import { writeFlowHtml } from "./html.js";
+import { flowReportPublication, writeFlowHtml } from "./html.js";
 import { activeParallelBatchForDir } from "./parallel/batch-runner.js";
 import type { FlowState } from "./types.js";
 
@@ -76,7 +76,12 @@ async function notifyStatus(
 	let report: string | undefined;
 	let reportError: string | undefined;
 	try {
-		report = await liveReportUrl(ctx, htmlPath, flow.language);
+		report = await liveReportUrl(
+			ctx,
+			htmlPath,
+			flow.language,
+			flowReportPublication(flow),
+		);
 	} catch (error) {
 		reportError = formatError(error);
 	}

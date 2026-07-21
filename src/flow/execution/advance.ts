@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -11,7 +10,7 @@ import { requestPiAttention } from "../../shared/activity-signal.js";
 import { clipText } from "../../shared/clip.js";
 import { formatError } from "../../shared/guards.js";
 import { flowStepLabel } from "../../shared/progress-labels.js";
-import { bindLiveReport } from "../../shared/report-client.js";
+
 import {
 	composeResultCardLines,
 	finalReplyInstruction,
@@ -29,7 +28,10 @@ import {
 	latestGoalCompletion,
 } from "../completion.js";
 import { completeGoalWithFact } from "../goal-completion.js";
-import { refreshFlowHtmlProjection } from "../html.js";
+import {
+	publishFlowReportLifecycle,
+	publishFlowReportProjection,
+} from "../html.js";
 import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { currentSessionFile } from "../ownership.js";
 import {
@@ -183,7 +185,7 @@ export async function handleGoalCompletionEnd(
 	const { plan, saved } = completed.value;
 	const completedSessionFile =
 		plan.sessionFile ?? fact.sessionFile ?? sessionFile;
-	bindLiveReport(ctx, join(location.dir, "flow.html"), saved.language);
+	publishFlowReportLifecycle(ctx, location.dir, saved);
 	clearCompletedGoalFromFlow(ctx, fact.goalId);
 	if (saved.status === "complete") {
 		closeFlowGoalWatcher(location.dir);
@@ -344,7 +346,7 @@ async function recoverParallelRun(
 		"info",
 		fanIn.flow.language,
 	);
-	bindLiveReport(ctx, join(dir, "flow.html"), fanIn.flow.language);
+	publishFlowReportLifecycle(ctx, dir, fanIn.flow);
 	if (fanIn.flow.status === "complete") {
 		closeFlowGoalWatcher(dir);
 		releaseFlowContext(consoleSessionFile);
@@ -467,8 +469,7 @@ export async function sendFlowCompleteCard(
 	dir: string,
 	flow: FlowState,
 ) {
-	const htmlPath = join(dir, "flow.html");
-	bindLiveReport(ctx, htmlPath, flow.language);
+	publishFlowReportLifecycle(ctx, dir, flow);
 	const complete = flow.goals.filter(
 		(goal) => goal.status === "complete",
 	).length;
@@ -582,7 +583,7 @@ function completeCurrentGoal(
 			? completed.goals.length - 1
 			: (ready?.indices[0] ?? completed.currentGoal),
 	});
-	refreshFlowHtmlProjection(ctx, dir, saved);
+	publishFlowReportProjection(ctx, dir, saved);
 	return saved;
 }
 

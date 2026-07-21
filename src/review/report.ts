@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { GoalChecks } from "../goal/types.js";
@@ -37,15 +37,16 @@ export function reviewReportPath(
 	return join(ctx.cwd, ".flow", "reviews", `${sessionName}.html`);
 }
 
-export function writeReviewReport(
+export async function writeReviewReport(
 	ctx: Pick<ExtensionContext, "cwd" | "sessionManager">,
 	checkpoint: ReviewCheckpointState,
 	language: Language,
 	evidence: ContextEvidenceResult,
 ) {
 	const path = reviewReportPath(ctx);
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, renderReviewReport(checkpoint, language, evidence));
+	const html = renderReviewReport(checkpoint, language, evidence);
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, html);
 	notifyReportChanged(path);
 	return path;
 }

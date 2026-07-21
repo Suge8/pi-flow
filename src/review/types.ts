@@ -146,6 +146,8 @@ export interface ReviewLoop {
 	history: ReviewHistoryEntry[];
 	reviewerProgress: ReviewerProgress[];
 	activeCheck?: ActiveCheckRun;
+	/** 独立 /review 目录 generation；goal-scoped 不使用。 */
+	reportRun?: number;
 	cancellationSource?: ReviewCancellationSource;
 	handlingOutcome?: boolean;
 	finished: Promise<void>;

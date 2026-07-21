@@ -208,11 +208,13 @@ async function runSoak(modeArgs) {
 		bench = await createSoakBench(temp);
 		for (let index = 0; index < warmupCycles; index += 1) {
 			await bench.runCycle(index);
+			await bench.waitForReportIdle();
 			await settleLifecycle();
 		}
 		const samples = [];
 		for (let cycle = 1; cycle <= cycles; cycle += 1) {
 			const lifecycle = await bench.runCycle(warmupCycles + cycle);
+			await bench.waitForReportIdle();
 			await settleLifecycle();
 			const memory = process.memoryUsage();
 			samples.push({
@@ -241,6 +243,11 @@ async function runSoak(modeArgs) {
 }
 
 async function createSoakBench(temp) {
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const agentDir = join(temp, "agent");
+	mkdirSync(agentDir, { recursive: true });
+	// 隔离报告 daemon 到本 soak 临时目录，close 时按 endpoint 停掉，避免占固定 49327。
+	process.env.PI_CODING_AGENT_DIR = agentDir;
 	const workerCommand = writeBenchmarkWorker(temp);
 	const pluginRoot = isolatedPlugin(temp, workerCommand);
 	const workspace = join(temp, "workspace");
@@ -292,6 +299,12 @@ async function createSoakBench(temp) {
 	const flowCommand = extension.commands.get("flow")?.handler;
 	if (!flowCommand) throw new Error("Loaded extension did not register /flow.");
 
+	async function settleAndResetWorkspaceFlow() {
+		// Report bind is fire-and-forget; drain before deleting HTML so register sees a real file.
+		await reportClient.waitForReportClientIdle();
+		resetWorkspaceFlow(workspace);
+	}
+
 	async function runCycle(index) {
 		const generation = await runGenerationCancellation(index);
 		const serial = await runExecution(index, index % 2 === 0);
@@ -313,7 +326,7 @@ async function createSoakBench(temp) {
 			validatedFlow(dir),
 			generationState.readAlignmentState(dir),
 		);
-		resetWorkspaceFlow(workspace);
+		await settleAndResetWorkspaceFlow();
 		return lifecycle;
 	}
 
@@ -355,7 +368,7 @@ async function createSoakBench(temp) {
 			stop,
 			stopEvidence,
 		);
-		resetWorkspaceFlow(workspace);
+		await settleAndResetWorkspaceFlow();
 		return lifecycle;
 	}
 
@@ -374,6 +387,8 @@ async function createSoakBench(temp) {
 		const previousMode = process.env.PI_FLOW_BENCH_WORKER_MODE;
 		process.env.PI_FLOW_BENCH_WORKER_MODE = stop ? "hang" : "complete";
 		const planningCtx = harness.newRootContext(`parallel-${index}`);
+		const mountsBefore = harness.laneWidgets.mounts;
+		const clearsBefore = harness.laneWidgets.clears;
 		let consoleCtx;
 		let running;
 		try {
@@ -391,10 +406,34 @@ async function createSoakBench(temp) {
 				throw new Error("Parallel Flow did not open its console Session.");
 			if (laneUi.activeParallelLaneBoardCount() !== 1)
 				throw new Error("Parallel lane board was not mounted.");
-			if (stop) await flowCommand("stop F1", consoleCtx);
+			if (stop) {
+				const liveWatchers = watcher.flowGoalWatcherResourceSnapshot();
+				if (
+					liveWatchers.flows !== 1 ||
+					liveWatchers.osWatchers !== 1 ||
+					liveWatchers.watchedFiles !== 6 ||
+					liveWatchers.registrations !== 8
+				)
+					throw new Error(
+						`Parallel watcher multiplexing failed: ${JSON.stringify(liveWatchers)}`,
+					);
+				await flowCommand("stop F1", consoleCtx);
+			}
 			await running;
+			const settledWatchers = watcher.flowGoalWatcherResourceSnapshot();
+			if (Object.values(settledWatchers).some((count) => count !== 0))
+				throw new Error(
+					`Settled parallel watchers remained active: ${JSON.stringify(settledWatchers)}`,
+				);
 			if (laneUi.activeParallelLaneBoardCount() !== 0)
 				throw new Error("Settled parallel lane board remained active.");
+			if (
+				harness.laneWidgets.mounts - mountsBefore !== 1 ||
+				harness.laneWidgets.clears - clearsBefore !== 1
+			)
+				throw new Error(
+					"Parallel lane board was not mounted and cleared once.",
+				);
 			await harness.shutdown(consoleCtx);
 			return parallelExecutionLifecycle(validatedFlow(dir), stop, batchIndices);
 		} finally {
@@ -410,7 +449,7 @@ async function createSoakBench(temp) {
 				delete process.env.PI_FLOW_BENCH_WORKER_MODE;
 			else process.env.PI_FLOW_BENCH_WORKER_MODE = previousMode;
 			for (const marker of markers) rmSync(marker, { force: true });
-			resetWorkspaceFlow(workspace);
+			await settleAndResetWorkspaceFlow();
 		}
 	}
 
@@ -458,7 +497,10 @@ async function createSoakBench(temp) {
 			generation: generation.flowGenerationResourceCounts(),
 			goalSessions: goalRuntime.goalRuntimeState.sessions.size,
 			flowWatchers: watcher.flowGoalWatcherCount(),
+			flowWatcherResources: watcher.flowGoalWatcherResourceSnapshot(),
 			parallelBoards: laneUi.activeParallelLaneBoardCount(),
+			laneWidgets: { ...harness.laneWidgets },
+			report: reportClient.reportClientResourceSnapshot(),
 			active: activeResourceCounts(),
 		};
 	}
@@ -468,20 +510,67 @@ async function createSoakBench(temp) {
 		runCycle,
 		resourceSnapshot,
 		contextRefs: harness.contextRefs,
+		waitForReportIdle: reportClient.waitForReportClientIdle,
 		close() {
 			closePromise ??= (async () => {
 				watcher.closeFlowGoalWatcher();
 				await reportClient.closeReportClient();
+				await stopReportDaemon(join(agentDir, "pi-flow-report"));
+				if (previousAgentDir === undefined)
+					delete process.env.PI_CODING_AGENT_DIR;
+				else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 			})();
 			return closePromise;
 		},
 	};
 }
 
+/** soak 独占的临时 daemon：SIGTERM 后等 endpoint 删除（daemon close 完成凭证），禁止只发信号就返回。 */
+async function stopReportDaemon(runtimeDir) {
+	const endpointPath = join(runtimeDir, "endpoint.json");
+	let pid;
+	try {
+		pid = JSON.parse(readFileSync(endpointPath, "utf8")).pid;
+	} catch {
+		return;
+	}
+	if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid)
+		throw new Error(`invalid report daemon pid in ${endpointPath}`);
+	try {
+		process.kill(pid, "SIGTERM");
+	} catch (error) {
+		if (error?.code !== "ESRCH") throw error;
+		// 进程已死：仍须确认 endpoint 不在，否则所有权未收口
+		if (!existsSync(endpointPath)) return;
+	}
+	if (!existsSync(endpointPath)) return;
+	await new Promise((resolve, reject) => {
+		const watcher = watch(dirname(endpointPath), () => {
+			if (existsSync(endpointPath)) return;
+			finish();
+		});
+		const timeout = setTimeout(() => {
+			finish(
+				new Error(
+					`report daemon ${pid} did not release endpoint ${endpointPath}`,
+				),
+			);
+		}, 5_000);
+		const finish = (error) => {
+			clearTimeout(timeout);
+			watcher.close();
+			if (error) reject(error);
+			else resolve();
+		};
+		if (!existsSync(endpointPath)) finish();
+	});
+}
+
 function createSessionHarness(extension, runtime, cwd) {
 	const entries = new Map();
 	const contextRefs = [];
 	const notifications = [];
+	const laneWidgets = { active: 0, mounts: 0, clears: 0 };
 	let current;
 	let sequence = 0;
 
@@ -516,6 +605,16 @@ function createSessionHarness(extension, runtime, cwd) {
 			ui: {
 				...quietUi(),
 				notify: (message) => notifications.push(String(message)),
+				setWidget: (key, content) => {
+					if (key !== "flow-parallel-lanes") return;
+					if (content === undefined) {
+						laneWidgets.active = 0;
+						laneWidgets.clears += 1;
+					} else {
+						laneWidgets.active = 1;
+						laneWidgets.mounts += 1;
+					}
+				},
 			},
 			isIdle: () => true,
 			hasPendingMessages: () => false,
@@ -576,6 +675,7 @@ function createSessionHarness(extension, runtime, cwd) {
 	return {
 		contextRefs,
 		notifications,
+		laneWidgets,
 		emit,
 		shutdown,
 		newRootContext(label) {
@@ -634,9 +734,11 @@ export function evaluateSoakResult(
 	const lastHeapMedian = median(last.map((sample) => sample.heapUsed));
 	const heapGrowthBytes = lastHeapMedian - firstHeapMedian;
 	const resourceFailures = samples.flatMap((sample) =>
-		terminalResourceFailures(sample.resources, baselineActiveResources).map(
-			(failure) => `cycle ${sample.cycle}: ${failure}`,
-		),
+		terminalResourceFailures(
+			sample.resources,
+			baselineActiveResources,
+			false,
+		).map((failure) => `cycle ${sample.cycle}: ${failure}`),
 	);
 	if (samples.length === 0) resourceFailures.push("soak produced no samples");
 	if (contexts.aliveAfterGc !== 0)
@@ -645,9 +747,11 @@ export function evaluateSoakResult(
 		);
 	if (closedResources)
 		resourceFailures.push(
-			...terminalResourceFailures(closedResources, baselineActiveResources).map(
-				(failure) => `after close: ${failure}`,
-			),
+			...terminalResourceFailures(
+				closedResources,
+				baselineActiveResources,
+				true,
+			).map((failure) => `after close: ${failure}`),
 		);
 	else resourceFailures.push("post-close resource snapshot is missing");
 	const generationCancellations = samples.filter(
@@ -791,8 +895,8 @@ function checkLifecycleCoverage(name, counts, sampleCount, failures) {
 		failures.push(`${name} lifecycle coverage requires completed and stopped`);
 }
 
-function terminalResourceFailures(resources, baselineActiveResources) {
-	const failures = [];
+function terminalResourceFailures(resources, baselineActiveResources, closed) {
+	const failures = reportClientFailures(resources.report, closed);
 	if (resources.flow.contexts !== 0)
 		failures.push(`${resources.flow.contexts} Flow contexts active`);
 	if (resources.flow.completionFacts !== 0)
@@ -803,13 +907,48 @@ function terminalResourceFailures(resources, baselineActiveResources) {
 		failures.push(`${resources.goalSessions} Goal sessions active`);
 	if (resources.flowWatchers !== 0)
 		failures.push(`${resources.flowWatchers} Flow watchers active`);
+	for (const [name, count] of Object.entries(resources.flowWatcherResources))
+		if (count !== 0) failures.push(`${count} Flow watcher ${name} active`);
 	if (resources.parallelBoards !== 0)
 		failures.push(`${resources.parallelBoards} parallel boards active`);
+	if (resources.laneWidgets.active !== 0)
+		failures.push(`${resources.laneWidgets.active} lane widgets active`);
 	for (const [name, count] of Object.entries(resources.active)) {
 		const retained = count - (baselineActiveResources[name] ?? 0);
 		if (retained > 0)
 			failures.push(`${retained} ${name} resources active above baseline`);
 	}
+	return failures;
+}
+
+function reportClientFailures(report, closed) {
+	if (!report) return ["report client diagnostics are missing"];
+	const failures = [];
+	if (report.backgroundTasks !== 0)
+		failures.push(`${report.backgroundTasks} report background tasks active`);
+	if (report.connecting) failures.push("report client is still connecting");
+	if (report.failureCount !== 0)
+		failures.push(`report client failed ${report.failureCount} times`);
+	if (report.statusContext)
+		failures.push("report status context is still active");
+	if (!closed) {
+		if (!report.connected) failures.push("report client is not connected");
+		if (report.registeredReports < 1)
+			failures.push("report client has no registered report");
+		if (report.requestDestroyed || report.responseDestroyed)
+			failures.push("live report control connection was destroyed");
+		return failures;
+	}
+	if (report.connected) failures.push("report client is still connected");
+	if (report.registeredReports !== 0)
+		failures.push(`${report.registeredReports} reports still registered`);
+	if (report.registerChains !== 0)
+		failures.push(`${report.registerChains} register chains still retained`);
+	if (
+		!report.lastClosedConnection?.requestDestroyed ||
+		!report.lastClosedConnection?.responseDestroyed
+	)
+		failures.push("report control connection was not destroyed");
 	return failures;
 }
 
@@ -873,16 +1012,28 @@ async function runReport(modeArgs) {
 			writeFlowHtml,
 		});
 		watcher.closeFlowGoalWatcher();
+		const closedWatchers = watcher.flowGoalWatcherResourceSnapshot();
 		const ok =
+			serial.watcher.osWatchers === 1 &&
+			serial.watcher.watchedFiles === 1 &&
 			serial.burst.fullRenders <= 2 &&
 			serial.burst.finalVisible &&
 			serial.sustained.withinFrameRate &&
 			serial.sustained.finalVisible &&
+			parallel.watcher.osWatchers === 1 &&
+			parallel.watcher.watchedFiles === 6 &&
 			parallel.fullRenders <= 2 &&
 			parallel.finalVisible &&
 			parallel.terminalStable &&
 			parallel.sameContentSkipped &&
-			independent.every((flow) => flow.fullRenders <= 2 && flow.finalVisible);
+			independent.every(
+				(flow) =>
+					flow.watcher.osWatchers === 1 &&
+					flow.watcher.watchedFiles === 1 &&
+					flow.fullRenders <= 2 &&
+					flow.finalVisible,
+			) &&
+			Object.values(closedWatchers).every((count) => count === 0);
 		if (!ok) process.exitCode = 1;
 		return {
 			mode: "report",
@@ -891,6 +1042,7 @@ async function runReport(modeArgs) {
 			serial,
 			parallel,
 			independent,
+			closedWatchers,
 			elapsedMs: round(performance.now() - startedAt),
 		};
 	} finally {
@@ -940,6 +1092,10 @@ async function benchmarkSerialReport(input) {
 	const sustainedRefreshes = sustainedStats.refreshes - sustainedStartRefreshes;
 	input.watcher.closeFlowGoalWatcher(dir);
 	return {
+		watcher: {
+			osWatchers: sustainedStats.osWatchers,
+			watchedFiles: sustainedStats.watchedFiles,
+		},
 		burst: {
 			sourceUpdates: input.updates,
 			watcherSignals: burstStats.signals - initialStats.signals,
@@ -1027,6 +1183,10 @@ async function benchmarkParallelReport(input) {
 	const terminalHash = sha256(readFileSync(htmlPath, "utf8"));
 	await wait(60);
 	return {
+		watcher: {
+			osWatchers: liveStats.osWatchers,
+			watchedFiles: liveStats.watchedFiles,
+		},
 		sourceUpdates: input.updates * 3,
 		watcherSignals: liveStats.signals - initialStats.signals,
 		fullRenders,
@@ -1078,12 +1238,15 @@ async function benchmarkIndependentReports(input) {
 	);
 	return flows.map((flow, flowIndex) => {
 		const html = readFileSync(join(flow.dir, "flow.html"), "utf8");
-		const fullRenders =
-			input.watcher.flowGoalWatcherStats(flow.dir).refreshes -
-			flow.initialRefreshes;
+		const stats = input.watcher.flowGoalWatcherStats(flow.dir);
+		const fullRenders = stats.refreshes - flow.initialRefreshes;
 		input.watcher.closeFlowGoalWatcher(flow.dir);
 		return {
 			id: `F${flowIndex + 3}`,
+			watcher: {
+				osWatchers: stats.osWatchers,
+				watchedFiles: stats.watchedFiles,
+			},
 			fullRenders,
 			finalVisible: html.includes(
 				`Independent ${flowIndex}-${input.updates - 1}.`,

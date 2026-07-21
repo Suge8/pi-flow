@@ -1,12 +1,7 @@
-import {
-	existsSync,
-	type FSWatcher,
-	mkdirSync,
-	readFileSync,
-	watch,
-} from "node:fs";
-import { basename, dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { isRecord } from "../../shared/guards.js";
+import { subscribePlanFile } from "../../shared/plan-file-watcher.js";
 import type { GoalCompletionFact } from "../types.js";
 
 export function watchBatchResults(
@@ -15,31 +10,29 @@ export function watchBatchResults(
 	signal: AbortSignal,
 	parallelRunId?: string,
 ) {
-	const watchers: FSWatcher[] = [];
+	const subscriptions: (() => void)[] = [];
 	let closed = false;
 	const close = () => {
 		if (closed) return;
 		closed = true;
-		for (const watcher of watchers) watcher.close();
+		for (const unsubscribe of subscriptions) unsubscribe();
 		signal.removeEventListener("abort", close);
 	};
 	if (signal.aborted) return close;
-	for (const path of paths) {
-		const parent = dirname(path);
-		const file = basename(path);
-		mkdirSync(parent, { recursive: true });
-		const readResult = () => {
-			if (closed) return;
-			const fact = readCompletionFact(path, parallelRunId);
-			if (fact) onResult(path, fact);
-		};
-		readResult();
-		watchers.push(
-			watch(parent, (_event, name) => {
-				if (name !== null && String(name) !== file) return;
-				readResult();
-			}),
-		);
+	try {
+		for (const path of paths) {
+			mkdirSync(dirname(path), { recursive: true });
+			const readResult = () => {
+				if (closed) return;
+				const fact = readCompletionFact(path, parallelRunId);
+				if (fact) onResult(path, fact);
+			};
+			subscriptions.push(subscribePlanFile(path, readResult));
+			readResult();
+		}
+	} catch (error) {
+		close();
+		throw error;
 	}
 	signal.addEventListener("abort", close, { once: true });
 	return close;

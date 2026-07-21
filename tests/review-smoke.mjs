@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { prepareTestDist } from "./prepare-dist.mjs";
 import { acquireReportPortTestLock } from "./report-port-lock.mjs";
@@ -43,6 +43,7 @@ try {
 	await runScenario(readPromptMissingPrimaryIgnoresCwdScenario);
 	await runScenario(cancelledRestartedArmedReviewDoesNotRunScenario);
 	await runScenario(standaloneReviewReportScenario);
+	await runScenario(standaloneReviewStartsBeforeReportProjectionScenario);
 	await runScenario(terminalReviewReportRestoresStatusAfterRestartScenario);
 	await runScenario(standaloneReportServerFailureContinuesScenario);
 	await runScenario(passScenario);
@@ -75,6 +76,7 @@ try {
 	await runScenario(piRetryableErrorStopsAfterGuardScenario);
 	await runScenario(multiReviewerFailureScenario);
 	await runScenario(reviewCheckpointRejectsStaleGenerationScenario);
+	await runScenario(reviewReportRunLifecycleScenario);
 	await runScenario(interruptedReviewerPoolResumesMissingModelScenario);
 	await runScenario(userInputInvalidatesReviewerCheckpointScenario);
 	await runScenario(standaloneReviewRepairResumesAfterRestartScenario);
@@ -398,7 +400,12 @@ async function standaloneReviewReportScenario() {
 		"reviews",
 		"review-report-session.html",
 	);
-	assert(existsSync(reportPath), "standalone review report was not written");
+	await waitFor(
+		() =>
+			existsSync(reportPath) &&
+			readFileSync(reportPath, "utf8").includes("质量 OK"),
+		"standalone review report was not written",
+	);
 	const html = readFileSync(reportPath, "utf8");
 	assert(html.includes("data-review-report"), html);
 	assert(html.includes('data-modal-open="dlg-review-evidence"'), html);
@@ -431,9 +438,8 @@ async function standaloneReviewReportScenario() {
 		"standalone report evidence diverged from the reviewer prompt",
 	);
 	assertNoStandaloneReportLines(state);
-	const reportUrl = standaloneReportStatusUrl(state);
-	assert(
-		reportUrl,
+	const reportUrl = await waitFor(
+		() => standaloneReportStatusUrl(state),
 		`${state.statuses.join(" | ")}\n${state.notifications.join("\n")}`,
 	);
 	assert(
@@ -451,8 +457,46 @@ async function standaloneReviewReportScenario() {
 		]),
 	);
 	await commands.get("review").handler("", ctx);
-	assert(existsSync(reportPath), "deleted review projection was not rebuilt");
-	assert(readFileSync(reportPath, "utf8").includes("重建 OK"), reportPath);
+	await waitFor(
+		() =>
+			existsSync(reportPath) &&
+			readFileSync(reportPath, "utf8").includes("重建 OK"),
+		"deleted review projection was not rebuilt",
+	);
+}
+
+async function standaloneReviewStartsBeforeReportProjectionScenario() {
+	const command = captureReviewCommand(
+		"PASS\n质量 OK\n证据：文件=src/app.ts；命令=npm test\n",
+	);
+	writeReviewConfig("autoFix", command);
+	const state = createState();
+	state.sessionFile = join(out, "sessions", "review-projection-order.jsonl");
+	const reportPath = join(
+		state.cwd,
+		".flow",
+		"reviews",
+		"review-projection-order.html",
+	);
+	const { runConfiguredReview } = await import(
+		`file://${join(srcOut, "review.js")}?projection-order=${Date.now()}`
+	);
+	let reportExistedAtStart;
+	const result = await runConfiguredReview(mockPi(state), mockContext(state), {
+		scope: { kind: "review" },
+		onStart: () => {
+			reportExistedAtStart = existsSync(reportPath);
+		},
+	});
+	assert(result.kind === "passed", JSON.stringify(result));
+	assert(
+		reportExistedAtStart === false,
+		"standalone report projection ran before the quality-check start event",
+	);
+	await waitFor(
+		() => existsSync(reportPath),
+		"standalone report projection was not written",
+	);
 }
 
 async function terminalReviewReportRestoresStatusAfterRestartScenario() {
@@ -465,10 +509,11 @@ async function terminalReviewReportRestoresStatusAfterRestartScenario() {
 		timestamp: "2026-07-14T10:00:00.000Z",
 		customType: "review-checkpoint",
 		data: {
-			version: 2,
+			version: 3,
 			active: null,
 			round: 1,
 			phase: null,
+			reportRun: 1,
 			history: [
 				{ round: 1, result: "passed", summary: "terminal report passed" },
 			],
@@ -485,9 +530,8 @@ async function terminalReviewReportRestoresStatusAfterRestartScenario() {
 	const { events } = await loadBootstrapExtension();
 	const ctx = mockContext(state);
 	await emitAll(events, "session_start", {}, ctx);
-	const reportUrl = standaloneReportStatusUrl(state);
-	assert(
-		reportUrl,
+	const reportUrl = await waitFor(
+		() => standaloneReportStatusUrl(state),
 		`terminal report status missing: ${state.statuses.join(" | ")}`,
 	);
 	assert(
@@ -496,31 +540,57 @@ async function terminalReviewReportRestoresStatusAfterRestartScenario() {
 		),
 		"restored terminal report URL was not reachable",
 	);
+	// 重启恢复复用 reportRun=1，目录仍为 complete/Recent
+	const restored = latestReviewCheckpoint(state);
+	assert(restored?.reportRun === 1, JSON.stringify(restored));
+	await waitForReviewDirectoryRecord(
+		reportPath,
+		(item) => item?.state === "complete" && item.generation === 1,
+		"restart did not republish terminal review as Recent with same reportRun",
+	);
 }
 
 async function standaloneReportServerFailureContinuesScenario() {
-	writeReviewConfig(
-		"autoFix",
-		reviewCommand(["PASS\n质量 OK\n证据：文件=src/app.ts；命令=npm test\n"]),
+	const command = captureReviewCommand(
+		"PASS\n质量 OK\n证据：文件=src/app.ts；命令=npm test\n",
 	);
+	writeReviewConfig("autoFix", command);
 	await shutdownReportDaemon();
-	const occupied = createServer((_request, response) =>
-		response.end("occupied"),
-	);
+	let resolveHealthRequest;
+	const healthRequested = new Promise((resolve) => {
+		resolveHealthRequest = resolve;
+	});
+	const sockets = new Set();
+	const occupied = createServer((request) => {
+		if (request.url === "/health") resolveHealthRequest();
+	});
+	occupied.on("connection", (socket) => {
+		sockets.add(socket);
+		socket.once("close", () => sockets.delete(socket));
+	});
 	await new Promise((resolve, reject) => {
 		occupied.once("error", reject);
 		occupied.listen(49327, "127.0.0.1", resolve);
 	});
 	const state = createState();
+	let review;
 	try {
 		const { commands, events } = await loadExtension(state);
 		const ctx = mockContext(state);
 		await emitAll(events, "session_start", {}, ctx);
-		await commands.get("review").handler("", ctx);
+		review = commands.get("review").handler("", ctx);
+		await healthRequested;
+		await waitFor(
+			() => existsSync(`${command}.args`),
+			"reviewer did not start while the report service was unavailable",
+			2_000,
+		);
 	} finally {
+		for (const socket of sockets) socket.destroy();
 		await new Promise((resolve, reject) =>
 			occupied.close((error) => (error ? reject(error) : resolve())),
 		);
+		await review;
 	}
 	assert(
 		state.messages.at(-1)?.message.details?.title === "质检通过",
@@ -531,9 +601,10 @@ async function standaloneReportServerFailureContinuesScenario() {
 			latestReviewCheckpoint(state)?.history?.at(-1)?.result === "passed",
 		JSON.stringify(latestReviewCheckpoint(state)),
 	);
-	assert(
-		state.notifications.some((item) => item.includes("质检报告刷新失败")),
-		state.notifications.join("\n"),
+	await waitFor(
+		() =>
+			state.notifications.some((item) => item.includes("Flow 网页报告不可用")),
+		"report service failure was not reported",
 	);
 	const reportPath = join(
 		state.cwd,
@@ -569,6 +640,58 @@ async function passScenario() {
 	);
 	const card = state.messages.at(-1);
 	assert(card.message.details.title === "质检通过", card.message.details.title);
+	// 真实 /review 终态 → 目录 Recent（轮询账本，避免跨模块 client 实例）
+	const checkpoint = latestReviewCheckpoint(state);
+	const reportPath = join(
+		state.cwd,
+		".flow",
+		"reviews",
+		`${basename(state.sessionFile, ".jsonl")}.html`,
+	);
+	const record = await waitForReviewDirectoryRecord(
+		reportPath,
+		(item) =>
+			item?.state === "complete" && item.generation === checkpoint?.reportRun,
+		"review pass left directory not complete",
+	);
+	assert(
+		checkpoint?.phase === null && checkpoint?.active === null && record,
+		JSON.stringify({ checkpoint, record }),
+	);
+	const firstRun = checkpoint.reportRun;
+	// 第二轮真实 /review：更高 reportRun 重进 Live，再收口 complete
+	await commands.get("review").handler("", ctx);
+	const secondLive = latestReviewCheckpoint(state);
+	// 若瞬间已通过，至少 generation 必须递增；进行中则目录 Live
+	assert(
+		secondLive?.reportRun > firstRun,
+		`second review reportRun not incremented: ${JSON.stringify(secondLive)}`,
+	);
+	await waitForReviewDirectoryRecord(
+		reportPath,
+		(item) =>
+			item?.generation === secondLive.reportRun &&
+			(item.state === "live" || item.state === "complete"),
+		"second review did not republish directory",
+	);
+	// 等待第二轮终态
+	await waitFor(
+		() => {
+			const cp = latestReviewCheckpoint(state);
+			return cp?.phase === null && cp?.active === null ? cp : undefined;
+		},
+		"second review did not reach terminal checkpoint",
+		10_000,
+	);
+	const secondDone = latestReviewCheckpoint(state);
+	await waitForReviewDirectoryRecord(
+		reportPath,
+		(item) =>
+			item?.state === "complete" &&
+			item.generation === secondDone.reportRun &&
+			item.generation > firstRun,
+		"second review terminal was not Recent with new generation",
+	);
 	assert(card.options.triggerTurn === true, JSON.stringify(card.options));
 	assert(card.message.content.includes("质量 OK"), card.message.content);
 	assert(card.message.content.includes("简洁最终回复"), card.message.content);
@@ -665,15 +788,17 @@ async function reviewRequestArmsAndRunsScenario() {
 		state.statuses.join(" | "),
 	);
 	assert(reviewRunCount(command) === 0, "review ran before agent_end");
-	const armedReport = readFileSync(
-		join(
-			state.cwd,
-			".flow",
-			"reviews",
-			`${basename(state.sessionFile, ".jsonl")}.html`,
-		),
-		"utf8",
+	const armedReportPath = join(
+		state.cwd,
+		".flow",
+		"reviews",
+		`${basename(state.sessionFile, ".jsonl")}.html`,
 	);
+	await waitFor(
+		() => existsSync(armedReportPath),
+		"armed review report was not written",
+	);
+	const armedReport = readFileSync(armedReportPath, "utf8");
 	assert(
 		armedReport.includes("执行中 · 完成后自动质检") &&
 			armedReport.includes("等待第 1 轮") &&
@@ -733,7 +858,10 @@ async function reviewRequestSyncSendFailureDisarmsScenario() {
 			!notices[0].includes("网页报告"),
 		state.notifications.join("\n"),
 	);
-	assert(standaloneReportStatusUrl(state), state.statuses.join(" | "));
+	await waitFor(
+		() => standaloneReportStatusUrl(state),
+		state.statuses.join(" | "),
+	);
 	await emitAll(
 		loaded.events,
 		"agent_end",
@@ -1177,8 +1305,10 @@ async function contextModelFailureStopsScenario() {
 	);
 	assert(!existsSync(`${command}.args`), "unbudgeted reviewer process started");
 	assertNoStandaloneReportLines(state);
-	const reportUrl = standaloneReportStatusUrl(state);
-	assert(reportUrl, `first-failure report status missing: ${state.statuses}`);
+	const reportUrl = await waitFor(
+		() => standaloneReportStatusUrl(state),
+		`first-failure report status missing: ${state.statuses}`,
+	);
 	const report = await fetch(reportUrl).then((response) => response.text());
 	assert(report.includes("data-context-evidence-error"), report);
 	assert(report.includes("无法解析模型窗口"), report);
@@ -1580,7 +1710,10 @@ async function standaloneReviewBlockedOnUserScenario() {
 			!notice.includes("网页报告"),
 		state.notifications.join("\n"),
 	);
-	assert(standaloneReportStatusUrl(state), state.statuses.join(" | "));
+	await waitFor(
+		() => standaloneReportStatusUrl(state),
+		state.statuses.join(" | "),
+	);
 }
 
 async function standaloneReviewHardStopKeepsStatusReportScenario() {
@@ -1616,7 +1749,10 @@ async function standaloneReviewHardStopKeepsStatusReportScenario() {
 	);
 	assertNoticeFormat(notice, "⚠️", "AI 中断或失败");
 	assert(!notice.includes("网页报告"), notice);
-	assert(standaloneReportStatusUrl(state), state.statuses.join(" | "));
+	await waitFor(
+		() => standaloneReportStatusUrl(state),
+		state.statuses.join(" | "),
+	);
 	assert(latestReviewCheckpoint(state)?.phase === null);
 	const report = readFileSync(
 		join(
@@ -1708,7 +1844,10 @@ async function cancelledReviewDoesNotTriggerAiScenario() {
 		cancelNotices.length === 1 && !cancelNotices[0].includes("网页报告"),
 		state.notifications.join("\n"),
 	);
-	assert(standaloneReportStatusUrl(state), state.statuses.join(" | "));
+	await waitFor(
+		() => standaloneReportStatusUrl(state),
+		state.statuses.join(" | "),
+	);
 	assert(state.sentMessages.length === 0, state.sentMessages.join("\n"));
 }
 
@@ -1910,7 +2049,10 @@ async function piRetryableErrorStopsAfterGuardScenario() {
 	);
 	assertNoticeFormat(stoppedNotice, "⚠️", "Pi 自动重试耗尽");
 	assert(!stoppedNotice.includes("网页报告"), stoppedNotice);
-	assert(standaloneReportStatusUrl(state), state.statuses.join(" | "));
+	await waitFor(
+		() => standaloneReportStatusUrl(state),
+		state.statuses.join(" | "),
+	);
 	await emitAll(
 		events,
 		"agent_end",
@@ -2118,7 +2260,10 @@ async function invalidReviewOutputStopsScenario() {
 		!card.message.details.lines.some((line) => line.includes("网页报告")),
 		card.message.details.lines.join("\n"),
 	);
-	assert(standaloneReportStatusUrl(state), state.statuses.join(" | "));
+	await waitFor(
+		() => standaloneReportStatusUrl(state),
+		state.statuses.join(" | "),
+	);
 	assert(
 		!state.notifications.some((item) => item.includes("review 输出格式无效")),
 		state.notifications.join("\n"),
@@ -2160,7 +2305,10 @@ async function semiFailureScenario() {
 		!card.message.details.lines.some((line) => line.includes("网页报告")),
 		card.message.details.lines.join("\n"),
 	);
-	assert(standaloneReportStatusUrl(state), state.statuses.join(" | "));
+	await waitFor(
+		() => standaloneReportStatusUrl(state),
+		state.statuses.join(" | "),
+	);
 	assert(!card.options.triggerTurn, JSON.stringify(card.options));
 }
 
@@ -2334,7 +2482,110 @@ async function reviewCheckpointRejectsStaleGenerationScenario() {
 		},
 		round: 1,
 		phase: "checking",
+		history: [],
+		reportRun: 1,
 	});
+	// v3 严格 schema：额外字段 / 畸形 phase 不得被读成终态
+	const { parseReviewCheckpointData } = await import(
+		`file://${join(srcOut, "review/checkpoint.js")}?strict=${Date.now()}`
+	);
+	assert(
+		parseReviewCheckpointData({
+			version: 2,
+			active: null,
+			round: 1,
+			phase: null,
+			history: [],
+			reportRun: 1,
+		}) === undefined,
+		"v2 checkpoint accepted",
+	);
+	assert(
+		parseReviewCheckpointData({
+			version: 3,
+			active: "bad",
+			round: -2.5,
+			phase: "nope",
+			history: [null],
+			reportRun: 1,
+			extra: true,
+		}) === undefined,
+		"malformed v3 checkpoint accepted",
+	);
+	assert(
+		parseReviewCheckpointData({
+			version: 3,
+			active: null,
+			round: 1,
+			phase: "checking",
+			history: [],
+			reportRun: 1,
+		}) === undefined,
+		"checking without active accepted",
+	);
+	const activeRun = {
+		round: 1,
+		generation: "g1",
+		runId: "run-1",
+		inputHash: "input",
+		models: [{ key: "reviewer", label: "reviewer", outcome: null }],
+	};
+	assert(
+		parseReviewCheckpointData({
+			version: 3,
+			active: activeRun,
+			round: 1,
+			phase: "awaiting_agent",
+			history: [],
+			reportRun: 1,
+		}) === undefined,
+		"awaiting_agent with active accepted",
+	);
+	assert(
+		parseReviewCheckpointData({
+			version: 3,
+			active: { ...activeRun, round: 2 },
+			round: 1,
+			phase: "checking",
+			history: [],
+			reportRun: 1,
+		}) === undefined,
+		"checking round mismatch accepted",
+	);
+	assert(
+		parseReviewCheckpointData({
+			version: 3,
+			active: { ...activeRun, round: 0 },
+			round: 0,
+			phase: "checking",
+			history: [],
+			reportRun: 1,
+		}) === undefined,
+		"checking round zero accepted",
+	);
+	// 合法：round:0 武装态 / checking 对齐 round
+	assert(
+		parseReviewCheckpointData({
+			version: 3,
+			active: null,
+			round: 0,
+			phase: "awaiting_agent",
+			history: [],
+			reportRun: 1,
+		})?.phase === "awaiting_agent",
+		"armed awaiting_agent rejected",
+	);
+	assert(
+		parseReviewCheckpointData({
+			version: 3,
+			active: activeRun,
+			round: 1,
+			phase: "checking",
+			history: [],
+			reportRun: 1,
+		})?.phase === "checking",
+		"valid checking rejected",
+	);
 	writeReviewCheckpoint(mockPi(state), ctx, checkpoint("first"), null);
 	writeReviewCheckpoint(mockPi(state), ctx, checkpoint("second"), "first");
 	let rejected = false;
@@ -2344,6 +2595,219 @@ async function reviewCheckpointRejectsStaleGenerationScenario() {
 		rejected = true;
 	}
 	assert(rejected, "stale review checkpoint generation was accepted");
+}
+
+async function reviewReportRunLifecycleScenario() {
+	const {
+		nextReviewReportRun,
+		readReviewCheckpoint,
+		reviewReportPublication,
+		writeReviewCheckpoint,
+	} = await import(
+		`file://${join(srcOut, "review/checkpoint.js")}?t=${Date.now()}`
+	);
+	const state = createState();
+	const ctx = mockContext(state);
+	const firstRun = nextReviewReportRun(undefined);
+	writeReviewCheckpoint(
+		mockPi(state),
+		ctx,
+		{
+			active: null,
+			round: 0,
+			phase: "awaiting_agent",
+			history: [],
+			reportRun: firstRun,
+		},
+		null,
+	);
+	const armed = readReviewCheckpoint(ctx);
+	assert(armed?.reportRun === firstRun, JSON.stringify(armed));
+	assert(
+		reviewReportPublication(armed).state === "live",
+		JSON.stringify(reviewReportPublication(armed)),
+	);
+	// 中断恢复复用同一 reportRun
+	writeReviewCheckpoint(
+		mockPi(state),
+		ctx,
+		{
+			active: {
+				round: 1,
+				generation: "g1",
+				runId: "run",
+				inputHash: "h",
+				models: [{ key: "r", label: "r", outcome: null }],
+			},
+			round: 1,
+			phase: "checking",
+			history: [],
+			reportRun: firstRun,
+		},
+		null,
+	);
+	assert(readReviewCheckpoint(ctx)?.reportRun === firstRun);
+	// 终态 complete
+	writeReviewCheckpoint(
+		mockPi(state),
+		ctx,
+		{
+			active: null,
+			round: 1,
+			phase: null,
+			history: [{ round: 1, result: "passed", summary: "ok" }],
+			reportRun: firstRun,
+		},
+		"g1",
+	);
+	const terminal = readReviewCheckpoint(ctx);
+	assert(
+		reviewReportPublication(terminal).state === "complete",
+		JSON.stringify(terminal),
+	);
+	// 第二轮必须递增
+	const secondRun = nextReviewReportRun(terminal.reportRun);
+	assert(secondRun > firstRun, `${secondRun} <= ${firstRun}`);
+	writeReviewCheckpoint(
+		mockPi(state),
+		ctx,
+		{
+			active: null,
+			round: 0,
+			phase: "awaiting_agent",
+			history: [],
+			reportRun: secondRun,
+		},
+		null,
+	);
+	assert(readReviewCheckpoint(ctx)?.reportRun === secondRun);
+
+	// 真实 client→daemon 账本：第一轮 live → complete，第二轮更高 generation 重进 Live
+	const client = await import(
+		`file://${join(srcOut, "shared/report-client.js")}?review-dir=${Date.now()}`
+	);
+	await client.closeReportClient().catch(() => undefined);
+	const reportPath = join(
+		state.cwd,
+		".flow",
+		"reviews",
+		"review-lifecycle.html",
+	);
+	mkdirSync(dirname(reportPath), { recursive: true });
+	writeFileSync(reportPath, "<!doctype html><p>review-lifecycle</p>");
+	const reportCtx = {
+		cwd: state.cwd,
+		ui: { setStatus() {}, notify() {} },
+	};
+	await client.liveReportUrl(
+		reportCtx,
+		reportPath,
+		"zh",
+		reviewReportPublication({
+			active: { round: 1 },
+			phase: "checking",
+			reportRun: firstRun,
+		}),
+	);
+	await client.waitForReportClientIdle();
+	assert(
+		reviewDirectoryRecord(reportPath)?.state === "live" &&
+			reviewDirectoryRecord(reportPath)?.generation === firstRun,
+		JSON.stringify(reviewDirectoryRecord(reportPath)),
+	);
+	await client.liveReportUrl(
+		reportCtx,
+		reportPath,
+		"zh",
+		reviewReportPublication({
+			active: null,
+			phase: null,
+			reportRun: firstRun,
+		}),
+	);
+	await client.waitForReportClientIdle();
+	assert(
+		reviewDirectoryRecord(reportPath)?.state === "complete",
+		JSON.stringify(reviewDirectoryRecord(reportPath)),
+	);
+	await client.liveReportUrl(
+		reportCtx,
+		reportPath,
+		"zh",
+		reviewReportPublication({
+			active: null,
+			phase: "awaiting_agent",
+			reportRun: secondRun,
+		}),
+	);
+	await client.waitForReportClientIdle();
+	assert(
+		reviewDirectoryRecord(reportPath)?.state === "live" &&
+			reviewDirectoryRecord(reportPath)?.generation === secondRun,
+		JSON.stringify(reviewDirectoryRecord(reportPath)),
+	);
+	let staleRejected = false;
+	try {
+		await client.liveReportUrl(reportCtx, reportPath, "zh", {
+			state: "live",
+			generation: firstRun,
+		});
+	} catch (error) {
+		staleRejected = /conflict|409/iu.test(String(error?.message ?? error));
+	}
+	assert(staleRejected, "review stale generation did not conflict");
+	// 多路径注册 settle 后 registerChains 不得残留
+	const extraPath = join(
+		state.cwd,
+		".flow",
+		"reviews",
+		"review-lifecycle-extra.html",
+	);
+	writeFileSync(extraPath, "<!doctype html><p>extra</p>");
+	await client.liveReportUrl(reportCtx, extraPath, "zh", {
+		state: "live",
+		generation: secondRun + 1,
+	});
+	await client.waitForReportClientIdle();
+	assert(
+		client.reportClientResourceSnapshot().registerChains === 0,
+		`registerChains leaked after idle: ${JSON.stringify(client.reportClientResourceSnapshot())}`,
+	);
+	await client.closeReportClient().catch(() => undefined);
+	assert(
+		client.reportClientResourceSnapshot().registerChains === 0 &&
+			client.reportClientResourceSnapshot().registeredReports === 0,
+		`registerChains leaked after close: ${JSON.stringify(client.reportClientResourceSnapshot())}`,
+	);
+}
+
+async function waitForReviewDirectoryRecord(
+	htmlPath,
+	match,
+	message,
+	timeoutMs = 5_000,
+) {
+	const deadline = Date.now() + timeoutMs;
+	let last;
+	while (Date.now() < deadline) {
+		last = reviewDirectoryRecord(htmlPath);
+		if (match(last)) return last;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	throw new Error(`${message}: ${JSON.stringify(last)}`);
+}
+
+function reviewDirectoryRecord(htmlPath) {
+	const ledgerPath = join(
+		process.env.PI_CODING_AGENT_DIR,
+		"pi-flow-report",
+		"directory.json",
+	);
+	const ledger = JSON.parse(readFileSync(ledgerPath, "utf8"));
+	const absolute = resolve(htmlPath);
+	return ledger.records.find(
+		(record) => record.path === absolute || record.realPath === absolute,
+	);
 }
 
 async function interruptedReviewerPoolResumesMissingModelScenario() {
@@ -2488,11 +2952,37 @@ async function standaloneReviewRepairResumesAfterRestartScenario() {
 		),
 		"fail→awaiting transition leaked a terminal-looking checkpoint",
 	);
+	const interruptedRun = checkpoints.at(-1)?.data?.reportRun;
+	assert(
+		typeof interruptedRun === "number" && interruptedRun > 0,
+		`missing reportRun before restart: ${JSON.stringify(checkpoints.at(-1)?.data)}`,
+	);
+	const repairReportPath = join(
+		state.cwd,
+		".flow",
+		"reviews",
+		`${basename(state.sessionFile, ".jsonl")}.html`,
+	);
+	await waitForReviewDirectoryRecord(
+		repairReportPath,
+		(item) => item?.state === "live" && item.generation === interruptedRun,
+		"awaiting_agent review was not Live before restart",
+	);
 	await emitAll(loaded.events, "session_shutdown", {}, ctx);
 
 	loaded = await loadExtension(state);
 	ctx = mockContext(state);
 	await emitAll(loaded.events, "session_start", {}, ctx);
+	const restoredRun = latestReviewCheckpoint(state)?.reportRun;
+	assert(
+		restoredRun === interruptedRun,
+		`restart changed reportRun: ${restoredRun} vs ${interruptedRun}`,
+	);
+	await waitForReviewDirectoryRecord(
+		repairReportPath,
+		(item) => item?.state === "live" && item.generation === interruptedRun,
+		"restart did not keep Live with same reportRun",
+	);
 	const interruptedBox = renderWidgets(state, "review-progress")
 		.filter((text) => text.includes("已中断"))
 		.at(-1);
@@ -2894,7 +3384,10 @@ async function standaloneReviewMidLoopConfigErrorStopsScenario() {
 		notice && !notice.includes("网页报告"),
 		state.notifications.join("\n"),
 	);
-	assert(standaloneReportStatusUrl(state), state.statuses.join(" | "));
+	await waitFor(
+		() => standaloneReportStatusUrl(state),
+		state.statuses.join(" | "),
+	);
 	assert(
 		reviewRunCount(command) === 1,
 		`stale reviewer ran after config became invalid: ${reviewRunCount(command)}`,

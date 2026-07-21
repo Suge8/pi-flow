@@ -30,13 +30,17 @@ import {
 	TYPE,
 	themeToggleButton,
 } from "../shared/report-blocks.js";
-import { notifyReportChanged } from "../shared/report-client.js";
+import {
+	bindLiveReport,
+	notifyReportChanged,
+} from "../shared/report-client.js";
 import {
 	elapsedTimeHtml,
 	flowLogoDataUri,
 	readReportText,
 } from "../shared/report-html.js";
 import { type ReportIconName, reportIcon } from "../shared/report-icons.js";
+import type { ReportLifecycle } from "../shared/report-protocol.js";
 import {
 	checkDots,
 	checkPhases,
@@ -50,6 +54,14 @@ import { formatUserNotice, notifyUser } from "../shared/ui-language.js";
 import { quoteCommand } from "./parallel/console.js";
 import type { FlowAlignment, FlowGoal, FlowState } from "./types.js";
 import { flowCommandId } from "./util.js";
+
+/** 目录账本唯一投影：generation=createdAt；仅 canonical complete 进入 Recent。 */
+export function flowReportPublication(flow: FlowState): ReportLifecycle {
+	return {
+		generation: flow.createdAt,
+		state: flow.status === "complete" ? "complete" : "live",
+	};
+}
 
 export function writeFlowHtml(dir: string, flow: FlowState) {
 	const htmlPath = join(dir, "flow.html");
@@ -71,6 +83,39 @@ export function refreshFlowHtmlProjection(
 	language = flow.language,
 ) {
 	return refreshHtmlProjection(ctx, language, () => writeFlowHtml(dir, flow));
+}
+
+/**
+ * canonical 提交后的统一报告副作用：刷新 HTML + 后台注册目录生命周期。
+ * HTML 失败不阻断生命周期注册（账本跟 canonical，不跟渲染）。
+ */
+type FlowReportContext = Parameters<typeof bindLiveReport>[0];
+
+export function publishFlowReportProjection(
+	ctx: Parameters<typeof notifyUser>[0] & Partial<FlowReportContext>,
+	dir: string,
+	flow: FlowState,
+	language = flow.language,
+) {
+	const htmlPath = refreshFlowHtmlProjection(ctx, dir, flow, language);
+	publishFlowReportLifecycle(ctx, dir, flow, language);
+	return htmlPath;
+}
+
+/** 仅注册目录生命周期（不写 HTML）；供已写盘或显式 open 路径复用。 */
+export function publishFlowReportLifecycle(
+	ctx: Partial<FlowReportContext> & { cwd?: string },
+	dir: string,
+	flow: FlowState,
+	language = flow.language,
+) {
+	if (typeof ctx.cwd !== "string" || !ctx.cwd || !ctx.ui) return;
+	bindLiveReport(
+		ctx as FlowReportContext,
+		join(dir, "flow.html"),
+		language,
+		flowReportPublication(flow),
+	);
 }
 
 export function refreshFlowErrorHtmlProjection(

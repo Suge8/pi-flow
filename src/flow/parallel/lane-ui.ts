@@ -78,69 +78,70 @@ export function showParallelLaneBoard(
 	);
 	const laneByIndex = new Map(lanes.map((lane) => [lane.goalIndex, lane]));
 	let disposed = false;
-	const mount = () => {
-		if (disposed) return;
-		ctx.ui.setWidget(
-			LANE_WIDGET_KEY,
-			(tui, theme) =>
-				new ParallelLaneWidget(
-					{
-						flow,
-						lanes,
-						startedAt,
-						terminalRows: tui.terminal?.rows,
-					},
-					theme,
-					() => tui.requestRender(true),
-				),
-			{ placement: "aboveEditor" },
-		);
-	};
-	const refresh = () => {
-		for (const lane of lanes) {
-			const next = readLane(
+	let widget: ParallelLaneWidget | undefined;
+	const requestRender = () => widget?.invalidate();
+	const refreshLane = (goalIndex: number, exit?: LaneState["exit"]) => {
+		const lane = laneByIndex.get(goalIndex);
+		if (!lane) return;
+		Object.assign(
+			lane,
+			readLane(
 				dir,
 				flow,
-				lane.goalIndex,
-				lane.exit,
-				progress?.agents.get(lane.goalIndex)?.current,
-			);
-			lane.title = next.title;
-			lane.status = next.status;
-			lane.activities = next.activities;
-			lane.checks = next.checks;
-			lane.progress = next.progress;
-		}
-		mount();
+				goalIndex,
+				exit ?? lane.exit,
+				progress?.agents.get(goalIndex)?.current,
+			),
+		);
+		requestRender();
 	};
+	ctx.ui.setWidget(
+		LANE_WIDGET_KEY,
+		(tui, theme) => {
+			widget = new ParallelLaneWidget(
+				{
+					flow,
+					lanes,
+					startedAt,
+					getTerminalRows: () => tui.terminal?.rows,
+				},
+				theme,
+				() => tui.requestRender(true),
+			);
+			return widget;
+		},
+		{ placement: "aboveEditor" },
+	);
+	ctx.ui.setWorkingVisible(false);
 	const unsubscribeProgress = progress
 		? onProgressChanged((snapshot) => {
-				if (snapshot.scopes.some((scope) => scope.id === progress.scopeId))
-					refresh();
+				if (!snapshot.scopes.some((scope) => scope.id === progress.scopeId))
+					return;
+				for (const lane of lanes)
+					lane.progress = progress.agents.get(lane.goalIndex)?.current;
+				requestRender();
 			})
 		: () => undefined;
-	const timer = setInterval(refresh, 1000);
+	const timer = setInterval(requestRender, 1000);
 	timer.unref?.();
-
-	ctx.ui.setWorkingVisible(false);
-	mount();
 
 	const board: ParallelLaneBoard = {
 		updateWorkerEvent(goalIndex) {
-			if (!laneByIndex.has(goalIndex)) return;
-			refresh();
+			refreshLane(goalIndex);
 		},
 		updateWorkerExit(goalIndex, exitCode, exitSignal, stderr = null) {
-			const lane = laneByIndex.get(goalIndex);
-			if (!lane) return;
-			lane.exit = { code: exitCode, signal: exitSignal, stderr };
-			refresh();
+			refreshLane(goalIndex, {
+				code: exitCode,
+				signal: exitSignal,
+				stderr,
+			});
 		},
 		dispose() {
 			if (disposed) return;
 			disposed = true;
 			unsubscribeProgress();
 			clearInterval(timer);
+			widget = undefined;
 			if (activeBoards.get(key) === board) activeBoards.delete(key);
 			ctx.ui.setWidget(LANE_WIDGET_KEY, undefined);
 			ctx.ui.setWorkingVisible(true);
@@ -160,7 +161,7 @@ export class ParallelLaneWidget implements Component {
 			flow: FlowState;
 			lanes: readonly LaneState[];
 			startedAt: number;
-			terminalRows?: number;
+			getTerminalRows: () => number | undefined;
 		},
 		private readonly theme: Theme,
 		private readonly requestRender?: () => void,
@@ -169,7 +170,7 @@ export class ParallelLaneWidget implements Component {
 	render(width: number): string[] {
 		const safeWidth = Math.max(1, width);
 		const laneRows = rowsPerLane(
-			this.input.terminalRows,
+			this.input.getTerminalRows(),
 			this.input.lanes.length,
 		);
 		const lines = [

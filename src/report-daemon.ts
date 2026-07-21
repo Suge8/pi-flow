@@ -15,9 +15,19 @@ import {
 	type ServerResponse,
 } from "node:http";
 import type { Socket } from "node:net";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ReportConfig } from "./shared/config.js";
+import {
+	DIRECTORY_SCHEMA_VERSION,
+	type DirectoryKind,
+	type DirectoryLedger,
+	type DirectoryRecord,
+	directoryPathIdentity,
+	parseDirectoryLedger,
+	renderReportDirectory,
+	trimDirectoryRecords,
+} from "./shared/report-directory.js";
 import {
 	bearerMatches,
 	isCapability,
@@ -27,6 +37,7 @@ import {
 	REPORT_SERVICE,
 	type ReportEndpoint,
 	type ReportHealth,
+	type ReportLifecycleState,
 	type ReportRegistration,
 	reportBaseUrl,
 	reportCapability,
@@ -34,12 +45,12 @@ import {
 
 const IDLE_MS = 15 * 60_000;
 const MAX_BODY_BYTES = 16 * 1024;
-const FLOW_ID = /^F[1-9]\d*$/u;
-const REVIEW_FILE = /^[^/\\]+\.html$/u;
+const DIRECTORY_FILE = "directory.json";
 
 interface RegisteredReport {
 	path: string;
 	realPath: string;
+	identity: { kind: DirectoryKind; label: string };
 }
 
 interface ReportDaemonState {
@@ -49,8 +60,10 @@ interface ReportDaemonState {
 	server: Server;
 	health: ReportHealth;
 	reports: Map<string, RegisteredReport>;
+	directory: Map<string, DirectoryRecord>;
 	controlClients: Set<ServerResponse>;
 	browserClients: Map<string, Set<ServerResponse>>;
+	directoryClients: Set<ServerResponse>;
 	sockets: Set<Socket>;
 	idleMs: number;
 	idleTimer?: NodeJS.Timeout;
@@ -101,14 +114,17 @@ export async function startReportDaemon(
 		server,
 		health,
 		reports: new Map(),
+		directory: new Map(),
 		controlClients: new Set(),
 		browserClients: new Map(),
+		directoryClients: new Set(),
 		sockets: new Set(),
 		idleMs: input.idleMs,
 		closing: false,
 	});
 	await listen(server, input.config.bind, input.config.port);
 	try {
+		await restoreDirectory(state);
 		writeEndpoint(input.runtimeDir, {
 			protocol: REPORT_PROTOCOL,
 			pid: process.pid,
@@ -121,7 +137,6 @@ export async function startReportDaemon(
 		process.once("SIGINT", stop);
 		process.once("SIGTERM", stop);
 		server.once("error", stop);
-		server.unref();
 		syncIdleTimer(state);
 		return { health, close };
 	} catch (error) {
@@ -136,6 +151,8 @@ async function handleRequest(
 	response: ServerResponse,
 ) {
 	secureHeaders(response);
+	const rawPath = rawPathname(request);
+	if (!rawPath) return writeText(response, 400, "bad request");
 	const url = requestUrl(request);
 	if (!url) return writeText(response, 400, "bad request");
 	if (
@@ -143,6 +160,10 @@ async function handleRequest(
 		requestHasBody(request)
 	)
 		return writeText(response, 400, "body not allowed");
+	// 根页与目录 SSE 只接受未归一化的精确 raw path，避免 /r/%2e%2e/ 命中目录。
+	if (rawPath === "/") return serveDirectory(state, request, response);
+	if (rawPath === "/events")
+		return handleDirectoryEvents(state, request, response);
 	if (url.pathname === "/health") {
 		if (request.method !== "GET") return methodNotAllowed(response);
 		return writeJson(response, 200, state.health);
@@ -196,6 +217,17 @@ async function handleRegistration(
 	const report = await validateReport(registration.cwd, registration.path);
 	if (!report) return notFound(response);
 	const cap = reportCapability(state.key, report.realPath);
+	const applied = applyDirectoryRegistration(state, {
+		cap,
+		cwd: resolve(registration.cwd),
+		path: report.path,
+		realPath: report.realPath,
+		state: registration.state,
+		generation: registration.generation,
+		kind: report.identity.kind,
+		label: report.identity.label,
+	});
+	if (!applied.ok) return writeText(response, applied.status, applied.message);
 	state.reports.set(cap, report);
 	const localUrl = reportUrl(
 		reportBaseUrl(state.config.bind, state.config.port),
@@ -275,6 +307,194 @@ function handleBrowserEvents(
 	});
 }
 
+function serveDirectory(
+	state: ReportDaemonState,
+	request: IncomingMessage,
+	response: ServerResponse,
+) {
+	if (request.method !== "GET") return methodNotAllowed(response);
+	const html = renderReportDirectory([...state.directory.values()]);
+	response.writeHead(200, {
+		"Content-Type": "text/html; charset=utf-8",
+		"Cache-Control": "no-cache",
+	});
+	response.end(html);
+}
+
+function handleDirectoryEvents(
+	state: ReportDaemonState,
+	request: IncomingMessage,
+	response: ServerResponse,
+) {
+	if (request.method !== "GET") return methodNotAllowed(response);
+	response.writeHead(200, {
+		"Content-Type": "text/event-stream",
+		"Cache-Control": "no-cache",
+		Connection: "keep-alive",
+	});
+	response.write("event: ready\ndata: {}\n\n");
+	state.directoryClients.add(response);
+	syncIdleTimer(state);
+	response.once("close", () => {
+		state.directoryClients.delete(response);
+		syncIdleTimer(state);
+	});
+}
+
+function applyDirectoryRegistration(
+	state: ReportDaemonState,
+	input: {
+		cap: string;
+		cwd: string;
+		path: string;
+		realPath: string;
+		state: ReportLifecycleState;
+		generation: number;
+		kind: DirectoryKind;
+		label: string;
+	},
+): { ok: true } | { ok: false; status: number; message: string } {
+	const existing = findDirectoryRecord(state, input.realPath, input.cap);
+	if (existing) {
+		if (input.generation < existing.generation)
+			return { ok: false, status: 409, message: "stale generation" };
+		if (
+			input.generation === existing.generation &&
+			existing.state === "complete" &&
+			input.state === "live"
+		)
+			return { ok: false, status: 409, message: "complete cannot downgrade" };
+	}
+	const next: DirectoryRecord = {
+		cap: input.cap,
+		cwd: input.cwd,
+		path: input.path,
+		realPath: input.realPath,
+		state: input.state,
+		generation: input.generation,
+		updatedAt: Date.now(),
+		kind: input.kind,
+		label: input.label,
+		available: true,
+	};
+	const records = trimDirectoryRecords([
+		...[...state.directory.values()].filter(
+			(record) =>
+				record.realPath !== input.realPath && record.cap !== input.cap,
+		),
+		next,
+	]);
+	try {
+		writeDirectoryFile(state.runtimeDir, {
+			version: DIRECTORY_SCHEMA_VERSION,
+			records,
+		});
+	} catch {
+		return { ok: false, status: 500, message: "directory write failed" };
+	}
+	state.directory = new Map(records.map((record) => [record.cap, record]));
+	broadcastDirectoryReload(state);
+	return { ok: true };
+}
+
+function findDirectoryRecord(
+	state: ReportDaemonState,
+	realPath: string,
+	cap: string,
+) {
+	return (
+		state.directory.get(cap) ??
+		[...state.directory.values()].find((record) => record.realPath === realPath)
+	);
+}
+
+async function restoreDirectory(state: ReportDaemonState) {
+	const ledger = readDirectoryFile(state.runtimeDir);
+	if (!ledger) return;
+	const restored: DirectoryRecord[] = [];
+	for (const record of ledger.records) {
+		const available = await directoryRecordAvailable(state, record);
+		const next = { ...record, available };
+		restored.push(next);
+		if (available)
+			state.reports.set(record.cap, {
+				path: record.path,
+				realPath: record.realPath,
+				identity: { kind: record.kind, label: record.label },
+			});
+	}
+	const trimmed = trimDirectoryRecords(restored);
+	state.directory = new Map(trimmed.map((record) => [record.cap, record]));
+	if (!sameDirectoryRecords(ledger.records, trimmed))
+		writeDirectoryFile(state.runtimeDir, {
+			version: DIRECTORY_SCHEMA_VERSION,
+			records: trimmed,
+		});
+}
+
+async function directoryRecordAvailable(
+	state: ReportDaemonState,
+	record: DirectoryRecord,
+) {
+	try {
+		const report = await validateReport(record.cwd, record.path);
+		if (!report) return false;
+		const expectedCap = reportCapability(state.key, report.realPath);
+		return (
+			expectedCap === record.cap &&
+			report.realPath === record.realPath &&
+			report.path === record.path &&
+			report.identity.kind === record.kind &&
+			report.identity.label === record.label
+		);
+	} catch {
+		return false;
+	}
+}
+
+function readDirectoryFile(runtimeDir: string): DirectoryLedger | undefined {
+	const path = `${runtimeDir}/${DIRECTORY_FILE}`;
+	try {
+		const parsed = parseDirectoryLedger(
+			JSON.parse(readFileSync(path, "utf8")) as unknown,
+		);
+		return parsed;
+	} catch {
+		return undefined;
+	}
+}
+
+function writeDirectoryFile(runtimeDir: string, ledger: DirectoryLedger) {
+	if (!parseDirectoryLedger(ledger))
+		throw new Error("directory ledger failed validation");
+	const path = `${runtimeDir}/${DIRECTORY_FILE}`;
+	const temporary = `${path}.${process.pid}.tmp`;
+	rmSync(temporary, { force: true });
+	try {
+		writeFileSync(temporary, `${JSON.stringify(ledger)}\n`, {
+			mode: 0o600,
+			flag: "wx",
+		});
+		renameSync(temporary, path);
+		chmodSync(path, 0o600);
+	} catch (error) {
+		rmSync(temporary, { force: true });
+		throw error;
+	}
+}
+
+function sameDirectoryRecords(
+	left: readonly DirectoryRecord[],
+	right: readonly DirectoryRecord[],
+) {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function broadcastDirectoryReload(state: ReportDaemonState) {
+	for (const client of state.directoryClients)
+		client.write("event: reload\ndata: {}\n\n");
+}
+
 async function validateReport(
 	cwd: string,
 	path: string,
@@ -288,20 +508,19 @@ async function validateReport(
 			stat(path),
 		]);
 		if (inputInfo.isSymbolicLink() || !reportInfo.isFile()) return undefined;
-		if (!validReportShape(cwdPath, reportPath)) return undefined;
-		return { path: resolve(path), realPath: reportPath };
+		const identity = reportIdentity(cwdPath, reportPath);
+		if (!identity) return undefined;
+		return { path: resolve(path), realPath: reportPath, identity };
 	} catch {
 		return undefined;
 	}
 }
 
-function validReportShape(cwd: string, path: string) {
-	const parts = relative(cwd, path).split(sep);
-	if (parts.length === 3 && parts[0] === ".flow") {
-		if (FLOW_ID.test(parts[1] ?? "") && parts[2] === "flow.html") return true;
-		if (parts[1] === "reviews" && REVIEW_FILE.test(parts[2] ?? "")) return true;
-	}
-	return false;
+function reportIdentity(
+	cwd: string,
+	path: string,
+): { kind: DirectoryKind; label: string } | undefined {
+	return directoryPathIdentity(resolve(cwd), resolve(path));
 }
 
 async function reportStillSafe(report: RegisteredReport) {
@@ -325,6 +544,7 @@ function syncIdleTimer(state: ReportDaemonState) {
 	if (state.closing) return;
 	const active =
 		state.controlClients.size > 0 ||
+		state.directoryClients.size > 0 ||
 		[...state.browserClients.values()].some((clients) => clients.size > 0);
 	if (active) {
 		if (state.idleTimer) clearTimeout(state.idleTimer);
@@ -340,6 +560,7 @@ function closeDaemon(state: ReportDaemonState) {
 	state.closing = true;
 	if (state.idleTimer) clearTimeout(state.idleTimer);
 	for (const client of state.controlClients) client.end();
+	for (const client of state.directoryClients) client.end();
 	for (const clients of state.browserClients.values())
 		for (const client of clients) client.end();
 	state.closePromise = new Promise<void>((resolveClose) => {
@@ -369,6 +590,13 @@ function requestUrl(request: IncomingMessage) {
 	} catch {
 		return undefined;
 	}
+}
+
+function rawPathname(request: IncomingMessage) {
+	const raw = request.url ?? "";
+	if (!raw.startsWith("/")) return undefined;
+	const query = raw.indexOf("?");
+	return query === -1 ? raw : raw.slice(0, query);
 }
 
 function requestHasBody(request: IncomingMessage) {

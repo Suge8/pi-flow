@@ -8,7 +8,7 @@ import type { Language } from "../../shared/config.js";
 import { formatError } from "../../shared/guards.js";
 import { runtimeLanguage } from "../../shared/language.js";
 import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
-import { refreshFlowHtmlProjection } from "../html.js";
+import { publishFlowReportProjection } from "../html.js";
 import { flowLockBusyMessage, withFlowLockSync } from "../lock.js";
 import { currentSessionFile, flowOwnerForSession } from "../ownership.js";
 import { planSnapshotError } from "../snapshot.js";
@@ -245,7 +245,7 @@ export function verifyCurrentSnapshot(
 	const error = planSnapshotError(dir, plan, current.language);
 	if (error) {
 		const saved = writeFlow(dir, { ...current, errors: [error] });
-		refreshFlowHtmlProjection(ctx, dir, saved);
+		publishFlowReportProjection(ctx, dir, saved);
 		notifyUser(
 			ctx,
 			planSnapshotErrorNotice(error, current.language),
@@ -256,7 +256,7 @@ export function verifyCurrentSnapshot(
 	}
 	if (current.errors.length === 0) return current;
 	const saved = writeFlow(dir, { ...current, errors: [] });
-	refreshFlowHtmlProjection(ctx, dir, saved);
+	publishFlowReportProjection(ctx, dir, saved);
 	return saved;
 }
 

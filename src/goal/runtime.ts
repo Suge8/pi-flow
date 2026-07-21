@@ -180,9 +180,9 @@ import {
 	finalizeGoalCompletion,
 	type GoalReviewSurfaceSyncResult,
 	isCurrentCompletionAudit as isCurrentCompletionAuditState,
+	publishFlowReportProjection,
 	recordGoalQualityReview,
 	recordGoalReview,
-	refreshFlowHtmlProjection,
 	setFlowAttention,
 	startCompletionAudit as startCompletionAuditState,
 	syncGoalCheckboxAttribution,
@@ -2508,7 +2508,7 @@ function persistManualAdvisor(
 			return goal.language === "en"
 				? "The failed check changed while the advisor was running"
 				: "顾问运行期间失败检查已发生变化";
-		refreshFlowHtmlProjection(ctx, owner.dir, saved.value, goal.language);
+		publishFlowReportProjection(ctx, owner.dir, saved.value, goal.language);
 		const state = goalStateForSession(ctx);
 		state.activeGoal = reconcileGoalChecks(ctx, goal);
 		persistGoal(state.activeGoal, ctx);
@@ -3654,7 +3654,7 @@ function setCompletionCursor(
 		if (!updated.ok)
 			throw new Error(flowLockBusyMessage(updated.owner, goal.language));
 		if (updated.value)
-			refreshFlowHtmlProjection(ctx, owner.dir, updated.value, goal.language);
+			publishFlowReportProjection(ctx, owner.dir, updated.value, goal.language);
 	} catch (error) {
 		if (notifyFailure)
 			notifyUser(
@@ -3812,7 +3812,7 @@ function clearPendingAdvisor(
 		if (!cleared.ok)
 			throw new Error(flowLockBusyMessage(cleared.owner, language));
 		if (cleared.value)
-			refreshFlowHtmlProjection(ctx, owner.dir, cleared.value, language);
+			publishFlowReportProjection(ctx, owner.dir, cleared.value, language);
 	} catch (error) {
 		notifyUser(
 			ctx,

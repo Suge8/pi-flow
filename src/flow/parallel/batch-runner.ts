@@ -21,7 +21,7 @@ import { sendResultCard } from "../../shared/result-card.js";
 import { notifyUser, setStatusText } from "../../shared/ui-language.js";
 import { flowValidationFailedNotice } from "../execution/shared.js";
 import { workerInitialPrompt } from "../execution/worker-command.js";
-import { refreshFlowHtmlProjection } from "../html.js";
+import { publishFlowReportProjection } from "../html.js";
 import {
 	flowLockBusyMessage,
 	watchFlowLockRelease,
@@ -230,7 +230,7 @@ function beginParallelBatch(
 			dir,
 			prepareParallelBatchStart(ctx, dir, current, indices),
 		);
-		refreshFlowHtmlProjection(ctx, dir, prepared);
+		publishFlowReportProjection(ctx, dir, prepared);
 		watchParallelBatch(dir, prepared, indices);
 		activeBatches.set(dir, {
 			controller,
@@ -294,7 +294,7 @@ export async function settleParallelBlockedRun(
 ) {
 	const settled = await commitParallelBlockedRun(ctx, dir, flow, blocked, true);
 	if (settled.applied) {
-		refreshFlowHtmlProjection(ctx, dir, settled.flow);
+		publishFlowReportProjection(ctx, dir, settled.flow);
 		showParallelBlockedHandoff(ctx, settled.flow, blocked);
 	}
 	return settled;
@@ -772,7 +772,7 @@ function cancelBatch(
 	flow: FlowState,
 ) {
 	const saved = writeFlow(dir, stopParallelRunFlow(dir, flow));
-	refreshFlowHtmlProjection(ctx, dir, saved);
+	publishFlowReportProjection(ctx, dir, saved);
 	return saved;
 }
 

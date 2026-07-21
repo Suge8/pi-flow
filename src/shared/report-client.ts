@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { type ClientRequest, type IncomingMessage, request } from "node:http";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Language, type ReportConfig, readFlowConfig } from "./config.js";
@@ -25,6 +25,7 @@ import {
 	REPORT_SERVICE,
 	type ReportEndpoint,
 	type ReportHealth,
+	type ReportLifecycle,
 	type ReportRegistration,
 	reportBaseUrl,
 } from "./report-protocol.js";
@@ -34,6 +35,7 @@ import { formatUserNotice } from "./ui-language.js";
 const STATUS_KEY = "pi-flow-html-live";
 const STARTUP_DEADLINE_MS = 5_000;
 const ACCESS_KEY_BYTES = 32;
+const MINIMUM_NODE_VERSION = [22, 19, 0] as const;
 
 interface ReportContext extends StatusSink {
 	cwd: string;
@@ -53,10 +55,19 @@ interface ReportConnection {
 interface RegisteredReport {
 	cwd: string;
 	path: string;
+	state: ReportLifecycle["state"];
+	generation: number;
 	registration: ReportRegistration;
 }
 
+interface ClosedReportConnection {
+	requestDestroyed: boolean;
+	responseDestroyed: boolean;
+}
+
 const backgroundTasks = new Set<Promise<void>>();
+const statusContextEpochs = new WeakMap<StatusSink, number>();
+const registerChains = new Map<string, Promise<unknown>>();
 
 const state: {
 	connection?: ReportConnection;
@@ -70,25 +81,38 @@ const state: {
 	closing: boolean;
 	warnedRemoteBind: boolean;
 	reportedFailure?: string;
+	failureCount: number;
+	lastClosedConnection?: ClosedReportConnection;
 } = {
 	reports: new Map(),
 	opened: new Set(),
 	automaticReconnectAvailable: true,
 	closing: false,
 	warnedRemoteBind: false,
+	failureCount: 0,
 };
 
 export function openLiveHtmlInBackgroundOnce(
 	pi: Pick<ExtensionAPI, "exec">,
 	ctx: ReportContext,
 	htmlPath: string,
-	language?: Language,
+	language: Language | undefined,
+	lifecycle: ReportLifecycle,
 ) {
-	runReportSideEffect(ctx, language, async () => {
+	const epoch = beginStatusContextBinding(ctx);
+	runReportSideEffect(ctx, language, epoch, async () => {
 		const path = resolve(htmlPath);
-		const url = await liveReportUrl(ctx, path, language);
-		if (state.opened.has(path)) return;
-		state.opened.add(path);
+		const openKey = `${path}#${lifecycle.generation}`;
+		const url = await liveReportUrlForBinding(
+			ctx,
+			path,
+			language,
+			lifecycle,
+			epoch,
+		);
+		if (!statusContextBindingIsCurrent(ctx, epoch) || state.opened.has(openKey))
+			return;
+		state.opened.add(openKey);
 		await openUrl(pi, url).catch(() => undefined);
 	});
 }
@@ -96,47 +120,74 @@ export function openLiveHtmlInBackgroundOnce(
 export function bindLiveReport(
 	ctx: ReportContext,
 	htmlPath: string,
-	language?: Language,
+	language: Language | undefined,
+	lifecycle: ReportLifecycle,
 ) {
-	runReportSideEffect(ctx, language, async () => {
-		await liveReportUrl(ctx, htmlPath, language);
+	const epoch = beginStatusContextBinding(ctx);
+	runReportSideEffect(ctx, language, epoch, async () => {
+		await liveReportUrlForBinding(ctx, htmlPath, language, lifecycle, epoch);
 	});
 }
 
 export async function liveReportUrl(
 	ctx: ReportContext,
 	htmlPath: string,
-	language?: Language,
+	language: Language | undefined,
+	lifecycle: ReportLifecycle,
 ) {
+	const epoch = beginStatusContextBinding(ctx);
+	return liveReportUrlForBinding(ctx, htmlPath, language, lifecycle, epoch);
+}
+
+async function liveReportUrlForBinding(
+	ctx: ReportContext,
+	htmlPath: string,
+	language: Language | undefined,
+	lifecycle: ReportLifecycle,
+	epoch: number,
+) {
+	if (state.closing) {
+		state.failureCount = 0;
+		state.lastClosedConnection = undefined;
+	}
 	state.closing = false;
 	state.automaticReconnectAvailable = true;
 	const path = resolve(htmlPath);
 	const connection = await ensureConnection();
-	warnForRemoteBind(ctx, connection.config.bind, language);
+	if (statusContextBindingIsCurrent(ctx, epoch))
+		warnForRemoteBind(ctx, connection.config.bind, language);
 	const cwd = resolve(ctx.cwd);
-	const existing = state.reports.get(path);
-	const registration =
-		existing?.cwd === cwd
-			? existing.registration
-			: await registerReport(connection, cwd, path);
-	state.reports.set(path, { cwd, path, registration });
-	state.statusCtx = ctx;
-	state.statusLanguage = language;
-	state.statusUrl = registration.publicUrl;
-	writeStatus();
+	const registration = await registerReportSerialized(
+		connection,
+		cwd,
+		path,
+		lifecycle,
+	);
+	if (statusContextBindingIsCurrent(ctx, epoch)) {
+		state.statusCtx = ctx;
+		state.statusLanguage = language;
+		state.statusUrl = registration.publicUrl;
+		writeStatus();
+	}
 	return registration.publicUrl;
 }
 
 function runReportSideEffect(
 	ctx: ReportContext,
 	language: Language | undefined,
+	epoch: number,
 	run: () => Promise<void>,
 ) {
 	const task = run()
 		.then(() => {
-			state.reportedFailure = undefined;
+			if (statusContextBindingIsCurrent(ctx, epoch))
+				state.reportedFailure = undefined;
 		})
-		.catch((error) => notifyReportFailureOnce(ctx, error, language));
+		.catch((error) => {
+			state.failureCount += 1;
+			if (statusContextBindingIsCurrent(ctx, epoch))
+				notifyReportFailureOnce(ctx, error, language);
+		});
 	backgroundTasks.add(task);
 	void task.then(() => backgroundTasks.delete(task));
 }
@@ -175,28 +226,71 @@ export async function notifyReportChanged(filePath: string) {
 	} catch {}
 }
 
+function beginStatusContextBinding(ctx: StatusSink) {
+	const epoch = (statusContextEpochs.get(ctx) ?? 0) + 1;
+	statusContextEpochs.set(ctx, epoch);
+	return epoch;
+}
+
+function statusContextBindingIsCurrent(ctx: StatusSink, epoch: number) {
+	return statusContextEpochs.get(ctx) === epoch;
+}
+
 export function releaseReportStatusContext(ctx: StatusSink) {
+	beginStatusContextBinding(ctx);
 	if (state.statusCtx !== ctx) return false;
 	setStatusSafe(ctx, STATUS_KEY, undefined);
 	state.statusCtx = undefined;
 	return true;
 }
 
+export function reportClientResourceSnapshot() {
+	const connection = state.connection;
+	return {
+		backgroundTasks: backgroundTasks.size,
+		connecting: state.connecting !== undefined,
+		connected:
+			connection !== undefined &&
+			!connection.request.destroyed &&
+			!connection.response.destroyed,
+		registeredReports: state.reports.size,
+		registerChains: registerChains.size,
+		statusContext: state.statusCtx !== undefined,
+		failureCount: state.failureCount,
+		requestDestroyed: connection?.request.destroyed ?? null,
+		responseDestroyed: connection?.response.destroyed ?? null,
+		lastClosedConnection: state.lastClosedConnection ?? null,
+	};
+}
+
+export async function waitForReportClientIdle(): Promise<void> {
+	const tasks: Promise<unknown>[] = [...backgroundTasks];
+	if (state.connecting) tasks.push(state.connecting.catch(() => undefined));
+	if (tasks.length === 0) return;
+	await Promise.all(tasks);
+	return waitForReportClientIdle();
+}
+
 export async function closeReportClient() {
 	state.closing = true;
-	await Promise.all([...backgroundTasks]);
-	const pending = state.connecting;
-	if (pending) await pending.catch(() => undefined);
+	await waitForReportClientIdle();
 	const connection = state.connection;
 	state.connection = undefined;
 	state.connecting = undefined;
 	connection?.response.destroy();
 	connection?.request.destroy();
+	state.lastClosedConnection = connection
+		? {
+				requestDestroyed: connection.request.destroyed,
+				responseDestroyed: connection.response.destroyed,
+			}
+		: undefined;
 	if (state.statusCtx) setStatusSafe(state.statusCtx, STATUS_KEY, undefined);
 	state.statusCtx = undefined;
 	state.statusUrl = undefined;
 	state.reports.clear();
 	state.opened.clear();
+	registerChains.clear();
 	state.reportedFailure = undefined;
 }
 
@@ -223,10 +317,14 @@ async function connectAndRestore() {
 	watchConnection(connection);
 	try {
 		for (const report of state.reports.values())
-			report.registration = await registerReport(
+			report.registration = await registerReportSerialized(
 				connection,
 				report.cwd,
 				report.path,
+				{
+					state: report.state,
+					generation: report.generation,
+				},
 			);
 		return connection;
 	} catch (error) {
@@ -417,7 +515,118 @@ function waitForStartupChange(runtimeDir: string, deadline: number) {
 	});
 }
 
-function spawnDaemon(
+async function spawnDaemon(
+	config: ReportConfig,
+	runtimeDir: string,
+	deadline: number,
+) {
+	// 编译版 Pi 的 process.execPath 是应用本身，不是能执行 .js 的 runtime。
+	// 旧 Node 不是合格候选；其余仅命令不存在时 fallback，真实启动错误原样暴露。
+	for (const runtime of reportRuntimeCandidates()) {
+		if (
+			runtime.kind === "node" &&
+			!(await nodeRuntimeSupported(runtime.command, deadline))
+		)
+			continue;
+		try {
+			return await spawnDaemonWithRuntime(
+				runtime.command,
+				config,
+				runtimeDir,
+				deadline,
+			);
+		} catch (error) {
+			if (errorCode(error) !== "ENOENT") throw error;
+		}
+	}
+	throw new Error("Pi Flow Web Report requires Node.js >=22.19 or Bun in PATH");
+}
+
+function reportRuntimeCandidates(): Array<{
+	command: string;
+	kind: "node" | "bun";
+}> {
+	const executable = basename(process.execPath).toLowerCase();
+	if (["bun", "bun.exe"].includes(executable))
+		return [{ command: process.execPath, kind: "bun" }];
+	if (["node", "node.exe", "nodejs"].includes(executable))
+		return [
+			{ command: process.execPath, kind: "node" },
+			{ command: "bun", kind: "bun" },
+		];
+	return [
+		{ command: "node", kind: "node" },
+		{ command: "bun", kind: "bun" },
+	];
+}
+
+function nodeRuntimeSupported(command: string, deadline: number) {
+	if (command === process.execPath && !process.versions.bun)
+		return Promise.resolve(nodeVersionSupported(process.versions.node));
+	return new Promise<boolean>((resolveVersion, rejectVersion) => {
+		const child = spawn(command, ["--version"], {
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+		let finished = false;
+		const timeout = setTimeout(
+			() => finish(new Error("Timed out checking the Node.js version")),
+			remaining(deadline),
+		);
+		const finish = (error?: Error, supported?: boolean) => {
+			if (finished) return;
+			finished = true;
+			clearTimeout(timeout);
+			child.removeAllListeners();
+			if (error) {
+				try {
+					child.kill("SIGKILL");
+				} catch {}
+				rejectVersion(error);
+			} else resolveVersion(supported ?? false);
+		};
+		child.stdout.setEncoding("utf8");
+		child.stdout.on("data", (chunk) => {
+			stdout += chunk;
+		});
+		child.stderr.setEncoding("utf8");
+		child.stderr.on("data", (chunk) => {
+			stderr += chunk;
+		});
+		child.once("error", (error) => {
+			if (errorCode(error) === "ENOENT") finish(undefined, false);
+			else finish(error);
+		});
+		child.once("close", (code, signal) => {
+			if (code !== 0)
+				return finish(
+					new Error(
+						`Node.js version check failed (${code ?? signal ?? "unknown"}): ${stderr.trim()}`,
+					),
+				);
+			const supported = nodeVersionSupported(stdout);
+			if (supported === undefined)
+				return finish(
+					new Error(`Node.js returned an invalid version: ${stdout.trim()}`),
+				);
+			finish(undefined, supported);
+		});
+	});
+}
+
+function nodeVersionSupported(version: string | undefined) {
+	const match = /^v?(\d+)\.(\d+)\.(\d+)/u.exec(version?.trim() ?? "");
+	if (!match) return undefined;
+	const actual = match.slice(1).map(Number);
+	for (const [index, minimum] of MINIMUM_NODE_VERSION.entries()) {
+		if (actual[index] !== minimum) return (actual[index] ?? 0) > minimum;
+	}
+	return true;
+}
+
+function spawnDaemonWithRuntime(
+	runtime: string,
 	config: ReportConfig,
 	runtimeDir: string,
 	deadline: number,
@@ -427,7 +636,7 @@ function spawnDaemon(
 		const daemonEntry = realpathSync(
 			fileURLToPath(new URL("../report-daemon.js", import.meta.url)),
 		);
-		const child = spawn(process.execPath, [daemonEntry], {
+		const child = spawn(runtime, [daemonEntry], {
 			detached: true,
 			stdio: ["ignore", "ignore", "ignore", "ipc"],
 		});
@@ -478,7 +687,12 @@ function spawnDaemon(
 					return finish(new Error("Report daemon ready endpoint is invalid"));
 				return finish(undefined, endpoint);
 			}
-			if (isErrorMessage(message)) finish(new Error(message.message));
+			if (isErrorMessage(message))
+				finish(
+					message.protocol === REPORT_PROTOCOL
+						? new Error(message.message)
+						: protocolError(message.protocol),
+				);
 		});
 		child.once("spawn", () => {
 			child.send({
@@ -524,16 +738,58 @@ function connectControl(
 	});
 }
 
+function registerReportSerialized(
+	connection: ReportConnection,
+	cwd: string,
+	path: string,
+	lifecycle: ReportLifecycle,
+) {
+	const previous = registerChains.get(path) ?? Promise.resolve();
+	const next = previous.then(
+		() => registerReport(connection, cwd, path, lifecycle),
+		() => registerReport(connection, cwd, path, lifecycle),
+	);
+	// settle 后仅当仍是队尾时退订，避免永久按 path 堆积 Promise。
+	const settled = next.then(
+		() => undefined,
+		() => undefined,
+	);
+	registerChains.set(path, settled);
+	void settled.then(() => {
+		if (registerChains.get(path) === settled) registerChains.delete(path);
+	});
+	return next;
+}
+
 async function registerReport(
 	connection: ReportConnection,
 	cwd: string,
 	path: string,
+	lifecycle: ReportLifecycle,
 ) {
+	const existing = state.reports.get(path);
+	if (
+		existing &&
+		existing.cwd === cwd &&
+		existing.state === lifecycle.state &&
+		existing.generation === lifecycle.generation &&
+		state.connection === connection
+	)
+		return existing.registration;
 	const response = await postJson(
 		connection,
 		"/control/reports",
-		JSON.stringify({ cwd, path }),
+		JSON.stringify({
+			cwd,
+			path,
+			state: lifecycle.state,
+			generation: lifecycle.generation,
+		}),
 	);
+	if (response.status === 409)
+		throw new Error(
+			`Report registration conflict (${lifecycle.state}#${lifecycle.generation})`,
+		);
 	if (response.status !== 200)
 		throw new Error(`Report registration failed (${String(response.status)})`);
 	let parsed: unknown;
@@ -554,6 +810,13 @@ async function registerReport(
 		throw new Error(
 			"Report daemon publicBaseUrl differs from the current config; close existing report connections before retrying",
 		);
+	state.reports.set(path, {
+		cwd,
+		path,
+		state: lifecycle.state,
+		generation: lifecycle.generation,
+		registration,
+	});
 	return registration;
 }
 
@@ -777,9 +1040,11 @@ function protocolError(protocol: unknown) {
 	);
 }
 
-function isReadyMessage(
-	value: unknown,
-): value is { type: "ready"; protocol: 1; health: ReportHealth } {
+function isReadyMessage(value: unknown): value is {
+	type: "ready";
+	protocol: typeof REPORT_PROTOCOL;
+	health: ReportHealth;
+} {
 	return (
 		isRecord(value) &&
 		value.type === "ready" &&
@@ -788,11 +1053,14 @@ function isReadyMessage(
 	);
 }
 
-function isErrorMessage(value: unknown): value is { message: string } {
+function isErrorMessage(
+	value: unknown,
+): value is { protocol: number; message: string } {
 	return (
 		isRecord(value) &&
 		value.type === "error" &&
-		value.protocol === REPORT_PROTOCOL &&
+		typeof value.protocol === "number" &&
+		Number.isSafeInteger(value.protocol) &&
 		typeof value.message === "string"
 	);
 }

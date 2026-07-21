@@ -10,7 +10,7 @@ import {
 	latestGoalCompletion,
 	recordFlowGoalCompletionBoundary,
 } from "../completion.js";
-import { refreshFlowHtmlProjection } from "../html.js";
+import { publishFlowReportProjection } from "../html.js";
 import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { currentSessionFile } from "../ownership.js";
 import { deleteCompletionFact, rememberFlowContext } from "../runtime.js";
@@ -283,7 +283,7 @@ async function resumeInSession(
 					{ ...current, attention: null },
 					current.currentGoal,
 				);
-				await bindFlowReportStatus(ctx, dir, saved.language);
+				await bindFlowReportStatus(ctx, dir, saved);
 				await startPreparedGoalWithLockHeld(
 					ctx,
 					dir,
@@ -424,7 +424,7 @@ function finishLostGoalInterruption(
 	interruption: InterruptedFlow,
 ) {
 	if (interruption.changed)
-		refreshFlowHtmlProjection(ctx, dir, interruption.flow);
+		publishFlowReportProjection(ctx, dir, interruption.flow);
 	notifyUser(
 		ctx,
 		lostGoalSessionNotice(interruption.flow),

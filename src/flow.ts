@@ -1,5 +1,5 @@
 import { lstatSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -23,6 +23,7 @@ import {
 	startGeneration,
 	stripGenerationPromptMarkerFromMessage,
 } from "./flow/generation.js";
+import { publishFlowReportLifecycle } from "./flow/html.js";
 import { currentSessionFile, flowOwnerForSession } from "./flow/ownership.js";
 import {
 	activeParallelBatchForDir,
@@ -58,10 +59,7 @@ import { setGoalActivityBox } from "./shared/activity-frame.js";
 import { generationStartOptions } from "./shared/generation-alignment.js";
 import { formatError } from "./shared/guards.js";
 import { appendVisibleUserInput } from "./shared/internal-prompt.js";
-import {
-	bindLiveReport,
-	releaseReportStatusContext,
-} from "./shared/report-client.js";
+import { releaseReportStatusContext } from "./shared/report-client.js";
 import { registerRuntimePart } from "./shared/runtime-registration.js";
 import {
 	formatUserNotice,
@@ -188,8 +186,7 @@ function registerFlowCompletionListener() {
 function bindOwnedFlowReportStatus(ctx: ExtensionContext) {
 	try {
 		const owner = flowOwnerForSession(ctx);
-		if (owner)
-			bindLiveReport(ctx, join(owner.dir, "flow.html"), owner.flow.language);
+		if (owner) publishFlowReportLifecycle(ctx, owner.dir, owner.flow);
 	} catch {}
 }
 

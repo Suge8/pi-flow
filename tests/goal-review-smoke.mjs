@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareTestDist } from "./prepare-dist.mjs";
+import { acquireReportPortTestLock } from "./report-port-lock.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const runId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -28,6 +29,7 @@ mkdirSync(bin, { recursive: true });
 symlinkSync(join(root, "node_modules"), join(out, "node_modules"), "dir");
 cpSync(join(root, "prompts"), join(out, "prompts"), { recursive: true });
 prepareTestDist(root, srcOut);
+const releaseReportPortLock = await acquireReportPortTestLock();
 
 try {
 	await runScenario(promptContractScenario);
@@ -110,7 +112,41 @@ try {
 	await runScenario(flowRuntimeWritesRespectFlowLockScenario);
 	console.log("goal review smoke ok");
 } finally {
+	await shutdownReportDaemon();
 	rmSync(out, { recursive: true, force: true });
+	await releaseReportPortLock();
+}
+
+async function shutdownReportDaemon() {
+	try {
+		const client = await import(
+			`file://${join(srcOut, "shared/report-client.js")}?shutdown=${Date.now()}`
+		);
+		await client.closeReportClient();
+	} catch {}
+	const agentDir = process.env.PI_CODING_AGENT_DIR;
+	if (!agentDir) return;
+	const endpointPath = join(agentDir, "pi-flow-report", "endpoint.json");
+	let pid;
+	try {
+		pid = JSON.parse(readFileSync(endpointPath, "utf8")).pid;
+	} catch {
+		return;
+	}
+	try {
+		process.kill(pid, "SIGTERM");
+	} catch (error) {
+		if (error?.code !== "ESRCH") throw error;
+	}
+	const deadline = Date.now() + 3_000;
+	while (Date.now() < deadline) {
+		try {
+			process.kill(pid, 0);
+		} catch (error) {
+			if (error?.code === "ESRCH") return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
 }
 
 async function runScenario(fn, name = fn.name) {

@@ -80,7 +80,7 @@ pi install npm:@surgee/pi-flow
 /reload
 ```
 
-需要 Node.js `>=22.19.0`。
+需要 Node.js `>=22.19.0`。当 Pi 以独立可执行文件运行时，网页报告还要求 `PATH` 中存在 Node.js `>=22.19.0` 或兼容的 Bun runtime。
 
 ## 配置
 
@@ -151,7 +151,7 @@ cp config.template.json config.json
 
 ### 通过 Tailscale 远程查看报告
 
-同一 OS 用户的所有 Pi 会话共用一个报告服务。启动它的会话退出后服务仍可用；最后一个 Pi control 或浏览器事件连接关闭 15 分钟后，服务自动退出。
+同一 OS 用户的所有 Pi 会话共用一个报告服务。启动它的会话退出后服务仍可用；最后一个 Pi control 或浏览器事件连接关闭 15 分钟后，服务自动退出。打开服务根地址（例如 `http://127.0.0.1:49327/`）即可看到匿名目录页：列出进行中与最近由插件上报的报告，按完整项目路径辨认并点入查看，不必再复制冗长 capability 地址。目录只包含曾经认证注册的报告，不会扫描磁盘。
 
 推荐保持 `report.bind` 为 `127.0.0.1`，用 [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve) 代理固定端口，再把 `report.publicBaseUrl` 设为 Serve 输出的 HTTPS origin：
 
@@ -161,7 +161,7 @@ tailscale serve --bg 49327
 
 这样后端仍只监听本机，远程访问经过 Tailscale Serve，并受 tailnet 访问规则约束。参数与状态命令见 [`tailscale serve` CLI 文档](https://tailscale.com/docs/reference/tailscale-cli/serve)。Pi Flow 不会自动修改 Tailscale 配置。
 
-高级用法可以直接绑定本机 Tailscale IP。绑定 `0.0.0.0` 或 `::` 还会向其他可达的 LAN 网卡暴露服务，并不等于「只开放 Tailscale」；直接绑定时必须配合 tailnet ACL 与主机防火墙。报告 URL 含不可猜测的 capability，但仍是 bearer 链接：不要公开，也不要当作长期公共链接。
+高级用法可以直接绑定本机 Tailscale IP。绑定 `0.0.0.0` 或 `::` 还会向其他可达的 LAN 网卡暴露服务，并不等于「只开放 Tailscale」；直接绑定时必须配合 tailnet ACL 与主机防火墙。报告 URL 含不可猜测的 capability，但仍是 bearer 链接：不要公开，也不要当作长期公共链接。远程 bind 时，匿名目录页也会暴露完整项目路径。
 
 ## 5 秒开始
 

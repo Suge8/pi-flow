@@ -1,5 +1,8 @@
 import { join } from "node:path";
-import { createPlanFileWatcher } from "../shared/plan-file-watcher.js";
+import {
+	createPlanFileWatcher,
+	planFileWatcherResourceSnapshot,
+} from "../shared/plan-file-watcher.js";
 import { tryWriteFlowHtml } from "./html.js";
 import type { FlowWorkerArtifact } from "./parallel/worker-artifact.js";
 import {
@@ -77,6 +80,17 @@ export function flowGoalWatcherCount() {
 	return flowGoalWatchers.size;
 }
 
+export function flowGoalWatcherResourceSnapshot() {
+	let pendingFrames = 0;
+	for (const entry of flowGoalWatchers.values())
+		if (entry.pendingFrame) pendingFrames += 1;
+	return {
+		flows: flowGoalWatchers.size,
+		...planFileWatcherResourceSnapshot(),
+		pendingFrames,
+	};
+}
+
 export function flowGoalWatcherStats(dir: string) {
 	const entry = flowGoalWatchers.get(dir);
 	return entry
@@ -84,6 +98,7 @@ export function flowGoalWatcherStats(dir: string) {
 				pending: entry.pendingFrame !== undefined,
 				signals: entry.signals,
 				refreshes: entry.refreshes,
+				...entry.watcher.stats(),
 			}
 		: undefined;
 }

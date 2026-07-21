@@ -80,7 +80,7 @@ If Pi is already running, restart it or run:
 /reload
 ```
 
-Requires Node.js `>=22.19.0`.
+Requires Node.js `>=22.19.0`. When Pi runs as a standalone executable, the web report requires Node.js `>=22.19.0` or a compatible Bun runtime on `PATH`.
 
 ## Configuration
 
@@ -151,7 +151,7 @@ Only documented keys are accepted. Unknown keys are reported instead of ignored.
 
 ### Remote reports with Tailscale
 
-All Pi terminals for the same OS user share one report service. The terminal that starts it can exit; the service stops 15 minutes after its last Pi control or browser event connection closes.
+All Pi terminals for the same OS user share one report service. The terminal that starts it can exit; the service stops 15 minutes after its last Pi control or browser event connection closes. Open the service root (for example `http://127.0.0.1:49327/`) for an anonymous directory of live and recent registered reports, identified by full project path—no need to copy long capability URLs. The directory only lists reports the plugin has registered; it does not scan disk.
 
 The recommended setup keeps `report.bind` at `127.0.0.1`, proxies the fixed port with [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve), and sets `report.publicBaseUrl` to the HTTPS origin printed by Serve:
 
@@ -161,7 +161,7 @@ tailscale serve --bg 49327
 
 This keeps the backend local while remote access passes through Tailscale Serve, where tailnet access rules apply. See the [`tailscale serve` CLI reference](https://tailscale.com/docs/reference/tailscale-cli/serve) for flags and status commands. Pi Flow does not change Tailscale settings for you.
 
-Advanced users can bind directly to this machine's Tailscale IP. Binding to `0.0.0.0` or `::` also exposes the service to other reachable LAN interfaces; it does **not** mean “Tailscale only.” Protect direct binds with tailnet ACLs and the host firewall. Report URLs contain an unguessable capability, but they are bearer links: do not publish or treat them as permanent public URLs.
+Advanced users can bind directly to this machine's Tailscale IP. Binding to `0.0.0.0` or `::` also exposes the service to other reachable LAN interfaces; it does **not** mean “Tailscale only.” Protect direct binds with tailnet ACLs and the host firewall. Report URLs contain an unguessable capability, but they are bearer links: do not publish or treat them as permanent public URLs. A remote bind also exposes full project paths on the anonymous directory page.
 
 ## 5 seconds to start
 

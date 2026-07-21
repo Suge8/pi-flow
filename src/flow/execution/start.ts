@@ -12,10 +12,12 @@ import {
 	flowGoalDisplayLabel,
 	flowStepLabel,
 } from "../../shared/progress-labels.js";
-import { bindLiveReport } from "../../shared/report-client.js";
 import { sendResultCard } from "../../shared/result-card.js";
 import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
-import { refreshFlowHtmlProjection } from "../html.js";
+import {
+	publishFlowReportLifecycle,
+	publishFlowReportProjection,
+} from "../html.js";
 import { flowLockBusyMessage, withFlowLock } from "../lock.js";
 import { currentSessionFile } from "../ownership.js";
 import { runParallelBatch } from "../parallel/batch-runner.js";
@@ -129,7 +131,7 @@ async function startSelectedGoalWithLock(
 			releaseGenerationSession(dir);
 			try {
 				const saved = prepareGoalStart(sessionCtx, dir, current, goalIndex);
-				await bindFlowReportStatus(sessionCtx, dir, current.language);
+				await bindFlowReportStatus(sessionCtx, dir, current);
 				prepared = await startPreparedGoalWithLockHeld(
 					sessionCtx,
 					dir,
@@ -286,7 +288,7 @@ async function runParallelBatchAndContinue(
 	batchIndices: number[],
 ): Promise<boolean> {
 	const sessionFile = currentSessionFile(ctx);
-	await bindFlowReportStatus(ctx, dir, flow.language);
+	await bindFlowReportStatus(ctx, dir, flow);
 	const result = await runParallelBatch(ctx, dir, flow, batchIndices, pi, {
 		signal: ctx.signal,
 	});
@@ -349,7 +351,7 @@ export function prepareGoalStart(
 		errors: [],
 		goals,
 	});
-	refreshFlowHtmlProjection(ctx, dir, saved);
+	publishFlowReportProjection(ctx, dir, saved);
 	watchCurrentFlowGoal(dir, saved);
 	return saved;
 }
@@ -433,9 +435,9 @@ export async function startPreparedGoalWithLockHeld(
 export function bindFlowReportStatus(
 	ctx: ExtensionCommandContext,
 	dir: string,
-	language: FlowState["language"],
+	flow: FlowState,
 ) {
-	bindLiveReport(ctx, join(dir, "flow.html"), language);
+	publishFlowReportLifecycle(ctx, dir, flow);
 }
 
 export async function rollbackPreparedGoalStart(
@@ -475,7 +477,7 @@ function rollbackPreparedGoalStartUnlocked(
 ) {
 	closeFlowGoalWatcher(dir);
 	const saved = writeFlow(dir, originalFlow);
-	refreshFlowHtmlProjection(ctx, dir, saved);
+	publishFlowReportProjection(ctx, dir, saved);
 }
 
 function preparedGoalCanStart(current: FlowState, prepared: FlowState) {

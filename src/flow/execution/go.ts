@@ -6,7 +6,7 @@ import { formatError } from "../../shared/guards.js";
 import { runtimeLanguage } from "../../shared/language.js";
 import { liveReportUrl } from "../../shared/report-client.js";
 import { formatUserNotice, notifyUser } from "../../shared/ui-language.js";
-import { writeFlowHtml } from "../html.js";
+import { flowReportPublication, writeFlowHtml } from "../html.js";
 import { withFlowLockSync } from "../lock.js";
 import { readFlow, writeFlow } from "../store.js";
 import {
@@ -153,6 +153,7 @@ async function openFlowReport(
 			ctx,
 			writeFlowHtml(location.dir, location.flow),
 			location.flow.language,
+			flowReportPublication(location.flow),
 		);
 	} catch (error) {
 		notifyUser(

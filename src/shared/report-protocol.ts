@@ -1,8 +1,15 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { ReportConfig } from "./config.js";
 
-export const REPORT_PROTOCOL = 1;
+export const REPORT_PROTOCOL = 2;
 export const REPORT_SERVICE = "pi-flow-report";
+
+export type ReportLifecycleState = "live" | "complete";
+
+export interface ReportLifecycle {
+	state: ReportLifecycleState;
+	generation: number;
+}
 
 export interface ReportHealth {
 	service: typeof REPORT_SERVICE;
@@ -23,6 +30,8 @@ export interface ReportEndpoint {
 export interface ReportRegistrationRequest {
 	cwd: string;
 	path: string;
+	state: ReportLifecycleState;
+	generation: number;
 }
 
 export interface ReportRegistration {
@@ -66,10 +75,13 @@ export function parseReportEndpoint(
 export function parseReportRegistrationRequest(
 	value: unknown,
 ): ReportRegistrationRequest | undefined {
-	if (!exactRecord(value, ["cwd", "path"])) return undefined;
+	if (!exactRecord(value, ["cwd", "path", "state", "generation"]))
+		return undefined;
 	if (typeof value.cwd !== "string" || typeof value.path !== "string")
 		return undefined;
 	if (!value.cwd || !value.path) return undefined;
+	if (value.state !== "live" && value.state !== "complete") return undefined;
+	if (!positiveSafeInteger(value.generation)) return undefined;
 	return value as unknown as ReportRegistrationRequest;
 }
 
@@ -164,6 +176,10 @@ function exactRecord(
 
 function positiveInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function positiveSafeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 function validPort(value: unknown): value is number {

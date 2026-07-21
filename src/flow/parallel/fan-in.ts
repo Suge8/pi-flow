@@ -1,7 +1,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { flowStepLabel } from "../../shared/progress-labels.js";
 import { completeGoalWithFact } from "../goal-completion.js";
-import { refreshFlowHtmlProjection } from "../html.js";
+import { publishFlowReportProjection } from "../html.js";
 import { computeReadyBatch } from "../scheduler.js";
 import { writeFlow } from "../store.js";
 import type { FlowState, GoalCompletionFact } from "../types.js";
@@ -80,7 +80,7 @@ export function settleParallelRun(
 					options.recovery,
 				),
 	);
-	refreshFlowHtmlProjection(ctx, dir, saved);
+	publishFlowReportProjection(ctx, dir, saved);
 	return {
 		allSuccess,
 		completedIndexes,
