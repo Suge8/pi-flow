@@ -909,6 +909,36 @@ async function flowGoalPromptChecklistSyncScenario() {
 			"resume/continue prompt repeated the full execution manual",
 		);
 	}
+	const repairResumeZh = buildResumePrompt(
+		activeGoal,
+		flowTodoContext,
+		undefined,
+		{
+			repair: true,
+		},
+	);
+	const repairResumeEn = buildResumePrompt(
+		{ ...activeGoal, language: "en" },
+		flowTodoContext,
+		undefined,
+		{ repair: true },
+	);
+	assert(repairResumeZh === "继续", `zh repair resume: ${repairResumeZh}`);
+	assert(repairResumeEn === "Continue.", `en repair resume: ${repairResumeEn}`);
+	const repairWithAdvisor = buildResumePrompt(
+		activeGoal,
+		flowTodoContext,
+		"建议方向：先修状态源",
+		{ repair: true },
+	);
+	assert(
+		repairWithAdvisor.includes("用户手动咨询的顾问建议") &&
+			repairWithAdvisor.includes("建议方向：先修状态源") &&
+			repairWithAdvisor.endsWith("\n\n继续") &&
+			!repairWithAdvisor.includes("<目标>") &&
+			!repairWithAdvisor.includes("第一个未完成项"),
+		`repair resume with advisor: ${repairWithAdvisor}`,
+	);
 	const workerPlanPath = join(out, "worker", "G1-plan.md");
 	const workerPrompt = buildGoalSystemPrompt(
 		{
@@ -9707,8 +9737,14 @@ async function flowBlockedGoScenario() {
 		);
 		assert(
 			state.hiddenMessages.length === promptsBeforeResume + 1 &&
-				state.hiddenMessages.at(-1).includes("用户恢复此步骤后已离场"),
-			`BLOCKED resume prompt count: ${state.hiddenMessages.length - promptsBeforeResume}`,
+				state.hiddenMessages.at(-1) === "继续",
+			`BLOCKED repair resume prompt: ${state.hiddenMessages.at(-1)}`,
+		);
+		assert(
+			!state.hiddenMessages.at(-1).includes("<目标>") &&
+				!state.hiddenMessages.at(-1).includes("第一个未完成项") &&
+				!state.hiddenMessages.at(-1).includes("用户恢复此步骤后已离场"),
+			`BLOCKED repair resume leaked full resume context: ${state.hiddenMessages.at(-1)}`,
 		);
 	} finally {
 		writeFlowTestConfig();

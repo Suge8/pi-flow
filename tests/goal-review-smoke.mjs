@@ -78,6 +78,7 @@ try {
 	await runScenario(flowAcceptanceConfigErrorPauseRespectsFlowLockScenario);
 	await runScenario(flowQualityMidLoopConfigErrorPausesScenario);
 	await runScenario(flowQualityRepairCursorSurvivesAbortScenario);
+	await runScenario(flowRepairCursorRetryAutoResumeKeepsFullPromptScenario);
 	await runScenario(flowCheckHardCapPausesScenario);
 	await runScenario(flowAcceptanceHardCapDeliveryFailureScenario);
 	await runScenario(flowQualityHardCapDeliveryFailureScenario);
@@ -1400,13 +1401,18 @@ async function manualAdvisorPersistentDeliveryScenario() {
 		(await reloaded.module.resumePausedGoalFromFlow(fixture.ctx)) === "resumed",
 		"reloaded paused goal did not resume",
 	);
+	const advisorResume = fixture.state.sentMessages.find(
+		(message) =>
+			message.includes("用户手动咨询的顾问建议") &&
+			message.includes("改用事件驱动"),
+	);
+	assert(advisorResume, fixture.state.sentMessages.join("\n---\n"));
 	assert(
-		fixture.state.sentMessages.some(
-			(message) =>
-				message.includes("用户手动咨询的顾问建议") &&
-				message.includes("改用事件驱动"),
-		),
-		fixture.state.sentMessages.join("\n---\n"),
+		advisorResume.endsWith("\n\n继续") &&
+			!advisorResume.includes("<目标>") &&
+			!advisorResume.includes("第一个未完成项") &&
+			!advisorResume.includes("用户恢复此步骤后已离场"),
+		`repair resume with pending advisor leaked full resume context: ${advisorResume}`,
 	);
 	const { buildContextEvidence } = await import(
 		`file://${join(srcOut, "shared/context-evidence.js")}`
@@ -3619,9 +3625,17 @@ async function flowQualityRepairCursorSurvivesAbortScenario() {
 		module.getGoalState(ctx)?.status === "active",
 		`resumed repair status: ${module.getGoalState(ctx)?.status}`,
 	);
+	const resumePrompt = state.sentMessages.at(-1);
 	assert(
-		state.sentMessages.at(-1)?.includes("用户恢复此步骤后已离场"),
-		`paused repair resume prompt: ${state.sentMessages.at(-1)}`,
+		resumePrompt === "继续",
+		`paused repair resume prompt: ${resumePrompt}`,
+	);
+	assert(
+		!resumePrompt.includes("<目标>") &&
+			!resumePrompt.includes("第一个未完成项") &&
+			!resumePrompt.includes("用户恢复此步骤后已离场") &&
+			!resumePrompt.includes("BLOCKED"),
+		`repair resume leaked full resume context: ${resumePrompt}`,
 	);
 	const qualityStartsAfterResume = state.messages.filter(
 		(item) => item.message.details?.title === "质检中",
@@ -3629,6 +3643,72 @@ async function flowQualityRepairCursorSurvivesAbortScenario() {
 	assert(
 		qualityStartsAfterResume === qualityStartsBeforeResume,
 		"paused quality repair resume restarted the quality check instead of continuing the repair",
+	);
+}
+
+async function flowRepairCursorRetryAutoResumeKeepsFullPromptScenario() {
+	writeConfig({ acceptance: false, quality: false });
+	const cwd = join(out, "flow-repair-retry-auto-resume");
+	const sessionFile = join(cwd, "goal-session.jsonl");
+	writeFlow(cwd, sessionFile);
+	const state = createState();
+	const { handlers, module } = await loadGoalExtension(state);
+	const ctx = mockContext(state, cwd, sessionFile);
+	await module.startGoalFromFlow("Flow objective", ctx);
+	const flowJson = join(cwd, ".flow", "F1", "flow.json");
+	const flow = JSON.parse(readFileSync(flowJson, "utf8"));
+	flow.goals[0].completionCursor = "quality_repair";
+	writeFileSync(flowJson, `${JSON.stringify(flow, null, 2)}\n`);
+	assert(
+		readFlow(cwd).goals[0].completionCursor === "quality_repair",
+		"expected quality_repair before retry exhaustion",
+	);
+	await withFakeTimeouts(async (timers) => {
+		await handlers.get("agent_end")(recoverableWebSocketEndEvent(), ctx);
+		const guard = timers.find((timer) => timer.delay === 20_000);
+		assert(
+			guard,
+			`retry exhaustion guard missing: ${timers.map((timer) => timer.delay)}`,
+		);
+		fireTimer(guard);
+		assert(
+			module.getGoalState(ctx)?.status === "paused",
+			`retry exhaustion status: ${module.getGoalState(ctx)?.status}`,
+		);
+		const retryCard = state.messages.some((item) =>
+			item.message.details?.title.includes("Flow 连接重试已暂停"),
+		);
+		assert(retryCard, "retry exhaustion card missing");
+		const autoResume = timers.find((timer) => timer.delay === 5 * 60 * 1000);
+		assert(
+			autoResume,
+			`auto-resume timer missing: ${timers.map((timer) => timer.delay)}`,
+		);
+		const promptsBefore = state.sentMessages.length;
+		fireTimer(autoResume);
+		assert(
+			module.getGoalState(ctx)?.status === "active",
+			`auto-resume status: ${module.getGoalState(ctx)?.status}`,
+		);
+		const autoPrompt = state.sentMessages.at(-1);
+		assert(
+			state.sentMessages.length === promptsBefore + 1 &&
+				autoPrompt.includes("用户恢复此步骤后已离场") &&
+				autoPrompt.includes("<目标>") &&
+				autoPrompt !== "继续",
+			`retry auto-resume should keep full resume prompt: ${autoPrompt}`,
+		);
+		assert(
+			readFlow(cwd).goals[0].completionCursor === "quality_repair",
+			"auto-resume cleared repair cursor",
+		);
+	});
+	await module.pauseGoalFromFlow(ctx);
+	const userResumed = await module.resumePausedGoalFromFlow(ctx);
+	assert(userResumed === "resumed", `user repair resume: ${userResumed}`);
+	assert(
+		state.sentMessages.at(-1) === "继续",
+		`user /flow go repair resume: ${state.sentMessages.at(-1)}`,
 	);
 }
 

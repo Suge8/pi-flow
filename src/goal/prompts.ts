@@ -20,11 +20,15 @@ export function buildResumePrompt(
 	goal: ActiveGoal,
 	context?: GoalTodoPromptContext,
 	advisorDirection?: string,
+	options?: { repair?: boolean },
 ): string {
-	const todoContext = todoPromptContext(context);
 	const direction = advisorDirection
 		? `${manualAdvisorDirection(advisorDirection, goal.language)}\n\n`
 		: "";
+	// repair cursor 恢复：上下文仍在，只发触发词；有待投顾问建议时保留前置。
+	if (options?.repair)
+		return `${direction}${goal.language === "en" ? "Continue." : "继续"}`;
+	const todoContext = todoPromptContext(context);
 	if (goal.language === "en") {
 		const budgetLine =
 			goal.tokenBudget === undefined

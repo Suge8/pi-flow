@@ -1005,7 +1005,9 @@ export async function resumePausedGoalFromFlow(
 		? undefined
 		: await continueFromCompletionCursor(ctx, state.activeGoal);
 	if (routed) return routed;
-	const resumed = sendResumePrompt(pi, ctx, state.activeGoal);
+	const resumed = sendResumePrompt(pi, ctx, state.activeGoal, {
+		allowRepairShortPrompt: true,
+	});
 	if (!resumed) {
 		const rollbackSynced =
 			state.activeGoal.id === previousGoal.id ||
@@ -3712,8 +3714,14 @@ function sendResumePrompt(
 	pi: ExtensionAPI,
 	ctx: StatusContext,
 	goal: ActiveGoal,
+	options?: { allowRepairShortPrompt?: boolean },
 ) {
 	const pending = pendingAdvisorForPrompt(ctx);
+	const cursor = completionCursorQuiet(ctx, goal);
+	// 短提示仅用户 /flow go 路径；网络重试耗尽后的自动恢复仍走完整 resume。
+	const repair =
+		options?.allowRepairShortPrompt === true &&
+		(cursor === "acceptance_repair" || cursor === "quality_repair");
 	const sent = sendRuntimePrompt(
 		pi,
 		ctx,
@@ -3721,6 +3729,7 @@ function sendResumePrompt(
 			goal,
 			goalTodoPromptContext(ctx, goal),
 			pending?.advice.advice,
+			repair ? { repair: true } : undefined,
 		),
 		{
 			language: goal.language,

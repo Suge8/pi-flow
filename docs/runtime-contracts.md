@@ -44,7 +44,8 @@
 ## 重启恢复
 
 - 目标 session 重启（`session_start`）时先从 canonical `flow.json` / worker artifact 对账重建验收/质检 history、round 与连续失败数，再按 cursor 自愈。检查/收口阶段（`acceptance_retry`/`quality_retry`/`finalize_retry`）在空闲时自动续跑（durable checkpoint 幂等，只跑未完成模型）；若启动时 busy 或有待处理消息，则在该 session 记录 pending，并由下一次 `agent_end` 幂等续跑，不轮询、不永久放弃。修复/执行阶段不自动触发模型，活动框显示真实「已中断」（无火焰）+「/flow go F<N>」恢复入口。worker 进程由私有 bootstrap 负责恢复，不双触发。
-- 无活动循环时的 `agent_end(stop)` 按 cursor 路由完成链：`quality_repair` 直接续质检（不重跑验收），`acceptance_repair`/`null` 进验收，`finalize_retry` 直接收口。
+- 用户 `/flow go` 恢复已执行 paused 时按 cursor 分流：`acceptance_retry`/`quality_retry`/`finalize_retry` 直接续检查或收口；`acceptance_repair`/`quality_repair` 只投递短续跑隐藏提示（中文精确 `继续`，英文精确 `Continue.`；有待投顾问建议时先附完整建议再接短提示），不重投目标块、计划路径或失败发现，也不提前启动检查；普通执行暂停仍走完整 `buildResumePrompt`。短提示仅绑定 `resumePausedGoalFromFlow` 调用；网络重试耗尽后的自动恢复（`resumeGoalAfterRetryBackoff`）即使处于 repair cursor 也仍用完整 resume 提示。
+- 无活动循环时的 `agent_end(stop)` 按 cursor 路由完成链：`quality_repair` 直接续质检（不重跑验收），`acceptance_repair`/`null` 进验收，`finalize_retry` 直接收口。用户恢复本身不替代这条再检路由。
 - 同一目标的验收/质检已在跑时，所有恢复入口（session_start 自愈、/flow go、agent_end 路由）幂等返回，禁止中断重启已在进行的检查。
 - 独立 `/review` 的 `phase=checking` 在空闲时自动恢复（autoFix / manual 均适用）；启动时非空闲则显示「质检 · 已中断」框并由下一次 `agent_end` 幂等重试（不轮询）。`round:0 + phase=awaiting_agent` 在 autoFix / manual 下都只重建武装骨架，不自动触发模型；显示「自动质检 · 已中断」，保持回复输入可见，但显式捕获 Esc/Ctrl+C 以清除武装；用户回复开始执行时切回「执行中 · 完成后自动质检」，本轮 `agent_end` 后进入第 1 轮。`round>=1 + phase=awaiting_agent` 仍只属于 autoFix 修复等待，用户任意回复继续修复后，`agent_end` 自动进入下一轮质检。失败反馈发送成功后，轮次结论与 `awaiting_agent` 才在同一条 checkpoint 中原子提交；发送成功但 checkpoint 提交前中断时，重启读取 result-card receipt，直接提交而不重复发卡、不重跑 reviewer。自动顾问轮恢复时保留相同的 `onRoundFailed` owner：`failed` receipt 跳过失败卡，`repair` receipt 从建议卡恢复建议并跳过顾问。manual 同样在失败卡成功投递后才清 checkpoint。终态停止（通过/用户取消/受控停止）清除 phase；终态 checkpoint 重开会话时不恢复循环，只重新绑定已存在的独立质检报告与 status URL。被动中断（shutdown/flow_stop）保留；取消来源 first-writer-wins。review-only `session_shutdown` 同步清理 activity-frame 的安装态与旧 TUI 引用，宿主移除旧编辑器后，下一次 `session_start` 必须重新调用 `setEditorComponent`。
 - 裸「/flow go」无可推进 Flow 且存在已完成 Flow 时，提示最近的「F<N> 已完成」与报告入口，避免误导。
@@ -132,7 +133,7 @@
 - `Objective` / `Scope` / `Success Criteria` 是启动合同区，禁止 checkbox；`Success Criteria` 使用普通 bullet 表达验收标准。
 - `Steps` 和 `Verification` 必须是 checkbox 列表；`Steps` 是用户可理解的里程碑，不是高频流水账。
 - 启动首轮：如果隐藏启动消息包含标为初始计划状态的完整 snapshot，首个 item 可使用该 snapshot 作为初始读取，第一次进度更新前不要为复述同一状态重复读取文件。
-- 「/flow go」、resume、自动 continuation 或没有 snapshot 的入口：开始工作前必须读取当前计划 Markdown，不得依赖旧 snapshot。
+- 「/flow go」、resume、自动 continuation 或没有 snapshot 的入口：开始工作前必须读取当前计划 Markdown，不得依赖旧 snapshot。`acceptance_repair`/`quality_repair` 的用户恢复例外：只投递短触发词，沿用已有上下文，不重投读计划指令。
 - 开始一项前改为 `[~]`；完成真实工作并有证据后改为 `[x]`；阻塞时改为 `[!]`；勾选用针对该项的单行精确编辑，不重写整个文件，不要求每次勾选后重读计划文件。
 - 拖延勾选自动提醒：回合内有 write/edit 工具调用但当前计划 Markdown 无 checkbox 状态变化时，下一条自动延续隐藏 prompt 头部注入一行更新提醒（`src/goal/check-discipline.ts`）。
 - 阻塞原因、已尝试动作、跳过原因、恢复路径写入 `Outcome` / `Handoff`。
