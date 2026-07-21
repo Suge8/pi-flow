@@ -64,8 +64,8 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.14",
-		"@earendil-works/pi-coding-agent": "0.80.6",
-		"@earendil-works/pi-tui": "0.80.6",
+		"@earendil-works/pi-coding-agent": "^0.81.0",
+		"@earendil-works/pi-tui": "^0.81.0",
 		"@types/node": "24.12.4",
 		"roughjs": "^4.6.6",
 		"tailwindcss": "3.4.17",
